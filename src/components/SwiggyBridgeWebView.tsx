@@ -6,6 +6,7 @@ import {
   registerSwiggyInjector,
   unregisterSwiggyInjector,
   handleSwiggyBridgeMessage,
+  onSwiggyBridgeStalled,
 } from '../services/swiggyBridge';
 import {
   getSwiggySetupMode,
@@ -109,6 +110,12 @@ export default function SwiggyBridgeWebView() {
       );
     };
     registerSwiggyInjector(injector);
+    // The hidden page can stop answering (app suspension, SPA redirect);
+    // reloading it is the only recovery — queued requests flush on ready.
+    onSwiggyBridgeStalled(() => {
+      console.log('[SwiggyBridge] stalled — reloading hidden page');
+      webViewRef.current?.reload();
+    });
     return () => unregisterSwiggyInjector(injector);
   }, []);
 

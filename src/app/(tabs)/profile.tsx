@@ -4,6 +4,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { MapPin, Link2, Link2Off, Compass, Trash2, Key, Info, RefreshCw } from 'lucide-react-native';
 import * as Location from 'expo-location';
 import { storage, Platform, LocationData } from '../../services/storage';
+import { colors, fonts, platformThemes } from '../../constants/theme';
 
 export default function ProfileScreen() {
   const router = useRouter();
@@ -146,7 +147,7 @@ export default function ProfileScreen() {
       {/* Location card */}
       <View style={styles.card}>
         <View style={styles.cardHeader}>
-          <MapPin size={20} color="#8C31FF" />
+          <MapPin size={20} color={colors.accentSecondary} />
           <Text style={styles.cardTitle}>Coordinates & Delivery Address</Text>
         </View>
         <Text style={styles.cardDescription}>
@@ -186,7 +187,7 @@ export default function ProfileScreen() {
             <TextInput
               style={styles.input}
               placeholder="e.g. 12.9716"
-              placeholderTextColor="#4B5563"
+              placeholderTextColor="#566079"
               keyboardType="numeric"
               defaultValue={location?.latitude ? String(location.latitude) : ''}
               onEndEditing={(e) => handleManualLocation(e.nativeEvent.text, String(location?.longitude || '77.5946'))}
@@ -197,7 +198,7 @@ export default function ProfileScreen() {
             <TextInput
               style={styles.input}
               placeholder="e.g. 77.5946"
-              placeholderTextColor="#4B5563"
+              placeholderTextColor="#566079"
               keyboardType="numeric"
               defaultValue={location?.longitude ? String(location.longitude) : ''}
               onEndEditing={(e) => handleManualLocation(String(location?.latitude || '12.9716'), e.nativeEvent.text)}
@@ -214,7 +215,7 @@ export default function ProfileScreen() {
       <View style={[styles.card, styles.platformCard]}>
         <View style={styles.platformHeader}>
           <View style={styles.row}>
-            <View style={[styles.colorBadge, { backgroundColor: '#F7EC13' }]} />
+            <View style={[styles.colorBadge, { backgroundColor: platformThemes.blinkit.color }]} />
             <Text style={styles.platformName}>Blinkit</Text>
           </View>
           {tokens.blinkit ? (
@@ -231,7 +232,7 @@ export default function ProfileScreen() {
         {tokens.blinkit ? (
           <View style={styles.tokenContainer}>
             <View style={styles.row}>
-              <Key size={14} color="#F7EC13" />
+              <Key size={14} color={platformThemes.blinkit.color} />
               <Text style={styles.tokenLabel}>Extracted Token:</Text>
             </View>
             <Text style={styles.tokenText}>{truncateToken(tokens.blinkit)}</Text>
@@ -269,7 +270,7 @@ export default function ProfileScreen() {
         {tokens.swiggy ? (
           <View style={styles.tokenContainer}>
             <View style={styles.row}>
-              <Key size={14} color="#FC8019" />
+              <Key size={14} color={platformThemes.swiggy.color} />
               <Text style={styles.tokenLabel}>Extracted Cookies:</Text>
             </View>
             <Text style={styles.tokenText}>{truncateToken(tokens.swiggy)}</Text>
@@ -306,7 +307,7 @@ export default function ProfileScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0F0F12',
+    backgroundColor: colors.bgDark,
   },
   content: {
     padding: 16,
@@ -318,21 +319,22 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: 24,
-    fontWeight: 'bold',
-    color: '#FFF',
+    fontFamily: fonts.headingBold,
+    color: colors.textPrimary,
     marginBottom: 6,
   },
   subtitle: {
-    fontSize: 14,
-    color: '#9CA3AF',
-    lineHeight: 20,
+    fontSize: 13.5,
+    fontFamily: fonts.body,
+    color: colors.textSecondary,
+    lineHeight: 19,
   },
   card: {
-    backgroundColor: '#16161D',
+    backgroundColor: 'rgba(18,26,44,0.85)',
     borderRadius: 12,
     padding: 16,
     borderWidth: 1,
-    borderColor: '#22222E',
+    borderColor: colors.glassBorder,
     marginBottom: 20,
   },
   cardHeader: {
@@ -342,37 +344,38 @@ const styles = StyleSheet.create({
   },
   cardTitle: {
     fontSize: 15,
-    fontWeight: 'bold',
-    color: '#FFF',
+    fontFamily: fonts.heading,
+    color: colors.textPrimary,
     marginLeft: 8,
   },
   cardDescription: {
-    fontSize: 13,
-    color: '#9CA3AF',
+    fontSize: 12.5,
+    fontFamily: fonts.body,
+    color: colors.textMuted,
     lineHeight: 18,
     marginBottom: 16,
   },
   locationDisplay: {
-    backgroundColor: '#0B0B0E',
+    backgroundColor: colors.bgDark,
     padding: 12,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#1A1A24',
+    borderColor: colors.glassBorder,
     marginBottom: 12,
   },
   locationText: {
     fontSize: 14,
-    fontWeight: '500',
-    color: '#E2E8F0',
+    fontFamily: fonts.bodyMedium,
+    color: colors.textPrimary,
     marginBottom: 4,
   },
   coordText: {
     fontSize: 11,
-    color: '#718096',
-    fontFamily: 'System',
+    color: colors.textMuted,
+    fontFamily: fonts.bodyMedium,
   },
   primaryButton: {
-    backgroundColor: '#8C31FF',
+    backgroundColor: colors.accentSecondary,
     flexDirection: 'row',
     height: 44,
     borderRadius: 8,
@@ -380,15 +383,15 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   disabledButton: {
-    backgroundColor: '#4B2091',
+    backgroundColor: '#3f3366',
   },
   btnIcon: {
     marginRight: 8,
   },
   buttonText: {
-    color: '#FFF',
+    color: colors.textPrimary,
     fontSize: 14,
-    fontWeight: '600',
+    fontFamily: fonts.bodySemiBold,
   },
   manualInputs: {
     flexDirection: 'row',
@@ -401,14 +404,14 @@ const styles = StyleSheet.create({
   },
   inputLabel: {
     fontSize: 11,
-    fontWeight: '600',
-    color: '#718096',
+    fontFamily: fonts.bodySemiBold,
+    color: colors.textMuted,
     marginBottom: 6,
   },
   input: {
-    backgroundColor: '#0B0B0E',
+    backgroundColor: colors.bgDark,
     borderWidth: 1,
-    borderColor: '#22222E',
+    borderColor: colors.glassBorder,
     borderRadius: 8,
     height: 40,
     paddingHorizontal: 12,
@@ -417,8 +420,8 @@ const styles = StyleSheet.create({
   },
   sectionTitle: {
     fontSize: 16,
-    fontWeight: 'bold',
-    color: '#FFF',
+    fontFamily: fonts.heading,
+    color: colors.textPrimary,
     marginBottom: 12,
     marginTop: 8,
   },
@@ -443,8 +446,8 @@ const styles = StyleSheet.create({
   },
   platformName: {
     fontSize: 15,
-    fontWeight: 'bold',
-    color: '#FFF',
+    fontFamily: fonts.heading,
+    color: colors.textPrimary,
   },
   statusBadge: {
     backgroundColor: 'rgba(16, 185, 129, 0.1)',
@@ -469,31 +472,31 @@ const styles = StyleSheet.create({
     color: '#EF4444',
   },
   linkButton: {
-    backgroundColor: '#27273A',
+    backgroundColor: 'rgba(139,92,246,0.14)',
     flexDirection: 'row',
     height: 40,
     borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: '#373752',
+    borderColor: 'rgba(139,92,246,0.35)',
   },
   tokenContainer: {
-    backgroundColor: '#0F0F14',
+    backgroundColor: colors.bgDark,
     padding: 12,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#1D1D28',
+    borderColor: colors.glassBorder,
   },
   tokenLabel: {
     fontSize: 11,
-    color: '#71717A',
+    color: colors.textMuted,
     marginLeft: 6,
   },
   tokenText: {
     fontSize: 12,
-    color: '#A0AEC0',
-    fontFamily: 'System',
+    color: colors.textSecondary,
+    fontFamily: fonts.bodyMedium,
     marginTop: 6,
     marginBottom: 12,
   },
@@ -509,9 +512,9 @@ const styles = StyleSheet.create({
   },
   infoCard: {
     flexDirection: 'row',
-    backgroundColor: '#1E1B10',
+    backgroundColor: 'rgba(245,158,11,0.08)',
     borderWidth: 1,
-    borderColor: '#352E10',
+    borderColor: 'rgba(245,158,11,0.25)',
     borderRadius: 8,
     padding: 12,
     marginTop: 16,
@@ -524,7 +527,7 @@ const styles = StyleSheet.create({
   infoText: {
     flex: 1,
     fontSize: 12,
-    color: '#CAB055',
+    color: '#d4af5e',
     lineHeight: 18,
   },
   clearAllBtn: {

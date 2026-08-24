@@ -23,7 +23,18 @@ let nextId = 1;
 const pending = new Map<number, Pending>();
 const queue: QueuedRequest[] = [];
 
-const REQUEST_TIMEOUT_MS = 15000;
+const REQUEST_TIMEOUT_MS = 8000;
+
+// When the hidden page stops answering (suspension, SPA navigation, dead
+// JS), every request would otherwise burn the full timeout. After several
+// consecutive timeouts we ask the WebView to reload itself; any response
+// resets the counter.
+let consecutiveTimeouts = 0;
+let stallListener: (() => void) | null = null;
+
+export function onSwiggyBridgeStalled(fn: () => void): void {
+  stallListener = fn;
+}
 
 export function registerSwiggyInjector(fn: Injector): void {
   injector = fn;
@@ -98,6 +109,7 @@ export function handleSwiggyBridgeResponse(id: number, status: number, text: str
   if (!entry) return;
   clearTimeout(entry.timer);
   pending.delete(id);
+  consecutiveTimeouts = 0;
   entry.resolve({ status, text });
 }
 
@@ -130,7 +142,13 @@ export async function requestViaSwiggyBridge(
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
       pending.delete(id);
-      console.warn(`[SwiggyBridge] request timed out (${method} ${url})`);
+      consecutiveTimeouts++;
+      console.warn(`[SwiggyBridge] request timed out (${method} ${url}) — stall #${consecutiveTimeouts}`);
+      if (consecutiveTimeouts >= 3 && stallListener) {
+        consecutiveTimeouts = 0;
+        ready = false; // requests queue while the page reloads
+        try { stallListener(); } catch {}
+      }
       resolve(null);
     }, REQUEST_TIMEOUT_MS);
     pending.set(id, { resolve, timer });

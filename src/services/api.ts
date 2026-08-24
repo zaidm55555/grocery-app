@@ -17,6 +17,54 @@ export interface UnifiedProduct {
   productId?: string;
   spinId?: string;
   storeId?: string;
+  // Auto-match: per-platform representation of the SAME cart line, filled by
+  // the matcher so one line carries prices from every app (like the desktop
+  // optimizer's platformPrices model).
+  platformPrices?: Partial<Record<Platform, PlatformVariant>>;
+}
+
+export interface PlatformVariant {
+  id: string;
+  title: string;
+  brand: string;
+  quantity: string;
+  price: number;
+  originalPrice?: number;
+  imageUrl: string;
+  originalId?: string;
+  productId?: string;
+  spinId?: string;
+  storeId?: string;
+}
+
+// Effective product used when pricing a cart line on a given platform:
+// the auto-matched variant when present, otherwise the line's own fields
+// if it originated from that platform, else null (line doesn't exist there).
+export function resolvePlatformProduct(item: { product: UnifiedProduct; quantity: number }, platform: Platform): { product: UnifiedProduct; quantity: number } | null {
+  const v = item.product.platformPrices?.[platform];
+  if (v) {
+    return {
+      product: {
+        ...item.product,
+        // Attribute the variant to the platform it was matched on — the
+        // spread above carries the SOURCE platform otherwise.
+        platform,
+        id: v.id || `${platform}-${v.productId || v.originalId || 'x'}`,
+        title: v.title,
+        brand: v.brand,
+        quantity: v.quantity,
+        price: v.price,
+        originalPrice: v.originalPrice,
+        imageUrl: v.imageUrl,
+        originalId: v.originalId,
+        productId: v.productId,
+        spinId: v.spinId,
+        storeId: v.storeId,
+      },
+      quantity: item.quantity
+    };
+  }
+  return item.product.platform === platform ? item : null;
 }
 
 export interface CartCalculation {
@@ -27,9 +75,14 @@ export interface CartCalculation {
   handlingFee: number;
   smallCartFee: number;
   surgeFee: number;
+  // Platform-provided name for the surge line (e.g. "Late Night Fee").
+  surgeLabel?: string;
   tax: number;
   total: number;
   savings: number;
+  // True when a live checkout bill was fetched from the platform's own API
+  // (false = baseline estimate only / not fetched).
+  live?: boolean;
 }
 
 // fetchWithTimeout is now defined inside the api object
@@ -98,35 +151,59 @@ export const api = {
   },
 
   /**
-   * Universal Search Products across platforms
+   * Universal Search Products across platforms.
+   * Platforms are queried in parallel; onPlatformResults fires the moment a
+   * single platform answers so the UI can render partial results without
+   * waiting for both Blinkit and Swiggy.
    */
-  async search(query: string): Promise<UnifiedProduct[]> {
+  async search(query: string, onPlatformResults?: (platform: Platform, results: UnifiedProduct[]) => void): Promise<UnifiedProduct[]> {
     const platforms: Platform[] = ['blinkit', 'swiggy'];
     const searchPromises = platforms.map(async (platform) => {
+      const startedAt = Date.now();
       const token = await storage.getToken(platform);
       const location = await storage.getLocation();
 
+      let results: UnifiedProduct[];
       if (!token) {
         // Return simulated products for this platform
-        return this.getSimulatedProducts(platform, query);
+        results = this.getSimulatedProducts(platform, query);
+      } else {
+        try {
+          // Make the direct network fetch
+          results = await this.fetchDirectAPI(platform, query, token, location);
+        } catch (error) {
+          console.warn(`Direct fetch failed for ${platform}, falling back to simulation.`, error);
+          // Fall back to simulation but mark them as simulated
+          results = this.getSimulatedProducts(platform, query).map(p => ({
+            ...p,
+            isSimulated: true
+          }));
+        }
       }
 
-      try {
-        // Make the direct network fetch
-        const results = await this.fetchDirectAPI(platform, query, token, location);
-        return results;
-      } catch (error) {
-        console.warn(`Direct fetch failed for ${platform}, falling back to simulation.`, error);
-        // Fall back to simulation but mark them as simulated
-        return this.getSimulatedProducts(platform, query).map(p => ({
-          ...p,
-          isSimulated: true
-        }));
-      }
+      console.log(`[timing] search "${query}" ${platform}: ${Date.now() - startedAt}ms (${results.length} items)`);
+      onPlatformResults?.(platform, results);
+      return results;
     });
 
     const allResults = await Promise.all(searchPromises);
     return allResults.flat();
+  },
+
+  /**
+   * Search a single platform — used by the auto-matcher to find candidates
+   * for the same product on the other apps. Empty array when no session.
+   */
+  async searchSingle(platform: Platform, query: string): Promise<UnifiedProduct[]> {
+    const token = await storage.getToken(platform);
+    if (!token) return [];
+    const location = await storage.getLocation();
+    try {
+      return await this.fetchDirectAPI(platform, query, token, location);
+    } catch (error) {
+      console.warn(`[searchSingle] ${platform} failed for "${query}":`, error);
+      return [];
+    }
   },
 
   /**
@@ -183,6 +260,7 @@ export const api = {
 
     if (platform === 'swiggy') {
       // Step 1: Discover store and layout info
+      const homeStart = Date.now();
       const homeUrl = 'https://www.swiggy.com/api/instamart/home/v2?offset=0&storeId=&primaryStoreId=&secondaryStoreId=&clientId=INSTAMART-APP';
       const homeResponse = await this.fetchWithTimeout(homeUrl, {
         method: 'GET',
@@ -193,7 +271,7 @@ export const api = {
         }
       });
 
-      console.log(`[Swiggy API Home] status: ${homeResponse.status}`);
+      console.log(`[Swiggy API Home] status: ${homeResponse.status} (${Date.now() - homeStart}ms)`);
       if (!homeResponse.ok) {
         throw new Error(`Swiggy home/v2 discovery error: ${homeResponse.status}`);
       }
@@ -215,6 +293,7 @@ export const api = {
         '&secondaryStoreId=' + encodeURIComponent(store.secondaryStoreId || store.storeId);
 
       const searchUrl = `https://www.swiggy.com/api/instamart/search/v2?${params}`;
+      const searchStart = Date.now();
       const searchResponse = await this.fetchWithTimeout(searchUrl, {
         method: 'POST',
         headers: {
@@ -233,13 +312,15 @@ export const api = {
         })
       });
 
-      console.log(`[Swiggy API Search] status: ${searchResponse.status}`);
+      console.log(`[Swiggy API Search] status: ${searchResponse.status} (${Date.now() - searchStart}ms)`);
       if (!searchResponse.ok) {
         throw new Error(`Swiggy search/v2 API error: ${searchResponse.status}`);
       }
 
       const searchJson = await searchResponse.json();
-      const parsed = extractSwiggySearchProducts(searchJson);
+      const widgetList: any[] = searchJson?.data?.widgets || searchJson?.data?.searchResults?.widgets || searchJson?.widgets || [];
+      console.log(`[Swiggy API Search] widgets: ${JSON.stringify(widgetList.map((w: any) => w.type || w.name).filter(Boolean).slice(0, 14))}`);
+      const parsed = extractSwiggySearchProducts(searchJson, query);
       console.log(`[Swiggy API Search] parsed items: ${parsed.length}, sample product:`, parsed[0] ? { name: parsed[0].name, price: parsed[0].price, mrp: parsed[0].mrp } : 'none');
       if (parsed[0]) {
         console.log('[Swiggy Search IDs] First item:', {
@@ -335,39 +416,46 @@ export const api = {
   },
 
   /**
-   * Calculate Comparative Cart Totals
+   * Calculate Comparative Cart Totals.
+   * Both platforms are priced in parallel; onPlatformResult fires as soon as
+   * each platform's bill is resolved so the UI can show partial results.
    */
-  async calculateCart(items: { product: UnifiedProduct; quantity: number }[], forceEstimate: boolean = false): Promise<CartCalculation[]> {
+  async calculateCart(
+    items: { product: UnifiedProduct; quantity: number }[],
+    forceEstimate: boolean = false,
+    onPlatformResult?: (calc: CartCalculation) => void
+  ): Promise<CartCalculation[]> {
     const platforms: Platform[] = ['blinkit', 'swiggy'];
-    
-    // Load tokens and location asynchronously
-    const blinkitToken = await storage.getToken('blinkit');
-    const swiggyToken = await storage.getToken('swiggy');
-    let location = await storage.getLocation();
+    const runStart = Date.now();
+
+    // Load tokens and location in parallel
+    const [blinkitToken, swiggyToken, storedLocation, bLat, bLng] = await Promise.all([
+      storage.getToken('blinkit'),
+      storage.getToken('swiggy'),
+      storage.getLocation(),
+      AsyncStorage.getItem('@blinkit_lat'),
+      AsyncStorage.getItem('@blinkit_lng')
+    ]);
+    let location = storedLocation;
     // Blinkit store-level fees/surge are keyed to the delivery address's own
     // coordinates — prefer the ones captured with the saved address.
-    if (platforms.includes('blinkit' as Platform)) {
-      const bLat = await AsyncStorage.getItem('@blinkit_lat');
-      const bLng = await AsyncStorage.getItem('@blinkit_lng');
-      if (bLat && bLng) {
-        location = {
-          latitude: parseFloat(bLat),
-          longitude: parseFloat(bLng),
-          address: location?.address || 'Bengaluru, Karnataka, India'
-        };
-      }
+    if (bLat && bLng) {
+      location = {
+        latitude: parseFloat(bLat),
+        longitude: parseFloat(bLng),
+        address: storedLocation?.address || 'Bengaluru, Karnataka, India'
+      };
     }
     const lat = location?.latitude ?? 12.9716;
     const lng = location?.longitude ?? 77.5946;
 
     const promises = platforms.map(async (platform) => {
-      // Filter and use only the items that belong to the current platform
+      const platformStart = Date.now();
+      // Filter and use only the items that exist on this platform — either
+      // via an auto-matched variant (platformPrices) or by originating here.
       const platformItems = items
-        .filter((cartItem) => cartItem.product.platform === platform)
-        .map((cartItem) => ({
-          product: cartItem.product,
-          quantity: cartItem.quantity
-        }));
+        .map((cartItem) => resolvePlatformProduct(cartItem, platform))
+        .filter((ci): ci is { product: UnifiedProduct; quantity: number } => ci !== null);
 
       // The item subtotal starts from the search-API prices and gets
       // overwritten by the live bill's itemTotal when the cart API responds.
@@ -381,8 +469,10 @@ export const api = {
       let handlingFee = 0;
       let smallCartFee = 0;
       let surgeFee = 0;
+      let surgeLabel: string | undefined;
       let tax = 0;
       let total = subtotal;
+      let liveBill = false;
 
       if (subtotal > 0 && !forceEstimate) {
         console.log(`[calculateCart] platform: ${platform}, subtotal: ${subtotal}, tokenFound: ${!!(platform === 'blinkit' ? blinkitToken : swiggyToken)}`);
@@ -425,6 +515,7 @@ export const api = {
             // their real experiment arm. Falls back to the direct call below.
             let resJson: any = null;
             let billStatus = 0;
+            const blPostStart = Date.now();
             const bridged = await requestViaBlinkitBridge(
               'https://blinkit.com/v5/carts',
               'POST',
@@ -448,7 +539,7 @@ export const api = {
                 try { resJson = JSON.parse(bridged.text); } catch {}
               }
             }
-            console.log(`[Blinkit API Carts] bridge status: ${billStatus}`);
+            console.log(`[Blinkit API Carts] bridge status: ${billStatus} (${Date.now() - blPostStart}ms)`);
 
             // The site prices its PERSISTENT cart via PUT /v5/carts/{id} —
             // fresh-cart POSTs land in a different fee cohort than the user's
@@ -473,6 +564,7 @@ export const api = {
             if (!isFinite(cartId) || !cartId) {
               // POST quotes are ephemeral (no id) — ask the site's session
               // which cart is currently active.
+              const blGetStart = Date.now();
               const got = await requestViaBlinkitBridge('https://blinkit.com/v5/carts', 'GET', '', {
                 'app_client': 'consumer_web',
                 'auth_key': blinkitToken,
@@ -495,6 +587,7 @@ export const api = {
               } else {
                 console.warn(`[Blinkit API Carts] GET /v5/carts status: ${got?.status}`);
               }
+              console.log(`[timing] blinkit GET /v5/carts (cartId resolve): ${Date.now() - blGetStart}ms`);
             }
             if (!isFinite(cartId) || !cartId) {
               const storedCart = await AsyncStorage.getItem('@blinkit_cart_id');
@@ -516,6 +609,7 @@ export const api = {
                 });
                 await AsyncStorage.setItem('@blinkit_session_uuid', sessionUuid);
               }
+              const blPutStart = Date.now();
               const putRes = await requestViaBlinkitBridge(
                 `https://blinkit.com/v5/carts/${cartId}`,
                 'PUT',
@@ -537,6 +631,7 @@ export const api = {
                   'x-app-version': BLINKIT_APP_VERSION
                 }
               );
+              console.log(`[timing] blinkit PUT /v5/carts/${cartId}: ${Date.now() - blPutStart}ms (status: ${putRes?.status})`);
               if (putRes && putRes.status === 200) {
                 try {
                   const putJson = JSON.parse(putRes.text);
@@ -591,6 +686,7 @@ export const api = {
               // Dev-only: inspect the real Blinkit bill shape.
               const cd = resJson?.cart_data || resJson?.data || resJson;
               console.log(`[Blinkit API Carts] status: ${billStatus}, parsed:`, fees);
+              console.log(`[Blinkit API Carts] additional_charges: ${JSON.stringify((cd as any)?.additional_charges || []).slice(0, 800)}`);
               console.log(`[Blinkit API Carts] bill_details: ${JSON.stringify(cd?.bill_details || cd?.shipments?.[0]?.bill_details)?.slice(0, 1800)}`);
               if (fees.total !== null) {
                 deliveryFee = fees.deliveryFee ?? 0;
@@ -599,6 +695,7 @@ export const api = {
                 surgeFee = fees.surgeFee ?? 0;
                 tax = fees.tax ?? 0;
                 total = fees.total;
+                liveBill = true;
               }
             }
           } else if (platform === 'swiggy' && swiggyToken) {
@@ -623,10 +720,32 @@ export const api = {
             };
             let storeInfo: SwiggyStoreInfo | null = null;
 
+            // Store/session metadata is stable per location — cache it so the
+            // expensive checkout/v2/cart GET (observed 0.6–10s, occasionally
+            // stalling the whole bridge) can be skipped on later runs.
+            const locKey = `${lat.toFixed(3)},${lng.toFixed(3)}`;
+            const saveStoreCache = async () => {
+              if (!storeInfo) return;
+              try {
+                await AsyncStorage.setItem('@swiggy_store_cache', JSON.stringify({ locKey, at: Date.now(), storeInfo, cartMetaData }));
+              } catch {}
+            };
             try {
+              const rawCache = await AsyncStorage.getItem('@swiggy_store_cache');
+              const parsedCache = rawCache ? JSON.parse(rawCache) : null;
+              if (parsedCache && parsedCache.locKey === locKey && parsedCache.storeInfo && Date.now() - parsedCache.at < 24 * 3600 * 1000) {
+                storeInfo = parsedCache.storeInfo;
+                cartMetaData = { ...cartMetaData, ...(parsedCache.cartMetaData || {}) };
+                console.log('[Swiggy API Checkout] using cached store metadata — skipping session GET');
+              }
+            } catch {}
+
+            if (!storeInfo) {
+            try {
+              const swGetCartStart = Date.now();
               const getCartRes = await this.swiggyApiFetch(`${CART_URL}?pageType=INSTAMART_CART`);
 
-              console.log(`[Swiggy API Checkout] GET status: ${getCartRes.status}`);
+              console.log(`[Swiggy API Checkout] GET status: ${getCartRes.status} (${Date.now() - swGetCartStart}ms)`);
               if (getCartRes.ok) {
                 const getCartJson = await getCartRes.json();
                 const cart = getCartJson?.data?.data;
@@ -654,11 +773,13 @@ export const api = {
             } catch (e) {
               console.warn('[Swiggy API Checkout] GET cart failed:', e);
             }
+            }
 
             if (!storeInfo) {
               try {
+                const swHomeStart = Date.now();
                 const homeResponse = await this.swiggyApiFetch(HOME_URL);
-                console.log(`[Swiggy API Checkout] home/v2 status: ${homeResponse.status}`);
+                console.log(`[Swiggy API Checkout] home/v2 status: ${homeResponse.status} (${Date.now() - swHomeStart}ms)`);
                 if (homeResponse.ok) {
                   storeInfo = findStoreInfo(await homeResponse.json());
                 }
@@ -666,6 +787,8 @@ export const api = {
                 console.warn('[Swiggy API Checkout] home/v2 discovery failed:', e);
               }
             }
+
+            await saveStoreCache();
 
             const resolvedStoreId = storeInfo?.storeId || storeInfo?.primaryStoreId || null;
             if (resolvedStoreId) {
@@ -676,56 +799,87 @@ export const api = {
                 '&primaryStoreId=' + encodeURIComponent(storeInfo?.primaryStoreId || resolvedStoreId) +
                 '&secondaryStoreId=' + encodeURIComponent(storeInfo?.secondaryStoreId || resolvedStoreId);
 
-              // Build the exact basket body. Every item is matched FRESH
-              // through search/v2 by name + pack size — exactly like the
-              // desktop extension, which never trusts previously captured
-              // IDs (stale/wrong IDs are what Swiggy answers with
-              // "no valid items in cart").
-              const bodies: any[] = [];
-              let unmappedName: string | null = null;
+              const buildBody = (productId: any, itemId: any, spinId: any, qty: number) => ({
+                productId,
+                quantity: Math.max(1, Math.round(Number(qty) || 1)),
+                tradeFreebie: false,
+                spin: spinId || '',
+                itemId,
+                // meta.storeId is always the session store (the extension's
+                // exact behavior — per-item store ids get baskets rejected)
+                meta: { type: 'structure', storeId: resolvedStoreId, freebie: false, isGiftBag: false },
+                serviceLine: 'INSTAMART',
+                ...(shipmentIdV2 ? { shipmentIdV2 } : {})
+              });
+
+              // FAST PATH: reuse the catalog IDs captured during auto-match
+              // (or from a source-Swiggy listing) — skips N catalog searches.
+              let usedFastPath = platformItems.length > 0;
+              let bodies: any[] = [];
               for (const ci of platformItems) {
-                let cand: any = null;
+                const src: any = ci.product.platformPrices?.swiggy || (ci.product.platform === 'swiggy' ? ci.product : null);
+                if (!src || !src.productId || !src.originalId) { usedFastPath = false; break; }
+                bodies.push(buildBody(src.productId, src.originalId, src.spinId, ci.quantity));
+              }
+              if (!usedFastPath) bodies = [];
+
+              // Fallback builder: fresh search/v2 per item (concurrent pool).
+              const freshSearchBodies = async (): Promise<{ bodies: any[]; unmappedName: string | null }> => {
+              const searchItem = async (title: string, quantity: string): Promise<any> => {
+                const itemSearchStart = Date.now();
                 try {
                   const searchRes = await this.swiggyApiFetch(`https://www.swiggy.com/api/instamart/search/v2?${storeParams}`, 'POST', JSON.stringify({
                     facets: [],
                     sortAttribute: '',
-                    query: ci.product.title,
+                    query: title,
                     search_results_offset: '0',
                     page_type: 'INSTAMART_PRE_SEARCH_PAGE',
                     is_pre_search_tag: false
                   }));
+                  console.log(`[timing] swiggy catalog search "${title.slice(0, 24)}": ${Date.now() - itemSearchStart}ms (status: ${searchRes.status})`);
                   if (searchRes.ok) {
-                    const candidates = extractSwiggySearchProducts(await searchRes.json());
-                    cand = pickInstamartCandidate(candidates, ci.product.title, ci.product.quantity);
-                  } else {
-                    console.warn(`[Swiggy API Checkout] search failed (${searchRes.status}) for "${ci.product.title}"`);
+                    const candidates = extractSwiggySearchProducts(await searchRes.json(), title);
+                    return pickInstamartCandidate(candidates, title, quantity);
                   }
+                  console.warn(`[Swiggy API Checkout] search failed (${searchRes.status}) for "${title}"`);
                 } catch (e) {
-                  console.warn(`[Swiggy API Checkout] search error for "${ci.product.title}":`, e);
+                  console.warn(`[Swiggy API Checkout] search error for "${title}":`, e);
                 }
-                if (!cand || !cand.productId || !cand.itemId) {
-                  unmappedName = ci.product.title;
-                  break;
-                }
+                return null;
+              };
+              const SEARCH_POOL = 5;
+              const searchResults: any[] = new Array(platformItems.length).fill(null);
+              for (let start = 0; start < platformItems.length; start += SEARCH_POOL) {
+                const slice = platformItems.slice(start, start + SEARCH_POOL);
+                const settled = await Promise.all(slice.map(ci => searchItem(ci.product.title, ci.product.quantity)));
+                settled.forEach((r, i) => { searchResults[start + i] = r; });
+              }
 
-                bodies.push({
-                  productId: cand.productId,
-                  quantity: Math.max(1, Math.round(Number(ci.quantity) || 1)),
-                  tradeFreebie: false,
-                  spin: cand.spinId || '',
-                  itemId: cand.itemId,
-                  // meta.storeId is always the session store (the extension's
-                  // exact behavior — per-item store ids get baskets rejected)
-                  meta: { type: 'structure', storeId: resolvedStoreId, freebie: false, isGiftBag: false },
-                  serviceLine: 'INSTAMART',
-                  ...(shipmentIdV2 ? { shipmentIdV2 } : {})
+                const outBodies: any[] = [];
+                let unmappedInner: string | null = null;
+                platformItems.forEach((ci, i) => {
+                  const cand = searchResults[i];
+                  if (!cand || !cand.productId || !cand.itemId) {
+                    if (!unmappedInner) unmappedInner = ci.product.title;
+                    return;
+                  }
+                  outBodies.push(buildBody(cand.productId, cand.itemId, cand.spinId, ci.quantity));
                 });
+                return { bodies: outBodies, unmappedName: unmappedInner };
+              };
+
+              let unmappedName: string | null = null;
+              if (bodies.length === 0 && platformItems.length > 0) {
+                const fresh = await freshSearchBodies();
+                unmappedName = fresh.unmappedName;
+                bodies = fresh.bodies;
               }
 
               if (unmappedName) {
                 console.warn(`[Swiggy API Checkout] no catalog match for "${unmappedName}" — bill not priced`);
               } else if (bodies.length > 0) {
                 console.log(`[Swiggy API Checkout] POST basket:`, JSON.stringify(bodies));
+                const swPostStart = Date.now();
                 const postBasket = async (storeIds: string[], preferredAddressId: any = null) => this.swiggyApiFetch(CART_URL, 'POST', JSON.stringify({
                   data: {
                     items: bodies,
@@ -755,8 +909,26 @@ export const api = {
                   // [primaryStoreId, secondaryStoreId] shape before giving up.
                   postCartRes = await postBasket([resolvedStoreId, resolvedStoreId]);
                 }
+                if (!postCartRes.ok && usedFastPath) {
+                  // Stale/wrong stored IDs are what Swiggy answers with
+                  // "no valid items in cart" — rebuild via fresh search.
+                  console.warn('[Swiggy API Checkout] cached IDs rejected — rebuilding basket via fresh search');
+                  const freshRetry = await freshSearchBodies();
+                  if (freshRetry.unmappedName) {
+                    console.warn(`[Swiggy API Checkout] no catalog match for "${freshRetry.unmappedName}" — bill not priced`);
+                  } else {
+                    usedFastPath = false;
+                    bodies = freshRetry.bodies;
+                    postCartRes = await postBasket([resolvedStoreId]);
+                    if (!postCartRes.ok) {
+                      const rejText2 = (await postCartRes.text().catch(() => '')).slice(0, 300);
+                      console.warn(`[Swiggy API Checkout] POST rejected (${postCartRes.status}): ${rejText2}`);
+                      postCartRes = await postBasket([resolvedStoreId, resolvedStoreId]);
+                    }
+                  }
+                }
 
-                console.log(`[Swiggy API Checkout] POST status: ${postCartRes.status}`);
+                console.log(`[Swiggy API Checkout] POST status: ${postCartRes.status} (${Date.now() - swPostStart}ms incl. retries)`);
                 if (postCartRes.ok) {
                   const postCartJson = await postCartRes.json();
 
@@ -780,8 +952,9 @@ export const api = {
                     if (fees.handlingFee !== null) handlingFee = fees.handlingFee;
                     if (fees.smallCartFee !== null) smallCartFee = fees.smallCartFee;
                     if (fees.surgeFee) surgeFee = fees.surgeFee;
+                    if (fees.surgeLabel) surgeLabel = fees.surgeLabel;
                     if (fees.tax !== null) tax = fees.tax;
-                    if (fees.total !== null) total = fees.total;
+                    if (fees.total !== null) { total = fees.total; liveBill = true; }
                   };
 
                   let bill = findSwiggyBillNode(postCartJson);
@@ -819,7 +992,7 @@ export const api = {
 
       const savings = originalSubtotal - subtotal;
 
-      return {
+      const calc: CartCalculation = {
         platform,
         items: platformItems,
         subtotal,
@@ -827,13 +1000,22 @@ export const api = {
         handlingFee,
         smallCartFee,
         surgeFee,
+        surgeLabel,
         tax,
         total,
-        savings: savings > 0 ? savings : 0
+        savings: savings > 0 ? savings : 0,
+        live: liveBill
       };
+
+      console.log(`[timing] calculateCart ${platform}: ${Date.now() - platformStart}ms (live bill: ${liveBill ? 'yes' : 'no'})`);
+
+      onPlatformResult?.(calc);
+      return calc;
     });
 
-    return Promise.all(promises);
+    const results = await Promise.all(promises);
+    console.log(`[timing] calculateCart TOTAL: ${Date.now() - runStart}ms`);
+    return results;
   }
 };
 
@@ -1031,7 +1213,7 @@ function extractVariation(product: any, v: any, productId: string): any {
   };
 }
 
-function extractSwiggySearchProducts(json: any): any[] {
+function extractSwiggySearchProducts(json: any, query?: string): any[] {
   const out: any[] = [];
   const seen: Record<string, boolean> = {};
   if (!json || typeof json !== 'object') return out;
@@ -1065,6 +1247,26 @@ function extractSwiggySearchProducts(json: any): any[] {
     }
   }
   walk(json);
+
+  // search/v2 responses mix genuine results with pre-search recommendations,
+  // category tiles and ad carousels — the blind walk above happily returns
+  // 'Arokya Milk' for an 'eggs' query. Keep only items whose name/brand/
+  // category shares a token with the query (plural-stemmed); if filtering
+  // would nearly empty the page, fall back to the raw ordering.
+  const qTokens = String(query || '')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(tok => tok.length > 2)
+    .map(tok => tok.replace(/s$/, ''));
+  if (qTokens.length && out.length > 4) {
+    const relevant = out.filter(p => {
+      const rv: any = p._rawVariation || {};
+      const cat = typeof rv.category === 'string' ? rv.category : (rv.category?.displayName || '');
+      const hay = `${p.name} ${rv.brandName || ''} ${cat}`.toLowerCase();
+      return qTokens.some(tok => hay.includes(tok));
+    });
+    if (relevant.length >= 3) return relevant;
+  }
   return out;
 }
 
@@ -1256,6 +1458,7 @@ interface BillFees {
   handlingFee: number | null;
   smallCartFee: number | null;
   surgeFee: number | null;
+  surgeLabel?: string | null;
   tax: number | null;
   total: number | null;
 }
@@ -1289,6 +1492,11 @@ function parseBlinkitBill(json: any): BillFees {
 
   let handlingCharge = null;
   let smallCartCharge = null;
+  // Named fees beyond handling(3)/small-cart(7) — e.g. Blinkit's late-night
+  // surge — arrive as their own additional_charges entry with display text.
+  // Without this they were silently dropped.
+  let acSurge = null;
+  let acSurgeLabel: string | null = null;
   const ac = cd?.additional_charges || [];
   for (const c of ac) {
     if (!c) continue;
@@ -1296,17 +1504,34 @@ function parseBlinkitBill(json: any): BillFees {
     if (amt === null) continue;
     const cid = Number(c.charge_id);
     if (cid === 3) handlingCharge = amt;
-    if (cid === 7) smallCartCharge = amt;
+    else if (cid === 7) smallCartCharge = amt;
+    else if (cid === 5) {
+      // Blinkit's late-night/slot surge — arrives UNNAMED (name: null,
+      // assignment tag like 'mov|nc_15'), so it must be mapped by id.
+      acSurge = Math.max(acSurge ?? 0, amt);
+      if (!acSurgeLabel) acSurgeLabel = 'Late night charge';
+    } else {
+      const label = String(c.display_text || c.name || c.title || '');
+      if (/late|night|surge|rain|high.?demand/i.test(label)) {
+        acSurge = Math.max(acSurge ?? 0, amt);
+        if (!acSurgeLabel && label) acSurgeLabel = label;
+      }
+    }
   }
+
+  // Rain/slot/late-night surge rides in slot_charge AND/OR
+  // surge_charge_v2.surge_amount (both part of payable_amount). They are
+  // independent lines — one being present-but-₹0 must not mask the other.
+  const slotSurge = bill.slot_charge != null ? num(bill.slot_charge) : null;
+  const v2Surge = bill.surge_charge_v2?.surge_amount != null ? num(bill.surge_charge_v2.surge_amount) : null;
 
   return {
     subtotal: getVal(['total_cost', 'totalCost', 'item_total', 'items_total', 'subtotal', 'sub_total']),
     deliveryFee: getVal(['delivery_charge', 'deliveryCharge', 'delivery_charges', 'deliveryCharges', 'delivery_fee']),
     handlingFee: handlingCharge !== null ? handlingCharge : getVal(['additional_charge', 'additionalCharge', 'platform_fee', 'convenience_fee']),
     smallCartFee: smallCartCharge !== null ? smallCartCharge : 0,
-    // Rain/slot surge rides in slot_charge (backed by surge_charge_v2) and
-    // IS part of payable_amount.
-    surgeFee: num(bill.slot_charge) ?? num(bill.surge_charge_v2?.surge_amount) ?? 0,
+    surgeFee: Math.max(slotSurge ?? 0, v2Surge ?? 0, acSurge ?? 0),
+    surgeLabel: acSurgeLabel || undefined,
     tax: getVal(['total_tax_on_charges', 'totalTaxOnCharges', 'tax', 'gst']),
     total: getVal(['payable_amount', 'payableAmount', 'bill_total', 'billTotal', 'to_pay', 'toPay', 'grand_total', 'grandTotal'])
   };
@@ -1433,11 +1658,16 @@ function parseSwiggyBill(bill: any): BillFees {
   // Rain/weather surge is a dynamic charge — matched loosely because its
   // type/name varies ("RAIN_FEE", "surgeCharge", …).
   let surge: number | null = null;
+  let surgeLabel: string | null = null;
   if (Array.isArray(bill.charges)) {
     const hit = bill.charges.find((c: any) =>
       /surge|rain/i.test(`${c?.type || ''} ${c?.name || ''}`)
     );
-    if (hit) surge = num(hit.value);
+    if (hit) {
+      surge = num(hit.value);
+      // Use Swiggy's own display name ("Late Night Fee", "Rain Fee", …).
+      surgeLabel = String(hit.ctx?.displayName || '').trim() || null;
+    }
   }
   if (surge === null) {
     surge = num(bill.surgeFee) ?? num(bill.rainFee) ?? num(bill.surgeCharge) ?? 0;
@@ -1452,6 +1682,7 @@ function parseSwiggyBill(bill: any): BillFees {
       : null,
     smallCartFee: chargeGross('smallCartCharges') ?? num(bill.smallCartCharges),
     surgeFee: surge,
+    surgeLabel,
     tax: num(bill.gst),
     total: num(bill.toPay)
   };
