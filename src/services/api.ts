@@ -574,6 +574,10 @@ export const api = {
               }
             }
             if (!isFinite(cartId) || !cartId) {
+              const storedCart = await AsyncStorage.getItem('@blinkit_cart_id');
+              cartId = storedCart ? Number(storedCart) : NaN;
+            }
+            if (!isFinite(cartId) || !cartId) {
               // POST quotes are ephemeral (no id) — ask the site's session
               // which cart is currently active.
               const blGetStart = Date.now();
@@ -600,10 +604,6 @@ export const api = {
                 console.warn(`[Blinkit API Carts] GET /v5/carts status: ${got?.status}`);
               }
               console.log(`[timing] blinkit GET /v5/carts (cartId resolve): ${Date.now() - blGetStart}ms`);
-            }
-            if (!isFinite(cartId) || !cartId) {
-              const storedCart = await AsyncStorage.getItem('@blinkit_cart_id');
-              cartId = storedCart ? Number(storedCart) : NaN;
             }
             if (isFinite(cartId) && cartId) {
               await AsyncStorage.setItem('@blinkit_cart_id', String(cartId));
