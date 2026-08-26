@@ -9,6 +9,8 @@ import {
   takeBlinkitBridgeCookies,
   registerBlinkitBridgeReload,
   unregisterBlinkitBridgeReload,
+  registerBlinkitBridgeClearLocalStorage,
+  unregisterBlinkitBridgeClearLocalStorage,
 } from '../services/blinkitBridge';
 
 const BRIDGE_SCRIPT = `
@@ -283,9 +285,27 @@ const BlinkitBridgeWebView = forwardRef<BlinkitBridgeHandle>((_, ref) => {
     registerBlinkitBridgeReload(() => {
       webViewRef.current?.reload();
     });
+    registerBlinkitBridgeClearLocalStorage(() => {
+      webViewRef.current?.injectJavaScript(
+        `localStorage.removeItem('selected_address_id');
+         localStorage.removeItem('selected_lat');
+         localStorage.removeItem('selected_lng');
+         localStorage.removeItem('addressesV2');
+         localStorage.removeItem('addresses');
+         localStorage.removeItem('auth');
+         localStorage.removeItem('authKey');
+         localStorage.removeItem('deviceId');
+         window.__blStoredAddrId = null;
+         window.__blStoredLat = null;
+         window.__blStoredLng = null;
+         window.__blAddrApiFetched = false;
+         'cleared';`
+      );
+    });
     return () => {
       unregisterBlinkitInjector(injector);
       unregisterBlinkitBridgeReload();
+      unregisterBlinkitBridgeClearLocalStorage();
     };
   }, []);
 

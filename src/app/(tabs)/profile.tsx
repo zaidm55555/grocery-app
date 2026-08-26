@@ -6,7 +6,7 @@ import * as Location from 'expo-location';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { storage, Platform, LocationData } from '../../services/storage';
 import { colors, fonts, platformThemes } from '../../constants/theme';
-import { reloadBlinkitBridge } from '../../services/blinkitBridge';
+import { reloadBlinkitBridge, clearBlinkitBridgeLocalStorage } from '../../services/blinkitBridge';
 
 export default function ProfileScreen() {
   const router = useRouter();
@@ -258,6 +258,32 @@ export default function ProfileScreen() {
     );
   };
 
+  const handleClearBlinkitSession = () => {
+    Alert.alert(
+      'Clear Blinkit Session (Full Reset)',
+      'Clear all Blinkit localStorage (auth, address, device) AND AsyncStorage. Simulates a completely fresh login. You will need to log in again.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear Everything',
+          style: 'destructive',
+          onPress: async () => {
+            await Promise.all([
+              AsyncStorage.removeItem('@blinkit_address_id'),
+              AsyncStorage.removeItem('@blinkit_lat'),
+              AsyncStorage.removeItem('@blinkit_lng'),
+              AsyncStorage.removeItem('@blinkit_simulate_no_address'),
+              storage.removeToken('blinkit'),
+            ]);
+            clearBlinkitBridgeLocalStorage();
+            loadData();
+            Alert.alert('Cleared', 'All Blinkit session data wiped. Tap "Link Blinkit Account" to log in fresh.');
+          }
+        }
+      ]
+    );
+  };
+
   const toggleSimulateNoAddress = async () => {
     const newVal = !simulateNoAddr;
     await AsyncStorage.setItem('@blinkit_simulate_no_address', newVal ? '1' : '0');
@@ -448,6 +474,10 @@ export default function ProfileScreen() {
           <TouchableOpacity style={[styles.unlinkButton, { marginTop: 8 }]} onPress={handleClearBlinkitAddress}>
             <Trash2 size={16} color="#EF4444" style={styles.btnIcon} />
             <Text style={styles.unlinkText}>Clear Address (Debug)</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.unlinkButton, { marginTop: 8 }]} onPress={handleClearBlinkitSession}>
+            <Trash2 size={16} color="#EF4444" style={styles.btnIcon} />
+            <Text style={styles.unlinkText}>Clear Blinkit Session (Full Reset)</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.linkButton, { marginTop: 8, backgroundColor: simulateNoAddr ? 'rgba(239,68,68,0.14)' : undefined, borderColor: simulateNoAddr ? 'rgba(239,68,68,0.5)' : undefined }]}

@@ -56,6 +56,20 @@ export function reloadBlinkitBridge(): void {
   if (reloadCallback) reloadCallback();
 }
 
+let clearCallback: (() => void) | null = null;
+
+export function registerBlinkitBridgeClearLocalStorage(fn: () => void): void {
+  clearCallback = fn;
+}
+
+export function unregisterBlinkitBridgeClearLocalStorage(): void {
+  clearCallback = null;
+}
+
+export function clearBlinkitBridgeLocalStorage(): void {
+  if (clearCallback) clearCallback();
+}
+
 // Full values of interesting localStorage keys relayed by the page
 // ('cart' holds the persistent cart object incl. its id).
 const pageStorage: Record<string, string> = {};
