@@ -504,6 +504,8 @@ export const api = {
             const siteCookies = simulateNoAddress ? '' : ((await AsyncStorage.getItem('@blinkit_cookies')) || '');
             const devCookieM = siteCookies.match(/(?:^|;\s*)(?:device_id|deviceId)=([^;]+)/);
             if (devCookieM) deviceId = decodeURIComponent(devCookieM[1]);
+            const atCookieM = siteCookies.match(/(?:^|;\s*)gr_1_accessToken=([^;]+)/);
+            const siteAccessToken = atCookieM ? decodeURIComponent(atCookieM[1]) : '';
             const BLINKIT_APP_VERSION = '52434333';
 
             // The saved address personalizes the bill (fee cohorts, delivery
@@ -528,23 +530,46 @@ export const api = {
             if (simulateNoAddress) {
               console.log(`[Blinkit API Carts] SIMULATE NO ADDRESS — skipping bridge, will use bare fetch`);
             }
-            const bridged = simulateNoAddress ? null : await requestViaBlinkitBridge(
+            const bridgeHeaders: Record<string, string> = {
+              'app_client': 'consumer_web',
+              'auth_key': blinkitToken,
+              'lat': String(lat),
+              'lon': String(lng),
+              'access_token': siteAccessToken,
+              'Content-Type': 'application/json',
+              'AppVersion': BLINKIT_APP_VERSION,
+              'appversion': BLINKIT_APP_VERSION,
+              'app_version': BLINKIT_APP_VERSION,
+              'x-app-version': BLINKIT_APP_VERSION
+            };
+            let bridged = simulateNoAddress ? null : await requestViaBlinkitBridge(
               'https://blinkit.com/v5/carts',
               'POST',
               cartsBody,
-              {
-                'app_client': 'consumer_web',
-                'auth_key': blinkitToken,
-                'lat': String(lat),
-                'lon': String(lng),
-                // The gateway requires AppVersion even for page-context
-                // calls; DeviceID is filled in by the page itself.
-                'AppVersion': BLINKIT_APP_VERSION,
-                'appversion': BLINKIT_APP_VERSION,
-                'app_version': BLINKIT_APP_VERSION,
-                'x-app-version': BLINKIT_APP_VERSION
-              }
+              bridgeHeaders
             );
+            // Retry on 429 (rate limited) with backoff — fresh APK installs
+            // often hit rate limits because address APIs + cart POST fire together.
+            if (bridged && bridged.status === 429) {
+              console.log(`[Blinkit API Carts] bridge 429 — retrying in 2s`);
+              await new Promise(r => setTimeout(r, 2000));
+              bridged = await requestViaBlinkitBridge(
+                'https://blinkit.com/v5/carts',
+                'POST',
+                cartsBody,
+                bridgeHeaders
+              );
+            }
+            if (bridged && bridged.status === 429) {
+              console.log(`[Blinkit API Carts] bridge 429 again — retrying in 3s`);
+              await new Promise(r => setTimeout(r, 3000));
+              bridged = await requestViaBlinkitBridge(
+                'https://blinkit.com/v5/carts',
+                'POST',
+                cartsBody,
+                bridgeHeaders
+              );
+            }
             if (bridged) {
               billStatus = bridged.status;
               if (bridged.status === 200) {
