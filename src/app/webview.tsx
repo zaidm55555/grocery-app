@@ -33,14 +33,10 @@ export default function WebViewScreen() {
       primaryColor: '#F7EC13',
       injectScript: `
         (function() {
-          // Record every cart/bill request the REAL site makes so our own
-          // /v5/carts call can be diffed against ground truth.
           let buf = [];
           const rec = (u, m, b, r, h) => {
             try {
               u = String(u);
-              // Analytics beacons smuggle blinkit.com inside query params —
-              // check the HOSTNAME, not the whole string.
               let host = '';
               try { host = new URL(u).hostname; } catch (e0) { return; }
               if (!/(^|\.)blinkit\.com$/.test(host)) return;
@@ -51,11 +47,6 @@ export default function WebViewScreen() {
           };
           if (!window.__blRec) {
             window.__blRec = true;
-            // Blinkit's PWA routes API calls through a Service Worker, which
-            // silently bypasses page-level fetch/XHR hooks. Kill any
-            // registration and RELOAD once — an already-controlled page keeps
-            // its worker until a fresh load, so this is the only way its
-            // network traffic falls back into the hooked window.fetch.
             try {
               navigator.serviceWorker.register = () => Promise.reject(new Error('sw-disabled'));
               navigator.serviceWorker.getRegistrations().then((rs) => {
@@ -95,84 +86,128 @@ export default function WebViewScreen() {
             };
           }
 
-          let sentAddress = false;
-          let sentDump = false;
-          const checkToken = setInterval(() => {
+          var tokenFound = false;
+          var sentAddress = false;
+          var sentDump = false;
+          var sentSuccess = false;
+          var addrFound = false;
+
+          function extractAddrFromStorage() {
+            // Check selected_address_id
+            var aid = sessionStorage.getItem('selected_address_id')
+              || localStorage.getItem('selected_address_id')
+              || localStorage.getItem('address_id') || '';
+            if (aid) {
+              sentAddress = true;
+              addrFound = true;
+              window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BLINKIT_ADDRESS', addressId: String(aid) }));
+            }
+            // Sweep all storage keys for address data
+            [window.localStorage, window.sessionStorage].forEach(function(store, si) {
+              for (var i = 0; i < store.length; i++) {
+                var k = String(store.key(i));
+                if (/address|location/i.test(k)) {
+                  var v = '';
+                  try { v = String(store.getItem(k)); } catch (e2) {}
+                  if (v.length > 10) {
+                    var m = v.match(/"id"\\s*:\\s*(\\d{5,})/);
+                    if (m) {
+                      addrFound = true;
+                      window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BLINKIT_ADDRESS', addressId: m[1] }));
+                    }
+                    var latM = v.match(/"latitude"\\s*:\\s*([\\d.]+)/);
+                    var lngM = v.match(/"longitude"\\s*:\\s*([\\d.]+)/);
+                    if (latM && lngM) {
+                      window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BLINKIT_LATLNG', lat: latM[1], lng: lngM[1] }));
+                    }
+                  }
+                }
+              }
+            });
+          }
+
+          function tryFetchAddresses(token) {
+            // Try multiple possible endpoints
+            var urls = [
+              'https://blinkit.com/v1/addresses',
+              'https://blinkit.com/api/v1/addresses',
+              'https://blinkit.com/v1/address/list',
+              'https://blinkit.com/api/address/list'
+            ];
+            var tried = 0;
+            urls.forEach(function(url) {
+              fetch(url, {
+                method: 'GET',
+                credentials: 'include',
+                headers: { 'Accept': 'application/json', 'auth_key': token }
+              }).then(function(r) {
+                tried++;
+                if (!r.ok) { window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BLINKIT_ADDR_DEBUG', url: url, status: r.status })); return; }
+                return r.text();
+              }).then(function(t) {
+                if (!t) return;
+                window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BLINKIT_ADDR_DEBUG', url: url, body: t.slice(0, 3000) }));
+                try {
+                  var aj = JSON.parse(t);
+                  var addrs = aj.addresses || aj.data || aj.addresses_data || aj;
+                  var list = null;
+                  if (Array.isArray(addrs) && addrs.length) list = addrs;
+                  else if (addrs && Array.isArray(addrs.addresses_data) && addrs.addresses_data.length) list = addrs.addresses_data;
+                  if (list && list.length) {
+                    var a = list[0];
+                    var addrId = a.id || a.address_id || '';
+                    var lat = a.latitude || a.lat || '';
+                    var lng = a.longitude || a.lng || a.lon || '';
+                    if (addrId) {
+                      addrFound = true;
+                      window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BLINKIT_ADDRESS', addressId: String(addrId) }));
+                    }
+                    if (lat && lng) {
+                      window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BLINKIT_LATLNG', lat: String(lat), lng: String(lng) }));
+                    }
+                  }
+                } catch (e) {}
+              }).catch(function(e) {
+                tried++;
+                window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BLINKIT_ADDR_DEBUG', url: url, error: String(e) }));
+              });
+            });
+          }
+
+          var checkCount = 0;
+          var successSent = false;
+          const checkToken = setInterval(function() {
             try {
-              // Re-sweep: a worker registering after load would hijack traffic.
+              checkCount++;
+              // Re-sweep service workers
               try {
-                navigator.serviceWorker.getRegistrations().then((rs) => rs.forEach((r) => r.unregister())).catch(() => {});
+                navigator.serviceWorker.getRegistrations().then(function(rs) { rs.forEach(function(r) { r.unregister(); }); }).catch(function() {});
               } catch (e7) {}
 
-              // Ship anything the site itself requested since last tick.
+              // Ship network log
               if (buf.length) {
                 window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BLINKIT_NETLOG', entries: buf.splice(0, buf.length) }));
               }
 
-              // The SPA stores the chosen delivery address here once a
-              // location is selected; /v5/carts needs it for real pricing.
-              if (!sentAddress) {
-                const aid = sessionStorage.getItem('selected_address_id')
-                  || localStorage.getItem('selected_address_id')
-                  || localStorage.getItem('address_id') || '';
-                if (aid) {
-                  sentAddress = true;
-                  window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BLINKIT_ADDRESS', addressId: String(aid) }));
-                }
+              // Keep scanning localStorage for address data every tick
+              extractAddrFromStorage();
+
+              var token = localStorage.getItem('authKey') || localStorage.getItem('token') || localStorage.getItem('auth_token');
+              if (token && !tokenFound) {
+                tokenFound = true;
+                // Don't stop polling — keep scanning for address data
+                // Try to fetch addresses from API
+                tryFetchAddresses(token);
               }
 
-              // Diagnostic sweep: show every storage key that sounds
-              // address/location related so the right source can be picked.
-              if (!sentDump) {
-                const entries = [];
-                [window.localStorage, window.sessionStorage].forEach((store, si) => {
-                  for (let i = 0; i < store.length && entries.length < 25; i++) {
-                    const k = String(store.key(i));
-                    if (/address|location|lat|lng|city/i.test(k)) {
-                      let v = '';
-                      try { v = String(store.getItem(k)); } catch (e2) {}
-                      // Address books are long — keep enough of the payload
-                      // for the id fields deep inside records to survive.
-                      entries.push({ s: si === 0 ? 'L' : 'S', k: k.slice(0, 60), v: v.slice(0, 6000) });
-                    }
-                  }
-                });
-                if (entries.length) {
-                  sentDump = true;
-                  window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BLINKIT_STORAGE_DUMP', entries }));
-                }
-              }
-
-              // Report login immediately: link and close.
-              const token = localStorage.getItem('authKey') || localStorage.getItem('token') || localStorage.getItem('auth_token');
-              if (token) {
+              // Send SUCCESS once we have a token. If we already found an
+              // address OR after 10 seconds of polling, close.
+              if (token && !successSent && (addrFound || checkCount >= 10)) {
+                successSent = true;
                 clearInterval(checkToken);
-                // Fetch the user's saved addresses from Blinkit API to
-                // guarantee address_id + lat/lng are always captured.
-                fetch('https://blinkit.com/v1/addresses', {
-                  method: 'GET',
-                  credentials: 'include',
-                  headers: { 'Accept': 'application/json', 'auth_key': token }
-                }).then(function(r) { return r.json(); }).then(function(aj) {
-                  var addr = null;
-                  var addrs = (aj && (aj.addresses || aj.data || aj));
-                  if (Array.isArray(addrs) && addrs.length) addr = addrs[0];
-                  else if (addrs && Array.isArray(addrs.addresses_data) && addrs.addresses_data.length) addr = addrs.addresses_data[0];
-                  window.ReactNativeWebView.postMessage(JSON.stringify({
-                    type: 'SUCCESS',
-                    token: token,
-                    cookie: document.cookie,
-                    address: addr || null
-                  }));
-                }).catch(function() {
-                  window.ReactNativeWebView.postMessage(JSON.stringify({
-                    type: 'SUCCESS',
-                    token: token,
-                    cookie: document.cookie,
-                    address: null
-                  }));
-                });
-                return;
+                window.ReactNativeWebView.postMessage(JSON.stringify({
+                  type: 'SUCCESS', token: token, cookie: document.cookie, address: null
+                }));
               }
             } catch (e) {}
           }, 1000);
@@ -219,6 +254,16 @@ export default function WebViewScreen() {
       if (data.type === 'BLINKIT_ADDRESS' && data.addressId) {
         console.log(`[Blinkit WebView] captured address id: ${data.addressId}`);
         await AsyncStorage.setItem('@blinkit_address_id', String(data.addressId));
+        return;
+      }
+      if (data.type === 'BLINKIT_LATLNG' && data.lat && data.lng) {
+        console.log(`[Blinkit WebView] captured coords: ${data.lat}, ${data.lng}`);
+        await AsyncStorage.setItem('@blinkit_lat', String(data.lat));
+        await AsyncStorage.setItem('@blinkit_lng', String(data.lng));
+        return;
+      }
+      if (data.type === 'BLINKIT_ADDR_DEBUG') {
+        console.log(`[Blinkit WebView] addr API ${data.url || ''} → status=${data.status || ''} error=${data.error || ''} body=${(data.body || '').slice(0, 500)}`);
         return;
       }
       if (data.type === 'BLINKIT_STORAGE_DUMP') {
