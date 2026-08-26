@@ -128,51 +128,51 @@ export default function WebViewScreen() {
             });
           }
 
-          function tryFetchAddresses(token) {
-            // Try multiple possible endpoints
-            var urls = [
-              'https://blinkit.com/v1/addresses',
-              'https://blinkit.com/api/v1/addresses',
-              'https://blinkit.com/v1/address/list',
-              'https://blinkit.com/api/address/list'
-            ];
-            var tried = 0;
-            urls.forEach(function(url) {
-              fetch(url, {
-                method: 'GET',
-                credentials: 'include',
-                headers: { 'Accept': 'application/json', 'auth_key': token }
-              }).then(function(r) {
-                tried++;
-                if (!r.ok) { window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BLINKIT_ADDR_DEBUG', url: url, status: r.status })); return; }
-                return r.text();
-              }).then(function(t) {
-                if (!t) return;
-                window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BLINKIT_ADDR_DEBUG', url: url, body: t.slice(0, 3000) }));
-                try {
-                  var aj = JSON.parse(t);
-                  var addrs = aj.addresses || aj.data || aj.addresses_data || aj;
-                  var list = null;
-                  if (Array.isArray(addrs) && addrs.length) list = addrs;
-                  else if (addrs && Array.isArray(addrs.addresses_data) && addrs.addresses_data.length) list = addrs.addresses_data;
-                  if (list && list.length) {
-                    var a = list[0];
-                    var addrId = a.id || a.address_id || '';
-                    var lat = a.latitude || a.lat || '';
-                    var lng = a.longitude || a.lng || a.lon || '';
-                    if (addrId) {
-                      addrFound = true;
-                      window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BLINKIT_ADDRESS', addressId: String(addrId) }));
-                    }
-                    if (lat && lng) {
-                      window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BLINKIT_LATLNG', lat: String(lat), lng: String(lng) }));
-                    }
+          function tryFetchAddresses(token, lat, lng) {
+            var curLat = lat || '12.9716';
+            var curLng = lng || '77.5946';
+            var url = 'https://blinkit.com/v4/address?cur_lat=' + curLat + '&cur_lon=' + curLng;
+            fetch(url, {
+              method: 'GET',
+              credentials: 'include',
+              headers: {
+                'Accept': 'application/json',
+                'access_token': token,
+                'auth_key': 'c761ec3633c22afad934fb17a66385c1c06c5472b4898b866b7306186d0bb477',
+                'app_client': 'consumer_web',
+                'lat': curLat,
+                'lon': curLng,
+                'device_id': 'basketbuddy_' + Date.now(),
+                'platform': 'mobile_web'
+              }
+            }).then(function(r) {
+              window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BLINKIT_ADDR_DEBUG', url: url, status: r.status }));
+              if (!r.ok) return null;
+              return r.text();
+            }).then(function(t) {
+              if (!t) return;
+              window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BLINKIT_ADDR_DEBUG', url: url, body: t.slice(0, 3000) }));
+              try {
+                var aj = JSON.parse(t);
+                // Response may be { addresses: [...] } or { data: [...] } or flat object
+                var list = aj.addresses || aj.data || aj.addresses_data || (Array.isArray(aj) ? aj : null);
+                if (list && !Array.isArray(list) && list.addresses_data) list = list.addresses_data;
+                if (Array.isArray(list) && list.length) {
+                  var a = list[0];
+                  var addrId = a.id || a.address_id || '';
+                  var aLat = a.latitude || a.lat || '';
+                  var aLng = a.longitude || a.lng || a.lon || '';
+                  if (addrId) {
+                    addrFound = true;
+                    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BLINKIT_ADDRESS', addressId: String(addrId) }));
                   }
-                } catch (e) {}
-              }).catch(function(e) {
-                tried++;
-                window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BLINKIT_ADDR_DEBUG', url: url, error: String(e) }));
-              });
+                  if (aLat && aLng) {
+                    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BLINKIT_LATLNG', lat: String(aLat), lng: String(aLng) }));
+                  }
+                }
+              } catch (e) {}
+            }).catch(function(e) {
+              window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BLINKIT_ADDR_DEBUG', url: url, error: String(e) }));
             });
           }
 
@@ -197,9 +197,10 @@ export default function WebViewScreen() {
               var token = localStorage.getItem('authKey') || localStorage.getItem('token') || localStorage.getItem('auth_token');
               if (token && !tokenFound) {
                 tokenFound = true;
-                // Don't stop polling — keep scanning for address data
-                // Try to fetch addresses from API
-                tryFetchAddresses(token);
+                // Try to fetch addresses from Blinkit /v4/address API
+                var storedLat = localStorage.getItem('selected_lat') || localStorage.getItem('latitude') || '';
+                var storedLng = localStorage.getItem('selected_lng') || localStorage.getItem('longitude') || '';
+                tryFetchAddresses(token, storedLat, storedLng);
               }
 
               // Send SUCCESS once we have a token. If we already found an
@@ -337,6 +338,31 @@ export default function WebViewScreen() {
           // this WebView (which has the same cookies/session as the site)
           // to set the server-side session address.
           if (addrId) {
+            // Set server-side session via /v4/address
+            var sLat = String(addr.latitude ?? addr.lat ?? '12.9716');
+            var sLng = String(addr.longitude ?? addr.lng ?? addr.lon ?? '77.5946');
+            fetch('https://blinkit.com/v4/address?cur_lat=' + sLat + '&cur_lon=' + sLng, {
+              method: 'GET',
+              credentials: 'include',
+              headers: {
+                'Accept': 'application/json',
+                'access_token': data.token,
+                'auth_key': 'c761ec3633c22afad934fb17a66385c1c06c5472b4898b866b7306186d0bb477',
+                'app_client': 'consumer_web',
+                'lat': sLat,
+                'lon': sLng,
+                'device_id': 'basketbuddy_' + Date.now(),
+                'platform': 'mobile_web'
+              }
+            }).then(function(r) {
+              console.log(`[Blinkit WebView] v4/address status: ${r.status}`);
+              return r.text();
+            }).then(function(t) {
+              console.log(`[Blinkit WebView] v4/address response: ${(t || '').slice(0, 500)}`);
+            }).catch(function(e) {
+              console.warn(`[Blinkit WebView] v4/address failed: ${e}`);
+            });
+            // Also try address select variants
             fetch('https://blinkit.com/v2/address/select', {
               method: 'POST',
               credentials: 'include',
@@ -346,7 +372,7 @@ export default function WebViewScreen() {
               console.log(`[Blinkit WebView] v2/address/select status: ${r.status}`);
               return r.text();
             }).then(function(t) {
-              console.log(`[Blinkit WebView] v2/address/select response: ${t.slice(0, 500)}`);
+              console.log(`[Blinkit WebView] v2/address/select response: ${(t || '').slice(0, 500)}`);
             }).catch(function(e) {
               console.warn(`[Blinkit WebView] v2/address/select failed: ${e}`);
             });

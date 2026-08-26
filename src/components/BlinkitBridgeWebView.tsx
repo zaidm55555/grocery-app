@@ -58,23 +58,39 @@ const BRIDGE_SCRIPT = `
           }
         }
       } catch (e2) {}
-      // Call Blinkit's internal address select API so the SERVER-STATE
-      // session also knows the address — localStorage alone isn't enough.
+      // Call Blinkit's /v4/address API to set server-side session address.
       if (addrId) {
+        var bLat = localStorage.getItem('selected_lat') || lat || '12.9716';
+        var bLng = localStorage.getItem('selected_lng') || lng || '77.5946';
+        var ak = localStorage.getItem('authKey') || '';
+        fetch('https://blinkit.com/v4/address?cur_lat=' + bLat + '&cur_lon=' + bLng, {
+          method: 'GET',
+          credentials: 'include',
+          headers: {
+            'Accept': 'application/json',
+            'access_token': ak,
+            'auth_key': 'c761ec3633c22afad934fb17a66385c1c06c5472b4898b866b7306186d0bb477',
+            'app_client': 'consumer_web',
+            'lat': bLat,
+            'lon': bLng,
+            'platform': 'mobile_web'
+          }
+        }).then(function(r) { return r.text(); }).then(function(t) {
+          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BL_ADDR_DEBUG', source: 'v4/address', body: t.slice(0, 2000) }));
+        }).catch(function() {});
+        // Also try address select variants for server-side session
         fetch('https://blinkit.com/v2/address/select', {
           method: 'POST',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
           body: JSON.stringify({ address_id: Number(addrId) })
         }).catch(function() {});
-        // Also try the v1 variant
         fetch('https://blinkit.com/v1/address/select', {
           method: 'POST',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
           body: JSON.stringify({ id: Number(addrId) })
         }).catch(function() {});
-        // Also try setting address via the newer endpoint
         fetch('https://blinkit.com/v1/addresses/select', {
           method: 'POST',
           credentials: 'include',
