@@ -40,9 +40,11 @@ export default function WebViewScreen() {
               let host = '';
               try { host = new URL(u).hostname; } catch (e0) { return; }
               if (!/(^|\.)blinkit\.com$/.test(host)) return;
-              if (!/cart|bill|checkout/i.test(u)) return;
-              if (buf.length >= 20) return;
-              buf.push({ m: m || 'GET', u: u.slice(0, 220), h: h ? String(h).slice(0, 900) : '', b: b ? String(b).slice(0, 2500) : '', r: r ? String(r).slice(0, 4500) : '' });
+              // Log ALL Blinkit API calls (not just cart) — we need to
+              // discover the address endpoint. Exclude static assets.
+              if (/\\.js$|\\.css$|\\.png$|\\.svg$|\\.woff|analytics|beacon|collect|perf/i.test(u)) return;
+              if (buf.length >= 40) return;
+              buf.push({ m: m || 'GET', u: u.slice(0, 300), h: h ? String(h).slice(0, 900) : '', b: b ? String(b).slice(0, 2500) : '', r: r ? String(r).slice(0, 4500) : '' });
             } catch (e2) {}
           };
           if (!window.__blRec) {
