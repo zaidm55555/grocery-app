@@ -128,10 +128,11 @@ export default function WebViewScreen() {
             });
           }
 
-          function tryFetchAddresses(token, lat, lng) {
+          function tryFetchAddresses(token, lat, lng, deviceId) {
             var curLat = lat || '12.9716';
             var curLng = lng || '77.5946';
             var url = 'https://blinkit.com/v4/address?cur_lat=' + curLat + '&cur_lon=' + curLng;
+            window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BLINKIT_ADDR_DEBUG', url: url, status: 'fetching', token: token ? token.slice(0, 30) + '...' : 'none' }));
             fetch(url, {
               method: 'GET',
               credentials: 'include',
@@ -142,7 +143,7 @@ export default function WebViewScreen() {
                 'app_client': 'consumer_web',
                 'lat': curLat,
                 'lon': curLng,
-                'device_id': 'basketbuddy_' + Date.now(),
+                'device_id': deviceId,
                 'platform': 'mobile_web'
               }
             }).then(function(r) {
@@ -194,22 +195,28 @@ export default function WebViewScreen() {
               // Keep scanning localStorage for address data every tick
               extractAddrFromStorage();
 
-              var token = localStorage.getItem('authKey') || localStorage.getItem('token') || localStorage.getItem('auth_token');
-              if (token && !tokenFound) {
+              var accessToken = '';
+              try {
+                var authRaw = localStorage.getItem('auth');
+                if (authRaw) { var authObj = JSON.parse(authRaw); accessToken = authObj.accessToken || ''; }
+              } catch (e) {}
+              if (!accessToken) accessToken = localStorage.getItem('token') || localStorage.getItem('auth_token') || '';
+              var deviceId = localStorage.getItem('deviceId') || 'basketbuddy_' + Date.now();
+              if (accessToken && !tokenFound) {
                 tokenFound = true;
                 // Try to fetch addresses from Blinkit /v4/address API
                 var storedLat = localStorage.getItem('selected_lat') || localStorage.getItem('latitude') || '';
                 var storedLng = localStorage.getItem('selected_lng') || localStorage.getItem('longitude') || '';
-                tryFetchAddresses(token, storedLat, storedLng);
+                tryFetchAddresses(accessToken, storedLat, storedLng, deviceId);
               }
 
               // Send SUCCESS once we have a token. If we already found an
               // address OR after 10 seconds of polling, close.
-              if (token && !successSent && (addrFound || checkCount >= 10)) {
+              if (accessToken && !successSent && (addrFound || checkCount >= 10)) {
                 successSent = true;
                 clearInterval(checkToken);
                 window.ReactNativeWebView.postMessage(JSON.stringify({
-                  type: 'SUCCESS', token: token, cookie: document.cookie, address: null
+                  type: 'SUCCESS', token: accessToken, cookie: document.cookie, address: null
                 }));
               }
             } catch (e) {}
