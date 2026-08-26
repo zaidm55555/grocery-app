@@ -23,6 +23,7 @@ const BRIDGE_SCRIPT = `
   window.__blStoredAddrId = null;
   window.__blStoredLat = null;
   window.__blStoredLng = null;
+  window.__blAddrApiFetched = false;
 
   window.__blApplyCookies = function(cookieStr) {
     try {
@@ -59,7 +60,9 @@ const BRIDGE_SCRIPT = `
         }
       } catch (e2) {}
       // Call Blinkit's /v4/address API to set server-side session address.
-      if (addrId) {
+      // Only fetch once — no need to spam the API.
+      if (addrId && !window.__blAddrApiFetched) {
+        window.__blAddrApiFetched = true;
         var bLat = localStorage.getItem('selected_lat') || lat || '12.9716';
         var bLng = localStorage.getItem('selected_lng') || lng || '77.5946';
         var accessToken = '';
@@ -175,8 +178,10 @@ const BRIDGE_SCRIPT = `
   window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BL_BRIDGE_READY' }));
   // Auto-fetch addresses via /v4/address if logged in but no address stored.
   // This handles the first-login case where localStorage has no address yet.
+  // Only runs once.
   (function() {
     try {
+      if (window.__blAddrApiFetched) return;
       var authRaw = localStorage.getItem('auth');
       if (!authRaw) return;
       var authObj = JSON.parse(authRaw);
@@ -188,6 +193,7 @@ const BRIDGE_SCRIPT = `
       var lat = '12.9716', lng = '77.5946';
       if (locRaw) { try { var loc = JSON.parse(locRaw); lat = loc.coords.lat || lat; lng = loc.coords.lon || lng; } catch (e) {} }
       var deviceId = localStorage.getItem('deviceId') || '';
+      window.__blAddrApiFetched = true;
       var url = 'https://blinkit.com/v4/address?cur_lat=' + lat + '&cur_lon=' + lng;
       fetch(url, {
         method: 'GET',
