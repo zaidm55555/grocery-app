@@ -428,6 +428,9 @@ export const api = {
     const platforms: Platform[] = ['blinkit', 'swiggy'];
     const runStart = Date.now();
 
+    const simulateNoAddress = (await AsyncStorage.getItem('@blinkit_simulate_no_address')) === '1';
+    console.log(`[calculateCart] simulateNoAddress=${simulateNoAddress}, raw=${await AsyncStorage.getItem('@blinkit_simulate_no_address')}`);
+
     // Load tokens and location in parallel
     const [blinkitToken, swiggyToken, storedLocation, bLat, bLng] = await Promise.all([
       storage.getToken('blinkit'),
@@ -439,7 +442,7 @@ export const api = {
     let location = storedLocation;
     // Blinkit store-level fees/surge are keyed to the delivery address's own
     // coordinates — prefer the ones captured with the saved address.
-    if (bLat && bLng) {
+    if (bLat && bLng && !simulateNoAddress) {
       location = {
         latitude: parseFloat(bLat),
         longitude: parseFloat(bLng),
@@ -492,31 +495,40 @@ export const api = {
               deviceId = 'web-' + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
               await AsyncStorage.setItem('@blinkit_device_id', deviceId);
             }
+            if (simulateNoAddress) {
+              deviceId = 'sim-' + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
+              console.log(`[Blinkit API Carts] SIMULATE: using fresh deviceId=${deviceId}`);
+            }
             // The site's own cookie jar decides its fee arm — prefer the
             // device id embedded in those cookies over ours.
-            const siteCookies = (await AsyncStorage.getItem('@blinkit_cookies')) || '';
+            const siteCookies = simulateNoAddress ? '' : ((await AsyncStorage.getItem('@blinkit_cookies')) || '');
             const devCookieM = siteCookies.match(/(?:^|;\s*)(?:device_id|deviceId)=([^;]+)/);
             if (devCookieM) deviceId = decodeURIComponent(devCookieM[1]);
             const BLINKIT_APP_VERSION = '52434333';
 
             // The saved address personalizes the bill (fee cohorts, delivery
             // constructs) — the reference extension always sends it when known.
-            const addrRaw = await AsyncStorage.getItem('@blinkit_address_id');
+            const addrRaw = simulateNoAddress ? '' : (await AsyncStorage.getItem('@blinkit_address_id'));
             const addrNum = addrRaw ? Number(addrRaw) : NaN;
 
             const cartsBody = JSON.stringify({
               items: slimItems,
-              ...(isFinite(addrNum) && addrNum ? { address_id: addrNum } : {}),
+              ...(isFinite(addrNum) && addrNum && !simulateNoAddress ? { address_id: addrNum } : {}),
               promo_codes: ['']
             });
 
             // Preferred path: run INSIDE the hidden blinkit.com page so the
             // user's full cookie jar (HttpOnly included) prices the bill under
             // their real experiment arm. Falls back to the direct call below.
+            // When simulateNoAddress is on, skip the bridge entirely so the
+            // server sees no address context (replicates the APK no-address bug).
             let resJson: any = null;
             let billStatus = 0;
             const blPostStart = Date.now();
-            const bridged = await requestViaBlinkitBridge(
+            if (simulateNoAddress) {
+              console.log(`[Blinkit API Carts] SIMULATE NO ADDRESS — skipping bridge, will use bare fetch`);
+            }
+            const bridged = simulateNoAddress ? null : await requestViaBlinkitBridge(
               'https://blinkit.com/v5/carts',
               'POST',
               cartsBody,
@@ -655,7 +667,7 @@ export const api = {
                 headers: {
                   'Accept': 'application/json, text/plain, */*',
                   'app_client': 'consumer_web',
-                  'auth_key': blinkitToken,
+                  'auth_key': simulateNoAddress ? '' : blinkitToken,
                   'lat': String(lat),
                   'lon': String(lng),
                   'Content-Type': 'application/json',
@@ -668,7 +680,7 @@ export const api = {
                   'appversion': BLINKIT_APP_VERSION,
                   'app_version': BLINKIT_APP_VERSION,
                   'x-app-version': BLINKIT_APP_VERSION,
-                  ...(siteCookies ? { 'Cookie': siteCookies } : {})
+                  ...(!simulateNoAddress && siteCookies ? { 'Cookie': siteCookies } : {})
                 },
                 body: cartsBody
               }, 6000);
@@ -676,8 +688,12 @@ export const api = {
               if (response.ok) {
                 billStatus = response.status;
                 resJson = await response.json();
+                if (simulateNoAddress) {
+                  const cd2 = resJson?.cart_data || resJson?.data || resJson;
+                  console.log(`[Blinkit API Carts] SIMULATE response bill: ${JSON.stringify(cd2?.bill_details || cd2?.additional_charges || {}).slice(0, 500)}`);
+                }
               } else {
-                console.warn(`[Blinkit API Carts] rejected: ${response.status}`);
+                console.warn(`[Blinkit API Carts] rejected: ${response.status} (simulateNoAddress=${simulateNoAddress})`);
               }
             }
 

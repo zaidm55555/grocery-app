@@ -41,6 +41,21 @@ export function isBlinkitBridgeReady(): boolean {
 
 let pendingCookies: string | null = null;
 
+// Reload callback registered by the bridge WebView component.
+let reloadCallback: (() => void) | null = null;
+
+export function registerBlinkitBridgeReload(fn: () => void): void {
+  reloadCallback = fn;
+}
+
+export function unregisterBlinkitBridgeReload(): void {
+  reloadCallback = null;
+}
+
+export function reloadBlinkitBridge(): void {
+  if (reloadCallback) reloadCallback();
+}
+
 // Full values of interesting localStorage keys relayed by the page
 // ('cart' holds the persistent cart object incl. its id).
 const pageStorage: Record<string, string> = {};

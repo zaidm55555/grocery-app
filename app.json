@@ -1,14 +1,14 @@
 {
   "expo": {
-    "name": "grocey-app",
-    "slug": "grocey-app",
+    "name": "BasketBuddy",
+    "slug": "basket-buddy",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "groceyapp",
+    "scheme": "basketbuddy",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "icon": "./assets/images/icon.png"
     },
     "android": {
       "adaptiveIcon": {
@@ -17,6 +17,7 @@
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
+      "package": "com.basketbuddy.app",
       "predictiveBackGestureEnabled": false
     },
     "web": {
@@ -28,7 +29,7 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#208AEF",
+          "backgroundColor": "#0F0F12",
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 76
         }

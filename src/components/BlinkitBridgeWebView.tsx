@@ -1,22 +1,28 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { WebView } from 'react-native-webview';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   registerBlinkitInjector,
   unregisterBlinkitInjector,
   handleBlinkitBridgeMessage,
   takeBlinkitBridgeCookies,
+  registerBlinkitBridgeReload,
+  unregisterBlinkitBridgeReload,
 } from '../services/blinkitBridge';
 
-// Runs inside the persistent blinkit.com page: executes same-origin,
-// credentialed API calls on behalf of the app. The page's full cookie jar
-// (HttpOnly ones included, invisible to JS) is what the site's own frontend
-// sends — so /v5/carts bills under the user's real experiment arm instead of
-// the control arm a bare RN fetch gets.
 const BRIDGE_SCRIPT = `
 (function() {
   if (window.__blBridgeInstalled) return;
   window.__blBridgeInstalled = true;
+
+  // Stored delivery address — set by React Native after reading AsyncStorage.
+  // __blHandleRequest uses this to force-inject address_id into /v5/carts
+  // request bodies so the server always sees the user's address regardless
+  // of the SPA's internal state.
+  window.__blStoredAddrId = null;
+  window.__blStoredLat = null;
+  window.__blStoredLng = null;
 
   window.__blApplyCookies = function(cookieStr) {
     try {
@@ -30,6 +36,58 @@ const BRIDGE_SCRIPT = `
     } catch (e) {}
   };
 
+  window.__blSetDeliveryContext = function(addrId, lat, lng) {
+    try {
+      window.__blStoredAddrId = addrId || null;
+      window.__blStoredLat = lat || null;
+      window.__blStoredLng = lng || null;
+      if (addrId) localStorage.setItem('selected_address_id', String(addrId));
+      if (lat) localStorage.setItem('selected_lat', String(lat));
+      if (lng) localStorage.setItem('selected_lng', String(lng));
+      // Also try to set Blinkit SPA's own address storage keys
+      try {
+        var addrKey = 'addresses_data';
+        var existing = localStorage.getItem(addrKey);
+        if (existing && addrId) {
+          var parsed = JSON.parse(existing);
+          if (parsed && parsed.addresses && Array.isArray(parsed.addresses.addresses_data)) {
+            var match = parsed.addresses.addresses_data.find(function(a) { return String(a.id) === String(addrId); });
+            if (match) {
+              localStorage.setItem('selected_address_id', String(addrId));
+            }
+          }
+        }
+      } catch (e2) {}
+      // Call Blinkit's internal address select API so the SERVER-STATE
+      // session also knows the address — localStorage alone isn't enough.
+      if (addrId) {
+        fetch('https://blinkit.com/v2/address/select', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify({ address_id: Number(addrId) })
+        }).catch(function() {});
+        // Also try the v1 variant
+        fetch('https://blinkit.com/v1/address/select', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify({ id: Number(addrId) })
+        }).catch(function() {});
+        // Also try setting address via the newer endpoint
+        fetch('https://blinkit.com/v1/addresses/select', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify({ address_id: Number(addrId) })
+        }).catch(function() {});
+      }
+      window.ReactNativeWebView.postMessage(JSON.stringify({
+        type: 'BL_ADDR_SET', addrId: addrId, lat: lat, lng: lng
+      }));
+    } catch (e) {}
+  };
+
   window.__blHandleRequest = function(id, url, method, body, extraHeadersJson) {
     var opts = {
       method: method || 'GET',
@@ -40,15 +98,10 @@ const BRIDGE_SCRIPT = `
       var extra = JSON.parse(extraHeadersJson || '{}');
       for (var k in extra) { if (extra[k]) opts.headers[k] = extra[k]; }
     } catch (e2) {}
-    // The SPA keeps its auth token in localStorage — attach it like the
-    // site's own calls do.
     try {
       var ak = localStorage.getItem('authKey');
       if (ak && !opts.headers['auth_key']) opts.headers['auth_key'] = ak;
     } catch (e3) {}
-    // The site's own device id (localStorage) decides the fee-experiment
-    // arm — never override it with a caller-supplied synthetic one. Every
-    // case variant the gateway whitelists carries the SAME true id.
     try {
       var dv = localStorage.getItem('deviceId');
       if (dv) {
@@ -60,6 +113,18 @@ const BRIDGE_SCRIPT = `
     } catch (e11) {}
     if (body) {
       opts.headers['Content-Type'] = 'application/json';
+      // Force-inject address_id into /v5/carts POST bodies. The SPA may
+      // not have an address selected in its internal state, but our stored
+      // address ensures the server always prices under the correct zone.
+      if (window.__blStoredAddrId && /\\/v5\\/carts/.test(url) && method === 'POST') {
+        try {
+          var b = JSON.parse(body);
+          if (!b.address_id) {
+            b.address_id = Number(window.__blStoredAddrId);
+            body = JSON.stringify(b);
+          }
+        } catch (e4) {}
+      }
       opts.body = body;
     }
     fetch(url, opts).then(function(res) {
@@ -75,8 +140,6 @@ const BRIDGE_SCRIPT = `
     });
   };
   window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BL_BRIDGE_READY' }));
-  // Relay the persistent cart object in full — its id is what the site
-  // prices via PUT /v5/carts/{id}.
   try {
     var storageKeys = ['cart', 'checkout'];
     for (var si = 0; si < storageKeys.length; si++) {
@@ -88,8 +151,6 @@ const BRIDGE_SCRIPT = `
       }
     }
   } catch (e10) {}
-  // Diagnostic: expose every localStorage key so nothing identity/cart
-  // related hides behind a filter.
   try {
     var diag = [];
     for (var i = 0; i < localStorage.length && diag.length < 60; i++) {
@@ -103,8 +164,22 @@ const BRIDGE_SCRIPT = `
 })();
 `;
 
-export default function BlinkitBridgeWebView() {
+export interface BlinkitBridgeHandle {
+  reload: () => void;
+  injectJS: (js: string) => void;
+}
+
+const BlinkitBridgeWebView = forwardRef<BlinkitBridgeHandle>((_, ref) => {
   const webViewRef = useRef<WebView>(null);
+
+  useImperativeHandle(ref, () => ({
+    reload: () => {
+      webViewRef.current?.reload();
+    },
+    injectJS: (js: string) => {
+      webViewRef.current?.injectJavaScript(js);
+    },
+  }));
 
   useEffect(() => {
     const injector = (id: number, url: string, method: string, body: string, extraHeaders: string) => {
@@ -113,12 +188,59 @@ export default function BlinkitBridgeWebView() {
       );
     };
     registerBlinkitInjector(injector);
-    return () => unregisterBlinkitInjector(injector);
+    registerBlinkitBridgeReload(() => {
+      webViewRef.current?.reload();
+    });
+    return () => {
+      unregisterBlinkitInjector(injector);
+      unregisterBlinkitBridgeReload();
+    };
+  }, []);
+
+  // Inject stored delivery address into the bridge page on mount AND
+  // whenever the tab is focused (useFocusEffect won't work here since
+  // this component is outside the tab navigator). Polling covers the
+  // case where the user sets an address in Profile AFTER the bridge
+  // was already loaded.
+  useEffect(() => {
+    let mounted = true;
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+    const injectAddress = async () => {
+      try {
+        const [addrId, bLat, bLng] = await Promise.all([
+          AsyncStorage.getItem('@blinkit_address_id'),
+          AsyncStorage.getItem('@blinkit_lat'),
+          AsyncStorage.getItem('@blinkit_lng'),
+        ]);
+        if (!mounted) return;
+        if (addrId || (bLat && bLng)) {
+          webViewRef.current?.injectJavaScript(
+            `window.__blSetDeliveryContext(${JSON.stringify(addrId || '')}, ${JSON.stringify(bLat || '')}, ${JSON.stringify(bLng || '')}); true;`
+          );
+          console.log(`[BlinkitBridge] injected address context: addr=${addrId}, lat=${bLat}, lng=${bLng}`);
+        }
+      } catch (e) {
+        console.warn('[BlinkitBridge] failed to inject address context:', e);
+      }
+    };
+
+    // Initial injection with delay for page load
+    const initTimer = setTimeout(injectAddress, 2000);
+
+    // Re-inject every 2s so any address change in Profile tab gets picked up
+    // quickly after login.
+    pollTimer = setInterval(injectAddress, 2000);
+
+    return () => {
+      mounted = false;
+      clearTimeout(initTimer);
+      if (pollTimer) clearInterval(pollTimer);
+    };
   }, []);
 
   const handleMessage = (event: any) => {
     const payload = String(event.nativeEvent.data || '');
-    // Replay captured linker cookies into this jar once the page is up.
     const cookieStr = takeBlinkitBridgeCookies();
     if (cookieStr) {
       webViewRef.current?.injectJavaScript(
@@ -130,13 +252,13 @@ export default function BlinkitBridgeWebView() {
       if (msg?.type === 'BL_DIAG') {
         console.log(`[BlinkitBridge] page identity: ${JSON.stringify(msg.entries)} cookie: ${msg.cookie}`);
       }
+      if (msg?.type === 'BL_ADDR_SET') {
+        console.log(`[BlinkitBridge] address context confirmed in page: addr=${msg.addrId}, lat=${msg.lat}, lng=${msg.lng}`);
+      }
     } catch {}
     handleBlinkitBridgeMessage(payload);
   };
 
-  // Off-screen rather than zero-size: Android can skip rendering (and JS) in
-  // a truly 0x0 WebView. Shares Android's app-global WebView cookie store
-  // with the linking browser via sharedCookiesEnabled.
   return (
     <View style={styles.hidden} pointerEvents="none">
       <WebView
@@ -153,7 +275,10 @@ export default function BlinkitBridgeWebView() {
       />
     </View>
   );
-}
+});
+
+BlinkitBridgeWebView.displayName = 'BlinkitBridgeWebView';
+export default BlinkitBridgeWebView;
 
 const styles = StyleSheet.create({
   hidden: {

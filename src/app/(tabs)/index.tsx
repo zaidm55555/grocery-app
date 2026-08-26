@@ -366,7 +366,7 @@ export default function SearchScreen() {
           <ShoppingBag size={22} color="#FFF" />
         </LinearGradient>
         <View style={{ flex: 1 }}>
-          <Text style={styles.headerTitle}>Grocery Optimizer</Text>
+          <Text style={styles.headerTitle}>BasketBuddy</Text>
           <Text style={styles.headerSubtitle} numberOfLines={1}>
             Blinkit · Instamart · live checkout bills
           </Text>

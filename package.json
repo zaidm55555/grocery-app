@@ -1,5 +1,5 @@
 {
-  "name": "grocey-app",
+  "name": "basket-buddy",
   "main": "expo-router/entry",
   "version": "1.0.0",
   "dependencies": {
