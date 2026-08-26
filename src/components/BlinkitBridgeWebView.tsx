@@ -106,18 +106,24 @@ const BRIDGE_SCRIPT = `
           credentials: 'include',
           headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
           body: JSON.stringify({ address_id: Number(addrId) })
+        }).then(function(r) {
+          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BL_ADDR_DEBUG', source: 'v2/select', status: r.status }));
         }).catch(function() {});
         fetch('https://blinkit.com/v1/address/select', {
           method: 'POST',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
           body: JSON.stringify({ id: Number(addrId) })
+        }).then(function(r) {
+          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BL_ADDR_DEBUG', source: 'v1/select', status: r.status }));
         }).catch(function() {});
         fetch('https://blinkit.com/v1/addresses/select', {
           method: 'POST',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
           body: JSON.stringify({ address_id: Number(addrId) })
+        }).then(function(r) {
+          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BL_ADDR_DEBUG', source: 'v1s/select', status: r.status }));
         }).catch(function() {});
       }
       window.ReactNativeWebView.postMessage(JSON.stringify({
@@ -154,12 +160,14 @@ const BRIDGE_SCRIPT = `
       // Force-inject address_id into /v5/carts POST bodies. The SPA may
       // not have an address selected in its internal state, but our stored
       // address ensures the server always prices under the correct zone.
-      if (window.__blStoredAddrId && /\\/v5\\/carts/.test(url) && method === 'POST') {
+      if (/\/v5\/carts/.test(url) && method === 'POST') {
         try {
           var b = JSON.parse(body);
-          if (!b.address_id) {
+          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BL_CART_REQ', url: url, addressId: b.address_id || null, storedAddrId: window.__blStoredAddrId || null, items: (b.items || []).length }));
+          if (!b.address_id && window.__blStoredAddrId) {
             b.address_id = Number(window.__blStoredAddrId);
             body = JSON.stringify(b);
+            window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BL_CART_REQ', injected: true, addressId: b.address_id }));
           }
         } catch (e4) {}
       }
@@ -229,6 +237,25 @@ const BRIDGE_SCRIPT = `
             if (aId) { window.__blStoredAddrId = String(aId); localStorage.setItem('selected_address_id', String(aId)); }
             if (aLat && aLng) { window.__blStoredLat = String(aLat); window.__blStoredLng = String(aLng); localStorage.setItem('selected_lat', String(aLat)); localStorage.setItem('selected_lng', String(aLng)); }
             window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BL_ADDR_RESOLVED', addressId: String(aId), lat: String(aLat), lng: String(aLng) }));
+            // CRITICAL: also call address SELECT APIs so the server session
+            // knows which address to use for delivery pricing.
+            fetch('https://blinkit.com/v2/address/select', {
+              method: 'POST', credentials: 'include',
+              headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+              body: JSON.stringify({ address_id: Number(aId) })
+            }).then(function(r) {
+              window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BL_ADDR_DEBUG', source: 'v2/select/auto', status: r.status }));
+            }).catch(function() {});
+            fetch('https://blinkit.com/v1/address/select', {
+              method: 'POST', credentials: 'include',
+              headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+              body: JSON.stringify({ id: Number(aId) })
+            }).catch(function() {});
+            fetch('https://blinkit.com/v1/addresses/select', {
+              method: 'POST', credentials: 'include',
+              headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+              body: JSON.stringify({ address_id: Number(aId) })
+            }).catch(function() {});
           }
         } catch (e) {}
       }).catch(function() {});
@@ -374,6 +401,9 @@ const BlinkitBridgeWebView = forwardRef<BlinkitBridgeHandle>((_, ref) => {
         console.log(`[BlinkitBridge] address resolved from API: addr=${msg.addressId}, lat=${msg.lat}, lng=${msg.lng}`);
         if (msg.addressId) AsyncStorage.setItem('@blinkit_address_id', msg.addressId);
         if (msg.lat && msg.lng) { AsyncStorage.setItem('@blinkit_lat', msg.lat); AsyncStorage.setItem('@blinkit_lng', msg.lng); }
+      }
+      if (msg?.type === 'BL_CART_REQ') {
+        console.log(`[BlinkitBridge] cart request: address_id=${msg.addressId}, stored=${msg.storedAddrId}, injected=${msg.injected || false}, items=${msg.items}`);
       }
     } catch {}
     handleBlinkitBridgeMessage(payload);
