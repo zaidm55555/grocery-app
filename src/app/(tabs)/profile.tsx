@@ -1,12 +1,10 @@
 import React, { useState, useCallback } from 'react';
 import { StyleSheet, View, Text, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, Alert } from 'react-native';
-import { useFocusEffect, useNavigation, useRouter } from 'expo-router';
-import { MapPin, Link2, Link2Off, Compass, Trash2, Key, Info, RotateCw } from 'lucide-react-native';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { MapPin, Link2, Link2Off, Compass, Trash2, Key, Info } from 'lucide-react-native';
 import * as Location from 'expo-location';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { storage, Platform, LocationData } from '../../services/storage';
 import { colors, fonts, platformThemes } from '../../constants/theme';
-import { reloadBlinkitBridge, clearBlinkitBridgeLocalStorage } from '../../services/blinkitBridge';
 
 export default function ProfileScreen() {
   const router = useRouter();
@@ -31,15 +29,11 @@ export default function ProfileScreen() {
   useFocusEffect(
     useCallback(() => {
       loadData();
+      // Re-check after a short delay to catch tokens saved during navigation transitions
+      const timer = setTimeout(loadData, 500);
+      return () => clearTimeout(timer);
     }, [])
   );
-
-  // Also reload on navigation focus to catch returns from WebView screens
-  const navigation = useNavigation();
-  React.useEffect(() => {
-    const unsub = navigation.addListener('focus', () => { loadData(); });
-    return unsub;
-  }, [navigation]);
 
   const handleLink = (platform: Platform) => {
     router.push({
@@ -133,48 +127,6 @@ export default function ProfileScreen() {
           onPress: async () => {
             await storage.clearAll();
             loadData();
-          }
-        }
-      ]
-    );
-  };
-
-  const handleRefreshBlinkit = () => {
-    Alert.alert(
-      'Refresh Blinkit Session',
-      'This will reload the hidden Blinkit browser session and re-sync your delivery address.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Refresh',
-          onPress: async () => {
-            reloadBlinkitBridge();
-            setTimeout(() => loadData(), 2500);
-          }
-        }
-      ]
-    );
-  };
-
-  const handleClearBlinkitSession = () => {
-    Alert.alert(
-      'Clear Blinkit Session (Full Reset)',
-      'Clear all Blinkit data and AsyncStorage. You will need to log in again.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Clear Everything',
-          style: 'destructive',
-          onPress: async () => {
-            await Promise.all([
-              AsyncStorage.removeItem('@blinkit_address_id'),
-              AsyncStorage.removeItem('@blinkit_lat'),
-              AsyncStorage.removeItem('@blinkit_lng'),
-              storage.removeToken('blinkit'),
-            ]);
-            clearBlinkitBridgeLocalStorage();
-            loadData();
-            Alert.alert('Cleared', 'All Blinkit session data wiped. Tap "Link Blinkit Account" to log in fresh.');
           }
         }
       ]
@@ -296,18 +248,6 @@ export default function ProfileScreen() {
             <Link2 size={16} color="#FFF" style={styles.btnIcon} />
             <Text style={styles.buttonText}>Login to Link Blinkit</Text>
           </TouchableOpacity>
-        )}
-        {tokens.blinkit && (
-          <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
-            <TouchableOpacity style={[styles.linkButton, { flex: 1 }]} onPress={handleRefreshBlinkit}>
-              <RotateCw size={16} color="#FFF" style={styles.btnIcon} />
-              <Text style={styles.buttonText}>Refresh</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[styles.unlinkButton, { flex: 1, justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(239,68,68,0.35)', borderRadius: 8, height: 40 }]} onPress={handleClearBlinkitSession}>
-              <Trash2 size={16} color="#EF4444" style={styles.btnIcon} />
-              <Text style={styles.unlinkText}>Clear Session</Text>
-            </TouchableOpacity>
-          </View>
         )}
       </View>
 
