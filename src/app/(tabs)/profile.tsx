@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import { StyleSheet, View, Text, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, Alert } from 'react-native';
-import { useFocusEffect, useRouter } from 'expo-router';
+import { useFocusEffect, useNavigation, useRouter } from 'expo-router';
 import { MapPin, Link2, Link2Off, Compass, Trash2, Key, Info, RotateCw } from 'lucide-react-native';
 import * as Location from 'expo-location';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -16,28 +16,16 @@ export default function ProfileScreen() {
   });
   const [location, setLocation] = useState<LocationData | null>(null);
   const [locLoading, setLocLoading] = useState(false);
-  const [blinkitAddr, setBlinkitAddr] = useState<{ id: string; lat: string; lng: string } | null>(null);
 
   const loadData = async () => {
     const blinkitToken = await storage.getToken('blinkit');
     const swiggyToken = await storage.getToken('swiggy');
     const userLoc = await storage.getLocation();
-    const [addrId, bLat, bLng] = await Promise.all([
-      AsyncStorage.getItem('@blinkit_address_id'),
-      AsyncStorage.getItem('@blinkit_lat'),
-      AsyncStorage.getItem('@blinkit_lng'),
-    ]);
-
     setTokens({
       blinkit: blinkitToken,
       swiggy: swiggyToken
     });
     setLocation(userLoc);
-    if (addrId || (bLat && bLng)) {
-      setBlinkitAddr({ id: addrId || '', lat: bLat || '', lng: bLng || '' });
-    } else {
-      setBlinkitAddr(null);
-    }
   };
 
   useFocusEffect(
@@ -45,6 +33,13 @@ export default function ProfileScreen() {
       loadData();
     }, [])
   );
+
+  // Also reload on navigation focus to catch returns from WebView screens
+  const navigation = useNavigation();
+  React.useEffect(() => {
+    const unsub = navigation.addListener('focus', () => { loadData(); });
+    return unsub;
+  }, [navigation]);
 
   const handleLink = (platform: Platform) => {
     router.push({
@@ -302,39 +297,19 @@ export default function ProfileScreen() {
             <Text style={styles.buttonText}>Login to Link Blinkit</Text>
           </TouchableOpacity>
         )}
-      </View>
-
-      {/* Blinkit Delivery Address Info */}
-      {tokens.blinkit && (
-        <View style={[styles.card, styles.platformCard]}>
-          <View style={styles.platformHeader}>
-            <View style={styles.row}>
-              <View style={[styles.colorBadge, { backgroundColor: platformThemes.blinkit.color }]} />
-              <Text style={styles.platformName}>Blinkit Delivery Address</Text>
-            </View>
+        {tokens.blinkit && (
+          <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+            <TouchableOpacity style={[styles.linkButton, { flex: 1 }]} onPress={handleRefreshBlinkit}>
+              <RotateCw size={16} color="#FFF" style={styles.btnIcon} />
+              <Text style={styles.buttonText}>Refresh</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.unlinkButton, { flex: 1, justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(239,68,68,0.35)', borderRadius: 8, height: 40 }]} onPress={handleClearBlinkitSession}>
+              <Trash2 size={16} color="#EF4444" style={styles.btnIcon} />
+              <Text style={styles.unlinkText}>Clear Session</Text>
+            </TouchableOpacity>
           </View>
-          {blinkitAddr ? (
-            <View style={styles.tokenContainer}>
-              <Text style={styles.tokenLabel}>Address ID: {blinkitAddr.id || 'Not captured'}</Text>
-              <Text style={styles.coordText}>
-                Lat: {blinkitAddr.lat || '—'} | Lng: {blinkitAddr.lng || '—'}
-              </Text>
-            </View>
-          ) : (
-            <Text style={styles.cardDescription}>
-              No delivery address captured. Open the Blinkit login WebView, select an address, then the app will auto-capture it.
-            </Text>
-          )}
-          <TouchableOpacity style={[styles.linkButton, { marginTop: 10 }]} onPress={handleRefreshBlinkit}>
-            <RotateCw size={16} color="#FFF" style={styles.btnIcon} />
-            <Text style={styles.buttonText}>Refresh Blinkit Session</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={[styles.unlinkButton, { marginTop: 8 }]} onPress={handleClearBlinkitSession}>
-            <Trash2 size={16} color="#EF4444" style={styles.btnIcon} />
-            <Text style={styles.unlinkText}>Clear Blinkit Session (Full Reset)</Text>
-          </TouchableOpacity>
-        </View>
-      )}
+        )}
+      </View>
 
       {/* Swiggy Instamart */}
       <View style={[styles.card, styles.platformCard]}>
@@ -631,8 +606,5 @@ const styles = StyleSheet.create({
     color: '#EF4444',
     fontSize: 13,
     fontWeight: '600',
-  },
-  addrSearchContainer: {
-    marginTop: 4,
   },
 });
