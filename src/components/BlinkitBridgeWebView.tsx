@@ -82,13 +82,7 @@ const BRIDGE_SCRIPT = `
       if (addrId) {
         var bLat = localStorage.getItem('selected_lat') || lat || '12.9716';
         var bLng = localStorage.getItem('selected_lng') || lng || '77.5946';
-        var accessToken = window.__blGetAccessToken();
-        var deviceId = localStorage.getItem('deviceId') || '';
-        var authKey = localStorage.getItem('authKey') || '';
-        var selH = { 'Content-Type': 'application/json', 'Accept': 'application/json', 'access_token': accessToken, 'auth_key': authKey, 'app_client': 'consumer_web', 'lat': bLat, 'lon': bLng, 'device_id': deviceId, 'platform': 'mobile_web' };
-        fetch('https://blinkit.com/v2/address/select', { method: 'POST', credentials: 'include', headers: selH, body: JSON.stringify({ address_id: Number(addrId) }) }).then(function() {}).catch(function() {});
-        fetch('https://blinkit.com/v1/address/select', { method: 'POST', credentials: 'include', headers: selH, body: JSON.stringify({ id: Number(addrId) }) }).then(function() {}).catch(function() {});
-        fetch('https://blinkit.com/v1/addresses/select', { method: 'POST', credentials: 'include', headers: selH, body: JSON.stringify({ address_id: Number(addrId) }) }).then(function() {}).catch(function() {});
+        localStorage.setItem('selected_address_id', String(addrId));
       }
     } catch (e) {}
   };
