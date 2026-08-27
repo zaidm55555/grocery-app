@@ -1,5 +1,5 @@
-import React, { useState, useCallback } from 'react';
-import { StyleSheet, View, Text, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, Alert } from 'react-native';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { StyleSheet, View, Text, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, Alert, AppState } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { MapPin, Link2, Link2Off, Compass, Trash2, Key, Info } from 'lucide-react-native';
 import * as Location from 'expo-location';
@@ -29,11 +29,20 @@ export default function ProfileScreen() {
   useFocusEffect(
     useCallback(() => {
       loadData();
-      // Re-check after a short delay to catch tokens saved during navigation transitions
-      const timer = setTimeout(loadData, 500);
-      return () => clearTimeout(timer);
     }, [])
   );
+
+  // Reload when app comes back to foreground (catches async token saves from bridges)
+  const appState = useRef(AppState.currentState);
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (nextState) => {
+      if (appState.current.match(/inactive|background/) && nextState === 'active') {
+        loadData();
+      }
+      appState.current = nextState;
+    });
+    return () => sub.remove();
+  }, []);
 
   const handleLink = (platform: Platform) => {
     router.push({
