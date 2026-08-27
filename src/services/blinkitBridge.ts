@@ -105,7 +105,6 @@ function dispatch(entry: QueuedRequest): boolean {
 export function notifyBlinkitBridgeReady(): void {
   if (ready) return;
   ready = true;
-  console.log(`[BlinkitBridge] page ready — flushing ${queue.length} queued request(s)`);
   while (queue.length > 0) {
     const entry = queue.shift()!;
     dispatch(entry);
@@ -150,7 +149,6 @@ export async function requestViaBlinkitBridge(
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
       pending.delete(id);
-      console.warn(`[BlinkitBridge] request timed out (${method} ${url})`);
       resolve(null);
     }, REQUEST_TIMEOUT_MS);
     pending.set(id, { resolve, timer });
@@ -163,7 +161,6 @@ export async function requestViaBlinkitBridge(
         resolve(null);
       }
     } else {
-      console.log(`[BlinkitBridge] page not ready — queuing ${method} ${url}`);
       queue.push(entry);
     }
   });

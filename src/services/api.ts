@@ -233,14 +233,12 @@ export const api = {
         body: JSON.stringify({})
       });
 
-      console.log(`[Blinkit API Search] status: ${response.status}`);
       if (!response.ok) {
         throw new Error(`Blinkit API error: ${response.status}`);
       }
 
       const json = await response.json();
       const parsed = parseBlinkitProducts(json);
-      console.log(`[Blinkit API Search] parsed items: ${parsed.length}, sample product:`, parsed[0] ? { name: parsed[0].name, price: parsed[0].price, mrp: parsed[0].mrp } : 'none');
 
       return parsed.map((item: any) => ({
         id: `blinkit-${item.productId || Math.random()}`,
@@ -429,7 +427,7 @@ export const api = {
     const runStart = Date.now();
 
     const simulateNoAddress = (await AsyncStorage.getItem('@blinkit_simulate_no_address')) === '1';
-    console.log(`[calculateCart] simulateNoAddress=${simulateNoAddress}, raw=${await AsyncStorage.getItem('@blinkit_simulate_no_address')}`);
+    console.log(`[calculateCart] simulateNoAddress=${simulateNoAddress}`);
 
     // Load tokens and location in parallel
     const [blinkitToken, swiggyToken, storedLocation, bLat, bLng] = await Promise.all([
@@ -478,7 +476,7 @@ export const api = {
       let liveBill = false;
 
       if (subtotal > 0 && !forceEstimate) {
-        console.log(`[calculateCart] platform: ${platform}, subtotal: ${subtotal}, tokenFound: ${!!(platform === 'blinkit' ? blinkitToken : swiggyToken)}`);
+        console.log(`[calculateCart] platform: ${platform}, subtotal: ${subtotal}`);
         try {
           if (platform === 'blinkit' && blinkitToken) {
             const slimItems = platformItems.map((ci) => ({
@@ -497,7 +495,6 @@ export const api = {
             }
             if (simulateNoAddress) {
               deviceId = 'sim-' + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
-              console.log(`[Blinkit API Carts] SIMULATE: using fresh deviceId=${deviceId}`);
             }
             // The site's own cookie jar decides its fee arm — prefer the
             // device id embedded in those cookies over ours.
@@ -528,7 +525,6 @@ export const api = {
             let billStatus = 0;
             const blPostStart = Date.now();
             if (simulateNoAddress) {
-              console.log(`[Blinkit API Carts] SIMULATE NO ADDRESS — skipping bridge, will use bare fetch`);
             }
             const bridgeHeaders: Record<string, string> = {
               'app_client': 'consumer_web',
@@ -551,7 +547,6 @@ export const api = {
             // Retry on 429 (rate limited) with backoff — fresh APK installs
             // often hit rate limits because address APIs + cart POST fire together.
             if (bridged && bridged.status === 429) {
-              console.log(`[Blinkit API Carts] bridge 429 — retrying in 2s`);
               await new Promise(r => setTimeout(r, 2000));
               bridged = await requestViaBlinkitBridge(
                 'https://blinkit.com/v5/carts',
@@ -561,7 +556,6 @@ export const api = {
               );
             }
             if (bridged && bridged.status === 429) {
-              console.log(`[Blinkit API Carts] bridge 429 again — retrying in 3s`);
               await new Promise(r => setTimeout(r, 3000));
               bridged = await requestViaBlinkitBridge(
                 'https://blinkit.com/v5/carts',
@@ -576,7 +570,6 @@ export const api = {
                 try { resJson = JSON.parse(bridged.text); } catch {}
               }
             }
-            console.log(`[Blinkit API Carts] bridge status: ${billStatus} (${Date.now() - blPostStart}ms)`);
 
             // The site prices its PERSISTENT cart via PUT /v5/carts/{id} —
             // fresh-cart POSTs land in a different fee cohort than the user's
@@ -593,7 +586,6 @@ export const api = {
               if (pageCartRaw) {
                 try {
                   const pc = JSON.parse(pageCartRaw);
-                  console.log(`[Blinkit API Carts] page cart keys: ${JSON.stringify(Object.keys(pc)).slice(0, 300)}`);
                   cartId = Number(pc?.id ?? pc?.cart_id ?? pc?.cl_id ?? pc?.cartId ?? NaN);
                 } catch {}
               }
@@ -619,20 +611,15 @@ export const api = {
               if (got && got.status === 200) {
                 try {
                   const gj = JSON.parse(got.text);
-                  console.log(`[Blinkit API Carts] GET /v5/carts keys: ${JSON.stringify(Object.keys(gj?.data || gj || {})).slice(0, 400)}`);
                   cartId = Number(
                     gj?.cart_id ?? gj?.data?.cart_id ??
                     gj?.cart_data?.id ?? gj?.data?.cart_data?.id ?? NaN
                   );
                 } catch {}
-              } else {
-                console.warn(`[Blinkit API Carts] GET /v5/carts status: ${got?.status}`);
               }
-              console.log(`[timing] blinkit GET /v5/carts (cartId resolve): ${Date.now() - blGetStart}ms`);
             }
             if (isFinite(cartId) && cartId) {
               await AsyncStorage.setItem('@blinkit_cart_id', String(cartId));
-              console.log(`[Blinkit API Carts] cart id: ${cartId} — following up with PUT`);
               // Mirror the site's own PUT headers exactly: access_token is the
               // URL-decoded gr_1_accessToken cookie, session_uuid stable per
               // install, platform mobile_web.
@@ -668,18 +655,13 @@ export const api = {
                   'x-app-version': BLINKIT_APP_VERSION
                 }
               );
-              console.log(`[timing] blinkit PUT /v5/carts/${cartId}: ${Date.now() - blPutStart}ms (status: ${putRes?.status})`);
               if (putRes && putRes.status === 200) {
                 try {
                   const putJson = JSON.parse(putRes.text);
-                  const pcd = putJson?.cart_data || putJson?.data?.cart_data || {};
-                  console.log(`[Blinkit API Carts] PUT (established cart) bill_details: ${JSON.stringify(pcd.bill_details || {})}`);
-                  console.log(`[Blinkit API Carts] PUT assignment tags: ${JSON.stringify((pcd.assignment_tags || []).map((t: any) => t.construct_tag))}`);
                   resJson = putJson;
                   billStatus = 200;
                 } catch {}
               } else {
-                console.warn(`[Blinkit API Carts] PUT failed (${putRes?.status}) — using POST bill`);
                 if (putRes && (putRes.status === 404 || putRes.status === 410)) {
                   await AsyncStorage.removeItem('@blinkit_cart_id');
                 }
@@ -713,22 +695,11 @@ export const api = {
               if (response.ok) {
                 billStatus = response.status;
                 resJson = await response.json();
-                if (simulateNoAddress) {
-                  const cd2 = resJson?.cart_data || resJson?.data || resJson;
-                  console.log(`[Blinkit API Carts] SIMULATE response bill: ${JSON.stringify(cd2?.bill_details || cd2?.additional_charges || {}).slice(0, 500)}`);
-                }
-              } else {
-                console.warn(`[Blinkit API Carts] rejected: ${response.status} (simulateNoAddress=${simulateNoAddress})`);
               }
             }
 
             if (resJson) {
               const fees = parseBlinkitBill(resJson);
-              // Dev-only: inspect the real Blinkit bill shape.
-              const cd = resJson?.cart_data || resJson?.data || resJson;
-              console.log(`[Blinkit API Carts] status: ${billStatus}, parsed:`, fees);
-              console.log(`[Blinkit API Carts] additional_charges: ${JSON.stringify((cd as any)?.additional_charges || []).slice(0, 800)}`);
-              console.log(`[Blinkit API Carts] bill_details: ${JSON.stringify(cd?.bill_details || cd?.shipments?.[0]?.bill_details)?.slice(0, 1800)}`);
               if (fees.total !== null) {
                 deliveryFee = fees.deliveryFee ?? 0;
                 handlingFee = fees.handlingFee ?? 0;

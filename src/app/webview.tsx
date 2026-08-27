@@ -252,28 +252,21 @@ export default function WebViewScreen() {
     try {
       const data = JSON.parse(event.nativeEvent.data);
       if (data.type === 'DEBUG_COOKIES') {
-        console.log(`[Swiggy WebView Cookies Debug]: ${data.cookies}`);
         return;
       }
       if (data.type === 'BLINKIT_NETLOG') {
-        for (const e of (data.entries || []) as any[]) {
-          console.log(`[Blinkit Site Traffic] ${e.m} ${e.u}\n  headers: ${e.h}\n  body: ${e.b}\n  resp: ${e.r}`);
-        }
         return;
       }
       if (data.type === 'BLINKIT_ADDRESS' && data.addressId) {
-        console.log(`[Blinkit WebView] captured address id: ${data.addressId}`);
         await AsyncStorage.setItem('@blinkit_address_id', String(data.addressId));
         return;
       }
       if (data.type === 'BLINKIT_LATLNG' && data.lat && data.lng) {
-        console.log(`[Blinkit WebView] captured coords: ${data.lat}, ${data.lng}`);
         await AsyncStorage.setItem('@blinkit_lat', String(data.lat));
         await AsyncStorage.setItem('@blinkit_lng', String(data.lng));
         return;
       }
       if (data.type === 'BLINKIT_ADDR_DEBUG') {
-        console.log(`[Blinkit WebView] addr API ${data.url || ''} → status=${data.status || ''} error=${data.error || ''} body=${(data.body || '').slice(0, 500)}`);
         return;
       }
       if (data.type === 'BLINKIT_STORAGE_DUMP') {
@@ -301,17 +294,12 @@ export default function WebViewScreen() {
             if (m) id = m[1];
           }
           if (id) {
-            console.log(`[Blinkit WebView] auto-captured address id ${id} from key "${e.k}"`);
             await AsyncStorage.setItem('@blinkit_address_id', id);
-            // The address record also carries the authoritative delivery
-            // coordinates — store-level fees/surge are keyed to these, not
-            // to any city-center default.
             const latM = raw.match(/"latitude"\s*:\s*([\d.]+)/);
             const lngM = raw.match(/"longitude"\s*:\s*([\d.]+)/);
             if (latM && lngM) {
               await AsyncStorage.setItem('@blinkit_lat', latM[1]);
               await AsyncStorage.setItem('@blinkit_lng', lngM[1]);
-              console.log(`[Blinkit WebView] saved coords ${latM[1]}, ${lngM[1]}`);
             }
             break;
           }
@@ -332,65 +320,12 @@ export default function WebViewScreen() {
           const addrId = String(addr.id ?? addr.address_id ?? '');
           if (addrId && /^\d{2,}$/.test(addrId)) {
             await AsyncStorage.setItem('@blinkit_address_id', addrId);
-            console.log(`[Blinkit WebView] auto-captured address id ${addrId} from API`);
           }
           const lat = addr.latitude ?? addr.lat;
           const lng = addr.longitude ?? addr.lng ?? addr.lon;
           if (lat && lng) {
             await AsyncStorage.setItem('@blinkit_lat', String(lat));
             await AsyncStorage.setItem('@blinkit_lng', String(lng));
-            console.log(`[Blinkit WebView] saved API coords ${lat}, ${lng}`);
-          }
-          // Also try to call Blinkit's address select API from WITHIN
-          // this WebView (which has the same cookies/session as the site)
-          // to set the server-side session address.
-          if (addrId) {
-            // Set server-side session via /v4/address
-            var sLat = String(addr.latitude ?? addr.lat ?? '12.9716');
-            var sLng = String(addr.longitude ?? addr.lng ?? addr.lon ?? '77.5946');
-            fetch('https://blinkit.com/v4/address?cur_lat=' + sLat + '&cur_lon=' + sLng, {
-              method: 'GET',
-              credentials: 'include',
-              headers: {
-                'Accept': 'application/json',
-                'access_token': data.token,
-                'auth_key': 'c761ec3633c22afad934fb17a66385c1c06c5472b4898b866b7306186d0bb477',
-                'app_client': 'consumer_web',
-                'lat': sLat,
-                'lon': sLng,
-                'device_id': 'basketbuddy_' + Date.now(),
-                'platform': 'mobile_web'
-              }
-            }).then(function(r) {
-              console.log(`[Blinkit WebView] v4/address status: ${r.status}`);
-              return r.text();
-            }).then(function(t) {
-              console.log(`[Blinkit WebView] v4/address response: ${(t || '').slice(0, 500)}`);
-            }).catch(function(e) {
-              console.warn(`[Blinkit WebView] v4/address failed: ${e}`);
-            });
-            // Also try address select variants
-            fetch('https://blinkit.com/v2/address/select', {
-              method: 'POST',
-              credentials: 'include',
-              headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'auth_key': data.token },
-              body: JSON.stringify({ address_id: Number(addrId) })
-            }).then(function(r) {
-              console.log(`[Blinkit WebView] v2/address/select status: ${r.status}`);
-              return r.text();
-            }).then(function(t) {
-              console.log(`[Blinkit WebView] v2/address/select response: ${(t || '').slice(0, 500)}`);
-            }).catch(function(e) {
-              console.warn(`[Blinkit WebView] v2/address/select failed: ${e}`);
-            });
-            fetch('https://blinkit.com/v1/address/select', {
-              method: 'POST',
-              credentials: 'include',
-              headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'auth_key': data.token },
-              body: JSON.stringify({ id: Number(addrId) })
-            }).then(function(r) {
-              console.log(`[Blinkit WebView] v1/address/select status: ${r.status}`);
-            }).catch(function() {});
           }
         }
         // Automatically fetch and save dummy coordinates if not set to mimic full session
@@ -406,17 +341,12 @@ export default function WebViewScreen() {
           });
         }
         alert(`${currentMeta.name} Linked successfully!`);
-        // Reload the hidden bridge WebView so it picks up the fresh login
-        // cookies from the shared native cookie jar. Without this, the bridge
-        // page keeps its old anonymous session and carts get priced under the
-        // wrong delivery zone (₹25+₹2 instead of ₹30+₹12).
         if (platform === 'blinkit') {
           setTimeout(() => reloadBlinkitBridge(), 500);
         }
         router.back();
       }
     } catch (err) {
-      console.error('Failed to parse WebView message:', err);
     }
   };
 
