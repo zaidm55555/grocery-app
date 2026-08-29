@@ -284,9 +284,11 @@ export default function CartScreen() {
   };
 
   // Push the optimized basket into the user's real account on a platform:
-  //  - Blinkit: single /v5/carts POST (the new cart replaces the old one — no
-  //    separate empty-cart API), then a visible page writes the basket into
-  //    localStorage['cart'] and opens the cart page.
+  //  - Blinkit: resolve the session's PERSISTENT cart and PUT the full basket
+  //    to /v5/carts/{id} (a fresh-cart POST alone leaves the old server cart
+  //    in place, which doubles quantities and triggers Blinkit's
+  //    "prices have changed" modal at checkout), then a visible page writes
+  //    the basket into localStorage['cart'] and opens the cart page.
   //  - Swiggy (Instamart): clear → write → verify over the real checkout/v2
   //    cart APIs, then the visible page wipes local caches and navigates to
   //    /instamart/cart.

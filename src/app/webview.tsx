@@ -51,6 +51,15 @@ function buildBlinkitExportCartScript(cartB64: string, cookieStr: string): strin
         localStorage.setItem('count', String(cart.count || 0));
         localStorage.setItem('total', String(cart.total || 0));
         localStorage.setItem('uniqueSkuInCart', String(cart.uniqueSkuInCart || 0));
+        window.ReactNativeWebView.postMessage(JSON.stringify({
+          type: 'BLINKIT_CART_WRITTEN',
+          count: cart.count,
+          uniqueSkuInCart: cart.uniqueSkuInCart,
+          items: Array.isArray(cart.items) ? cart.items.length : 0,
+          total: cart.total,
+          id: String(cart.id || ''),
+          raw: String(JSON.stringify(merged)).slice(0, 4000)
+        }));
       } catch(e4) {}
       window.__bbExportReady = true;
     }
@@ -86,14 +95,72 @@ function buildBlinkitExportCartScript(cartB64: string, cookieStr: string): strin
 // they can review and checkout. The SPA reads the basket we wrote into
 // localStorage['cart'] when it hydrates /cart. The service worker is already
 // killed, so navigating to /cart loads fresh assets (not a cached shell).
+// Also reports (once) a diagnostic snapshot of what the SPA hydrated vs what
+// the server session cart actually holds — the aggregate data needed to debug
+// the "prices have changed / blank cart" reconcile.
 function buildBlinkitOpenCartScript(): string {
   const js = `
   (function(){
+    var reported = false;
+    function post(msg) { try { window.ReactNativeWebView.postMessage(JSON.stringify(msg)); } catch (e) {} }
+    function report() {
+      if (reported) return;
+      reported = true;
+      post({ type: 'BLINKIT_CART_OPENED' });
+      try {
+        var local = {};
+        try { local = JSON.parse(localStorage.getItem('cart')) || {}; } catch (e0) {}
+        var localItems = Array.isArray(local.items) ? local.items : [];
+        var localDetails = Array.isArray(local.item_details) ? local.item_details : [];
+        var perItem = 0;
+        for (var i = 0; i < localItems.length; i++) {
+          perItem += Math.max(0, Number(localItems[i] && (localItems[i].qty || localItems[i].quantity)) || 0);
+        }
+        // /v5/carts has NO GET verb (405), so the server cart can't be read
+        // directly — the SPA's own hydrated localStorage cart is the best
+        // proxy for what checkout will price. Dump it right after the SPA
+        // normalizes it (and again shortly after) to verify there is exactly
+        // ONE line per product: if the same product_id appears under both
+        // 'items' and 'item_details' (or twice in total), the SPA sends two
+        // lines to /validate + PUT at checkout and the server SUMS them (+N).
+        function dump() {
+          var c2 = {};
+          try { c2 = JSON.parse(localStorage.getItem('cart')) || {}; } catch (e8) {}
+          var it = Array.isArray(c2.items) ? c2.items : [];
+          var det = Array.isArray(c2.item_details) ? c2.item_details : [];
+          var byPid = {};
+          var dups = [];
+          [it, det].forEach(function(list) {
+            for (var j = 0; j < list.length; j++) {
+              var pid = String((list[j] && (list[j].product_id || list[j].id)) || '') ;
+              if (!pid) continue;
+              if (byPid[pid]) dups.push(pid + ':qty=' + (list[j].qty || list[j].quantity));
+              byPid[pid] = 1;
+            }
+          });
+          post({
+            type: 'BLINKIT_CART_DUMP',
+            id: String(c2.id || ''),
+            itemsLen: it.length,
+            item_detailsLen: det.length,
+            dupes: dups,
+            count: c2.count,
+            total: c2.total,
+            raw: String(JSON.stringify(c2)).slice(0, 5000)
+          });
+        }
+        dump();
+        setTimeout(dump, 3500);
+        post({ type: 'BLINKIT_CART_DIAG', localCount: local.count, localSku: local.uniqueSkuInCart, localItems: localItems.length, localQty: perItem, localTotal: local.total, localId: String(local.id || ''), serverItems: -2, serverQty: -2, serverId: '', note: 'GET /v5/carts is 405 — server cart unreadable; dumped hydrated local cart instead' });
+      } catch (e2) {
+        post({ type: 'BLINKIT_CART_DIAG', err: String(e2) });
+      }
+    }
     function goCart() {
       var target = '/cart';
       try {
         var base = window.location.origin || 'https://blinkit.com';
-        if (String(window.location.pathname).indexOf('/cart') === 0) { window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BLINKIT_CART_OPENED' })); return true; }
+        if (String(window.location.pathname).indexOf('/cart') === 0) { report(); return true; }
         window.location.assign(base + target);
         return true;
       } catch(e) { return false; }
@@ -104,7 +171,7 @@ function buildBlinkitOpenCartScript(): string {
       var iv = setInterval(function(){
         if (String(window.location.pathname).indexOf('/cart') === 0) {
           clearInterval(iv);
-          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BLINKIT_CART_OPENED' }));
+          report();
         }
       }, 500);
       setTimeout(function(){ clearInterval(iv); }, 15000);
@@ -636,6 +703,22 @@ export default function WebViewScreen() {
         return;
       }
       if (data.type === 'BLINKIT_NETLOG') {
+        // The SPA's real API traffic. /v5/carts supports no GET/DELETE, so the
+        // site must mutate the session cart through some other endpoint we've
+        // never seen — this recorder captures it the moment the user clears
+        // the cart or taps "Proceed to pay". Log every entry (tokens redacted).
+        try {
+          const entries = (Array.isArray((data as any).entries) ? (data as any).entries : []) as any[];
+          const redact = (s: string) => s.replace(/('access_token'\s*:\s*'|auth_key[''\s:=]+|gr_1_accessToken=)[^';,]{6,}/gi, '$1***');
+          const lines = (entries as any[]).map((e: any) => ({
+            m: e.m,
+            u: (e.u || '').slice(0, 220),
+            b: String(e.b || '').slice(0, 320),
+            r: String(e.r || '').slice(0, 500),
+            h: /\/v5\/carts|\/v1\/(cart|checkout)|\/clear|device|session/i.test(String(e.u || '')) ? redact(String(e.h || '')).slice(0, 500) : '',
+          }));
+          console.warn('[BlinkitNet]', JSON.stringify(lines));
+        } catch {}
         return;
       }
       if (data.type === 'BLINKIT_CART_OPENED') {
@@ -643,6 +726,14 @@ export default function WebViewScreen() {
         // the webview open there so the user can review/checkout. (No app-side
         // redirect: the user wants to remain on the Blinkit cart, not return
         // to the app basket.)
+        return;
+      }
+      if (data.type === 'BLINKIT_CART_WRITTEN' || data.type === 'BLINKIT_CART_DIAG' || data.type === 'BLINKIT_CART_DUMP' || data.type === 'BLINKIT_DEDUPE') {
+        // Debug aid for the export flow: what the app wrote into the SPA's
+        // localStorage vs what the SPA normalized it into (and whether any
+        // product appears more than once — duplicated lines are what the site
+        // SUMS at checkout, producing the observed +N inflation).
+        console.warn(`[BlinkitExport] ${data.type}`, data);
         return;
       }
       if (data.type === 'SWIGGY_CART_OPENED') {
@@ -761,7 +852,112 @@ export default function WebViewScreen() {
     }
   }, [isExport, platform]);
 
+  // Shared recorder + checkout-body deduper for the Blinkit export webview.
+  // Runs before EVERY page load so the reloaded /cart page gets a live network
+  // recorder. /v5/carts has no GET/DELETE (405), so the only way to see how the
+  // site prices/clears the session cart is to capture the SPA's own requests.
+  // It also REWRITES checkouts: the SPA maps over BOTH its hydrated 'items'
+  // AND 'cartItems' slot arrays, so a single product is POSTed to
+  // /validate + PUT as duplicate lines — Blinkit's server SUMS duplicate
+  // product_ids *within one request* into the observed +N at "Proceed to pay".
+  // Duplicate lines are collapsed to the first before they reach the network.
+  // Tokens stay out of the log. Delivered via injectedJavaScriptBeforeContentLoaded
+  // AND re-injected at onLoadStart/onLoadEnd, because Android intermittently
+  // skips the before-content script for content-initiated reloads (that was
+  // the flakiness: some runs shipped without any hook at all).
+  const blinkitRecorderScript = `
+    (function() {
+      if (window.__bbNetHook) return; window.__bbNetHook = true;
+      try {
+        navigator.serviceWorker.register = function(){ return Promise.reject(new Error('sw-disabled')); };
+        navigator.serviceWorker.getRegistrations().then(function(rs){ (rs || []).forEach(function(r){ r.unregister(); }); }).catch(function(){});
+      } catch(e0) {}
+      var buf = [];
+      function send() {
+        if (!buf.length) return;
+        try { window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BLINKIT_NETLOG', entries: buf.splice(0, buf.length) })); } catch(e1) {}
+      }
+      setInterval(send, 800);
+      function rec(u, m, b, r, h) {
+        try {
+          u = String(u || '');
+          var host = '';
+          try { host = new URL(u).hostname; } catch(e2) { return; }
+          if (!/(^|\\.)blinkit\\.com$/.test(host)) return;
+          if (/\\.(js|css|png|svg|woff2?|gif|jpg|jpeg|webp)(\\?|$)/i.test(u)) return;
+          if (/\\/analytics|\\/beacon|\\/collect|perf\\/|session_replay/i.test(u)) return;
+          if (buf.length >= 60) return;
+          var hh = '';
+          try {
+            var m2 = String(h || '').replace(/('access_token'\\s*:\\s*'|auth_key[''"\\s:=]+|gr_1_accessToken=)[^';,]{6,}/gi, '$1***');
+            hh = m2.slice(0, 600);
+          } catch(e3) {}
+          buf.push({ u: u.slice(0, 300), m: m || 'GET', b: b ? String(b).slice(0, 900) : '', h: hh, r: r ? String(r).slice(0, 1400) : '' });
+        } catch(e4) {}
+      }
+      var of = window.fetch;
+      if (of && !window.__bbFetchHooked) {
+        window.__bbFetchHooked = true;
+        window.fetch = function(input, init) {
+          var u = (typeof input === 'string') ? input : (input && input.url) || '';
+          var m = (init && init.method) || (input && input.method) || 'GET';
+          var bb = init && init.body;
+          var hh = '';
+          try {
+            var sh = (init && init.headers) || (input && input.headers);
+            if (sh && typeof sh.forEach === 'function') sh.forEach(function(v, k) { hh += k + ': ' + v + '; '; });
+          } catch(e5) {}
+          var needRewrite = null;
+          try {
+            // Checkout payloads: /v5/carts/{id}/validate (POST) and
+            // /v5/carts/{id} (PUT). Collapse duplicate product_ids to the
+            // FIRST line (same intended quantity) — the server sums dupes.
+            if (/\\/v5\\/carts\\/\\d+(\\/validate)?$/.test(u) && (m === 'PUT' || m === 'POST') && typeof bb === 'string' && bb) {
+              var obj = JSON.parse(bb);
+              if (obj && Array.isArray(obj.items) && obj.items.length) {
+                var out = []; var seen = {};
+                for (var d = 0; d < obj.items.length; d++) {
+                  var it = obj.items[d];
+                  if (!it || it.product_id === undefined || it.product_id === null) { out.push(it); continue; }
+                  var pid = String(it.product_id);
+                  if (seen[pid]) continue;
+                  seen[pid] = true; out.push(it);
+                }
+                if (out.length !== obj.items.length) {
+                  obj.items = out;
+                  needRewrite = JSON.stringify(obj);
+                  try { window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BLINKIT_DEDUPE', url: u.slice(0, 200), before: String(bb).slice(0, 300), after: needRewrite.slice(0, 300) })); } catch (eD) {}
+                }
+              }
+            }
+          } catch(eD2) {}
+          var callArgs = arguments;
+          var sentBody = bb;
+          if (needRewrite !== null) {
+            sentBody = needRewrite;
+            callArgs = [input, Object.assign({}, init || {}, { method: m, body: needRewrite })];
+          }
+          return of.apply(this, callArgs).then(function(res) {
+            try { res.clone().text().then(function(t) { rec(u, m, sentBody, t, hh); }).catch(function(){}); } catch(e6) {}
+            return res;
+          });
+        };
+      }
+      var ox = XMLHttpRequest.prototype.open, os = XMLHttpRequest.prototype.send, orh = XMLHttpRequest.prototype.setRequestHeader;
+      XMLHttpRequest.prototype.open = function(mm, uu) { this.__bbM = mm; this.__bbU = uu; this.__bbH = ''; return ox.apply(this, arguments); };
+      XMLHttpRequest.prototype.setRequestHeader = function(k, v) { this.__bbH = (this.__bbH || '') + k + ': ' + v + '; '; return orh.apply(this, arguments); };
+      XMLHttpRequest.prototype.send = function(bb) {
+        this.addEventListener('load', function() { rec(this.__bbU, this.__bbM, bb, this.responseText, this.__bbH); });
+        return os.apply(this, arguments);
+      };
+    })();
+  `;
+
   const beforeContentScript = (() => {
+    if (isExport && platform === 'blinkit') {
+      return blinkitRecorderScript;
+
+    }
     if (isExport && platform === 'swiggy' && exportCartId) {
       return `
         (function() {
@@ -911,12 +1107,23 @@ export default function WebViewScreen() {
           source={{ uri: currentMeta.url }}
           injectedJavaScript={isExportMode ? undefined : currentMeta.injectScript}
           injectedJavaScriptBeforeContentLoaded={beforeContentScript}
+          onLoadStart={() => {
+            // Android intermittently drops injectedJavaScriptBeforeContentLoaded
+            // for content-initiated reloads; re-throw the recorder+deduper in
+            // as early as possible on every navigation (idempotent via guards).
+            if (isExportMode && platform === 'blinkit') {
+              webViewRef.current?.injectJavaScript(blinkitRecorderScript);
+            }
+          }}
           onLoadEnd={() => {
             // Export: after the cart is written + page reloads, open the
             // cart page so the user lands on their ready checkout. (Swiggy's
             // navigation is handled by its own export effect.)
             if (isExportMode && platform === 'blinkit' && cartAppliedRef.current) {
               setTimeout(() => {
+                if (isExportMode) {
+                  webViewRef.current?.injectJavaScript(blinkitRecorderScript);
+                }
                 webViewRef.current?.injectJavaScript(buildBlinkitOpenCartScript());
               }, 600);
             }
