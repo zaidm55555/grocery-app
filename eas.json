@@ -3,6 +3,15 @@
     "version": ">= 22.0.0"
   },
   "build": {
+    "production": {
+      "android": {
+        "buildType": "apk",
+        "distribution": "internal",
+        "env": {
+          "NODE_ENV": "production"
+        }
+      }
+    },
     "preview": {
       "android": {
         "buildType": "apk"
