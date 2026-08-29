@@ -114,6 +114,222 @@ function buildBlinkitOpenCartScript(): string {
   return js;
 }
 
+// Swiggy (Instamart) export: the cart is already committed server-side via the
+// persistent bridge API calls, so the visible page only needs to navigate to
+// the cache-busted cart URL so the SPA refetches the committed basket. We do
+// NOT wipe localStorage/sessionStorage/IndexedDB here — Swiggy's SPA persists
+// auth + app state there, and clearing it crashes hydration into a blank page.
+// No DOM clicking — Swiggy has a real /instamart/cart route.
+function buildSwiggyOpenCartScript(cartUrl: string, cookieStr: string, exportCartB64: string, cartId?: string): string {
+  const js = `
+  (function(){
+    try {
+      var entries = [];
+      [window.localStorage, window.sessionStorage].forEach(function(store, si) {
+        if (!store) return;
+        for (var i = 0; i < store.length; i++) {
+          var k = store.key(i);
+          var v = store.getItem(k);
+          entries.push({ store: si === 0 ? 'local' : 'session', k: k, v: String(v).slice(0, 500) });
+        }
+      });
+      window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'SWIGGY_STORAGE_DUMP', entries: entries }));
+    } catch(e) {}
+
+    try {
+      var cookieStr = ${JSON.stringify(cookieStr)};
+      if (cookieStr) {
+        var parts = String(cookieStr).split(/;\\s*/);
+        for (var i = 0; i < parts.length; i++) {
+          if (!parts[i]) continue;
+          var eq = parts[i].indexOf('=');
+          if (eq <= 0) continue;
+          try {
+            document.cookie = parts[i] + '; path=/; domain=.swiggy.com; secure; SameSite=None';
+          } catch(e2) {}
+        }
+      }
+    } catch(e3) {}
+
+    try {
+      if (window.navigator && navigator.serviceWorker) {
+        navigator.serviceWorker.register = function(){ return Promise.reject(new Error('sw-disabled')); };
+        if (navigator.serviceWorker.getRegistrations) {
+          navigator.serviceWorker.getRegistrations().then(function(rs) {
+            (rs || []).forEach(function(r) { r.unregister(); });
+          });
+        }
+      }
+    } catch(e4) {}
+    try {
+      if (window.caches && window.caches.keys) {
+        window.caches.keys().then(function(keys) {
+          (keys || []).forEach(function(key) {
+            window.caches.delete(key);
+          });
+        });
+      }
+    } catch(e5) {}
+
+    try {
+      if (window.indexedDB && window.indexedDB.databases) {
+        window.indexedDB.databases().then(function(dbs) {
+          (dbs || []).forEach(function(dbInfo) {
+            if (!dbInfo || !dbInfo.name) return;
+            try {
+              var req = window.indexedDB.open(dbInfo.name);
+              req.onsuccess = function(e) {
+                var db = e.target.result;
+                try {
+                  if (db && db.objectStoreNames && db.objectStoreNames.length > 0) {
+                    var tx = db.transaction(db.objectStoreNames, 'readwrite');
+                    for (var i = 0; i < db.objectStoreNames.length; i++) {
+                      var storeName = db.objectStoreNames[i];
+                      try {
+                        tx.objectStore(storeName).clear();
+                      } catch(err1) {}
+                    }
+                  }
+                } catch(err2) {}
+              };
+            } catch(err3) {}
+          });
+        });
+      }
+    } catch(e6) {}
+
+    try {
+      var whitelist = [
+        'swiggy_auth_headers',
+        'swiggy_user_info',
+        'auth_headers',
+        '__payment_context__',
+        '_gcl_ls',
+        'aws_waf_token_challenge_attempts',
+        'awswaf_session_storage',
+        'awswaf_token_refresh_timestamp',
+        'TNS_HASH'
+      ];
+      [window.localStorage, window.sessionStorage].forEach(function(store) {
+        if (!store) return;
+        var keysToDelete = [];
+        for (var i = 0; i < store.length; i++) {
+          var k = store.key(i);
+          if (whitelist.indexOf(k) === -1) {
+            keysToDelete.push(k);
+          }
+        }
+        keysToDelete.forEach(function(k) {
+          store.removeItem(k);
+        });
+      });
+    } catch(e8) {}
+
+    function executeExport() {
+      var cartB64 = ${JSON.stringify(exportCartB64)};
+      var writePayload = null;
+      try {
+        var s = cartB64.replace(/-/g, '+').replace(/_/g, '/');
+        while (s.length % 4) { s += '='; }
+        var decoded = window.atob(s);
+        var raw = decodeURIComponent(Array.prototype.map.call(decoded, function(c) {
+          return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+        }).join(''));
+        writePayload = JSON.parse(raw);
+      } catch(e) {}
+
+      if (!writePayload) {
+        window.location.assign(${JSON.stringify(cartUrl)});
+        return;
+      }
+
+      var fetchHeaders = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      };
+      try {
+        var ahRaw = localStorage.getItem('auth_headers');
+        if (ahRaw) {
+          var ah = JSON.parse(ahRaw);
+          if (ah) {
+            for (var k in ah) {
+              if (ah.hasOwnProperty(k) && ah[k]) {
+                fetchHeaders[k] = String(ah[k]);
+              }
+            }
+          }
+        }
+      } catch(e) {}
+
+      fetch('/api/instamart/checkout/v2/cart/clear', {
+        method: 'POST',
+        headers: fetchHeaders,
+        credentials: 'include',
+        body: JSON.stringify({ source: 'USER_INITIATED' })
+      })
+      .then(function(res1) {
+        return res1.text().then(function(text1) {
+          return fetch('/api/instamart/checkout/v2/cart', {
+            method: 'POST',
+            headers: fetchHeaders,
+            credentials: 'include',
+            body: JSON.stringify(writePayload)
+          });
+        });
+      })
+      .then(function(res2) {
+        return res2.json().then(function(json) {
+          var newCartId = json?.data?.data?.cartId || '';
+          if (newCartId) {
+            // Update auth_headers.cartkey
+            var ahRaw = localStorage.getItem('auth_headers');
+            if (ahRaw) {
+              try {
+                var ah = JSON.parse(ahRaw);
+                if (ah) {
+                  ah.cartkey = newCartId;
+                  localStorage.setItem('auth_headers', JSON.stringify(ah));
+                  fetchHeaders['cartkey'] = newCartId;
+                }
+              } catch(e2) {}
+            }
+            // Update __payment_context__.linkId
+            var pcRaw = localStorage.getItem('__payment_context__');
+            if (pcRaw) {
+              try {
+                var pc = JSON.parse(pcRaw);
+                if (pc) {
+                  pc.linkId = newCartId;
+                  localStorage.setItem('__payment_context__', JSON.stringify(pc));
+                }
+              } catch(e3) {}
+            }
+          }
+
+          return fetch('/api/instamart/checkout/v2/cart?pageType=INSTAMART_CART', {
+            method: 'GET',
+            headers: fetchHeaders,
+            credentials: 'include',
+            cache: 'reload'
+          });
+        });
+      })
+      .then(function(res3) {
+        return res3.text().then(function(text3) {
+          window.location.assign(${JSON.stringify(cartUrl)});
+        });
+      })
+      .catch(function(err) {
+        window.location.assign(${JSON.stringify(cartUrl)});
+      });
+    }
+
+    executeExport();
+  })();
+  `;
+  return js;
+}
+
 export default function WebViewScreen() {
   const params = useLocalSearchParams();
   const router = useRouter();
@@ -125,20 +341,26 @@ export default function WebViewScreen() {
   const cartAppliedRef = useRef(isExport ? false : true);
 
   // Swiggy login/address work happens inside the single persistent bridge
-  // WebView (its cookie jar is what prices carts), so just expand it.
+  // WebView (its cookie jar is what prices carts), so just expand it and close.
+  // Export mode is different: the visible webview must STAY open on the cart.
   useEffect(() => {
+    if (isExport) return;
     if (platform === 'swiggy' && !launchedSwiggySession.current) {
       launchedSwiggySession.current = true;
       setSwiggySetupMode(params.mode === 'address' ? 'address' : 'login');
       router.back();
     }
-  }, [platform, params.mode, router]);
+  }, [isExport, platform, params.mode, router]);
 
   // Blinkit export: replay the captured session cookies into a visible
   // Blinkit page, write the resolved basket into localStorage['cart'], reload
-  // so the SPA hydrates, then open the cart drawer (openCartFn /
-  // cartDrawerOpenFn — the only DOM step, per the reference extension).
+  // so the SPA hydrates, then open the cart page.
   const exportCartB64 = isExport ? String(params.cart || '') : '';
+  // Swiggy export: the basket is already committed server-side via the bridge
+  // API calls; the visible page wipes local caches and navigates to this URL.
+  const exportCartUrl = isExport ? String(params.url || '') : '';
+  const exportCartId = isExport ? String(params.cartId || '') : '';
+  const exportOldCartId = isExport ? String(params.oldCartId || '') : '';
 
   useEffect(() => {
     if (!isExport || platform !== 'blinkit') return;
@@ -160,6 +382,26 @@ export default function WebViewScreen() {
     const timer = setTimeout(injectCookieAndCart, 1500);
     return () => clearTimeout(timer);
   }, [isExport, platform, exportCartB64]);
+
+  // Swiggy export: wipe stale local caches and navigate to the committed cart.
+  useEffect(() => {
+    if (!isExport || platform !== 'swiggy') return;
+    if (!exportCartUrl) return;
+
+    let applied = false;
+    const injectSwiggy = async () => {
+      if (applied || cartAppliedRef.current) return;
+      cartAppliedRef.current = true;
+      applied = true;
+      let cookieStr = '';
+      try {
+        cookieStr = (await storage.getToken('swiggy')) || '';
+      } catch {}
+      webViewRef.current?.injectJavaScript(buildSwiggyOpenCartScript(exportCartUrl, cookieStr, exportCartB64, exportCartId));
+    };
+    const timer = setTimeout(injectSwiggy, 1200);
+    return () => clearTimeout(timer);
+  }, [isExport, platform, exportCartUrl, exportCartB64, exportCartId]);
 
   const platformMeta = {
     blinkit: {
@@ -383,7 +625,7 @@ export default function WebViewScreen() {
 
   const currentMeta = platformMeta[platform];
 
-  const isExportMode = isExport && platform === 'blinkit';
+  const isExportMode = isExport && (platform === 'blinkit' || platform === 'swiggy');
   const exportCookie = isExport ? '' : '';
   void exportCookie;
 
@@ -403,6 +645,17 @@ export default function WebViewScreen() {
         // to the app basket.)
         return;
       }
+      if (data.type === 'SWIGGY_CART_OPENED') {
+        // Landed on the Swiggy Instamart cart page — keep the webview open.
+        return;
+      }
+      if (data.type === 'SWIGGY_STORAGE_DUMP') {
+        // commented out to avoid log spam
+        return;
+      }
+      if (data.type === 'SWIGGY_DEBUG') {
+        return;
+      }
       if (data.type === 'BLINKIT_ADDRESS' && data.addressId) {
         await AsyncStorage.setItem('@blinkit_address_id', String(data.addressId));
         return;
@@ -416,7 +669,6 @@ export default function WebViewScreen() {
         return;
       }
       if (data.type === 'BLINKIT_STORAGE_DUMP') {
-        console.log(`[Blinkit WebView] storage dump: ${JSON.stringify(data.entries).slice(0, 3000)}`);
         // Auto-extract the saved address id. Values are truncated slices, so
         // JSON.parse can fail — fall back to scanning the raw text. Inside an
         // addresses_data record the bare "id" field precedes everything else.
@@ -500,6 +752,142 @@ export default function WebViewScreen() {
     webViewRef.current?.reload();
   };
 
+  const [swiggyCookies, setSwiggyCookies] = useState('');
+  useEffect(() => {
+    if (isExport && platform === 'swiggy') {
+      storage.getToken('swiggy').then((c) => {
+        if (c) setSwiggyCookies(c);
+      }).catch(() => {});
+    }
+  }, [isExport, platform]);
+
+  const beforeContentScript = (() => {
+    if (isExport && platform === 'swiggy' && exportCartId) {
+      return `
+        (function() {
+          try {
+            var cookieStr = ${JSON.stringify(swiggyCookies)};
+            if (cookieStr) {
+              var parts = String(cookieStr).split(/;\\s*/);
+              for (var i = 0; i < parts.length; i++) {
+                if (!parts[i]) continue;
+                var eq = parts[i].indexOf('=');
+                if (eq <= 0) continue;
+                try {
+                  document.cookie = parts[i] + '; path=/; domain=.swiggy.com; secure; SameSite=None';
+                } catch(e) {}
+              }
+            }
+          } catch(e3) {}
+
+          try {
+            if (window.navigator && navigator.serviceWorker) {
+              navigator.serviceWorker.register = function(){ return Promise.reject(new Error('sw-disabled')); };
+              if (navigator.serviceWorker.getRegistrations) {
+                navigator.serviceWorker.getRegistrations().then(function(rs) {
+                  (rs || []).forEach(function(r) { r.unregister(); });
+                });
+              }
+            }
+          } catch(e4) {}
+
+          try {
+            if (window.caches && window.caches.keys) {
+              window.caches.keys().then(function(keys) {
+                (keys || []).forEach(function(key) {
+                  window.caches.delete(key);
+                });
+              });
+            }
+          } catch(e5) {}
+
+          try {
+            if (window.indexedDB && window.indexedDB.databases) {
+              window.indexedDB.databases().then(function(dbs) {
+                (dbs || []).forEach(function(dbInfo) {
+                  if (!dbInfo || !dbInfo.name) return;
+                  try {
+                    var req = window.indexedDB.open(dbInfo.name);
+                    req.onsuccess = function(e) {
+                      var db = e.target.result;
+                      try {
+                        if (db && db.objectStoreNames && db.objectStoreNames.length > 0) {
+                          var tx = db.transaction(db.objectStoreNames, 'readwrite');
+                          for (var i = 0; i < db.objectStoreNames.length; i++) {
+                            var storeName = db.objectStoreNames[i];
+                            try {
+                              tx.objectStore(storeName).clear();
+                            } catch(err1) {}
+                          }
+                        }
+                      } catch(err2) {}
+                    };
+                  } catch(err3) {}
+                });
+              });
+            }
+          } catch(e6) {}
+
+          try {
+            var whitelist = [
+              'swiggy_auth_headers',
+              'swiggy_user_info',
+              'auth_headers',
+              '__payment_context__',
+              '_gcl_ls',
+              'aws_waf_token_challenge_attempts',
+              'awswaf_session_storage',
+              'awswaf_token_refresh_timestamp',
+              'TNS_HASH'
+            ];
+            [window.localStorage, window.sessionStorage].forEach(function(store) {
+              if (!store) return;
+              var keysToDelete = [];
+              for (var i = 0; i < store.length; i++) {
+                var k = store.key(i);
+                if (whitelist.indexOf(k) === -1) {
+                  keysToDelete.push(k);
+                }
+              }
+              keysToDelete.forEach(function(k) {
+                store.removeItem(k);
+              });
+            });
+          } catch(e8) {}
+
+          try {
+            var newId = ${JSON.stringify(exportCartId)};
+            var oldId = ${JSON.stringify(exportOldCartId)};
+            if (newId) {
+              [window.localStorage, window.sessionStorage].forEach(function(store) {
+                if (!store) return;
+                for (var i = 0; i < store.length; i++) {
+                  var k = store.key(i);
+                  var v = store.getItem(k);
+                  if (v) {
+                    if (oldId && v.indexOf(oldId) !== -1) {
+                      store.setItem(k, v.split(oldId).join(newId));
+                    } else if (k === 'auth_headers' || k === '__payment_context__') {
+                      try {
+                        var obj = JSON.parse(v);
+                        if (obj) {
+                          if (k === 'auth_headers') obj.cartkey = newId;
+                          if (k === '__payment_context__') obj.linkId = newId;
+                          store.setItem(k, JSON.stringify(obj));
+                        }
+                      } catch(e2) {}
+                    }
+                  }
+                }
+              });
+            }
+          } catch(e1) {}
+        })();
+      `;
+    }
+    return undefined;
+  })();
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.header}>
@@ -507,7 +895,7 @@ export default function WebViewScreen() {
           <ArrowLeft size={24} color="#FFF" />
         </TouchableOpacity>
         <View style={styles.titleContainer}>
-          <Text style={styles.headerTitle}>{isExportMode ? 'Export to Blinkit' : `Link ${currentMeta.name}`}</Text>
+          <Text style={styles.headerTitle}>{isExportMode ? `Export to ${platform === 'swiggy' ? 'Swiggy' : 'Blinkit'}` : `Link ${currentMeta.name}`}</Text>
           <Text style={styles.headerSubtitle}>
             {isExportMode ? 'Basket written — cart will open on the site' : 'Login to sync account'}
           </Text>
@@ -522,10 +910,12 @@ export default function WebViewScreen() {
           ref={webViewRef}
           source={{ uri: currentMeta.url }}
           injectedJavaScript={isExportMode ? undefined : currentMeta.injectScript}
+          injectedJavaScriptBeforeContentLoaded={beforeContentScript}
           onLoadEnd={() => {
             // Export: after the cart is written + page reloads, open the
-            // cart drawer so the user lands on their ready checkout.
-            if (isExportMode && cartAppliedRef.current) {
+            // cart page so the user lands on their ready checkout. (Swiggy's
+            // navigation is handled by its own export effect.)
+            if (isExportMode && platform === 'blinkit' && cartAppliedRef.current) {
               setTimeout(() => {
                 webViewRef.current?.injectJavaScript(buildBlinkitOpenCartScript());
               }, 600);
@@ -541,7 +931,9 @@ export default function WebViewScreen() {
             <View style={styles.loaderContainer}>
               <ActivityIndicator size="large" color={currentMeta.primaryColor} />
               <Text style={styles.loaderText}>
-                {isExportMode ? 'Opening your Blinkit basket…' : 'Loading secure browser...'}
+                {isExportMode
+                  ? platform === 'swiggy' ? 'Opening your Swiggy Instamart basket…' : 'Opening your Blinkit basket…'
+                  : 'Loading secure browser...'}
               </Text>
             </View>
           )}
@@ -552,7 +944,9 @@ export default function WebViewScreen() {
         <View style={[styles.indicatorBall, { backgroundColor: currentMeta.primaryColor }]} />
         <Text style={styles.footerText}>
           {isExportMode
-            ? 'Your optimized basket is now in Blinkit. Review it, add the delivery address if asked, and place the order.'
+            ? platform === 'swiggy'
+              ? 'Your optimized basket is now in Swiggy Instamart. Review the items, add the delivery address if asked, and place the order.'
+              : 'Your optimized basket is now in Blinkit. Review it, add the delivery address if asked, and place the order.'
             : 'Enter phone number & verify OTP. The app will capture the token and close automatically.'}
         </Text>
       </View>

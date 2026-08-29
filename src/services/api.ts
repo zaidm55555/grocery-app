@@ -427,7 +427,6 @@ export const api = {
     const runStart = Date.now();
 
     const simulateNoAddress = (await AsyncStorage.getItem('@blinkit_simulate_no_address')) === '1';
-    console.log(`[calculateCart] simulateNoAddress=${simulateNoAddress}`);
 
     // Load tokens and location in parallel
     const [blinkitToken, swiggyToken, storedLocation, bLat, bLng] = await Promise.all([
@@ -476,7 +475,6 @@ export const api = {
       let liveBill = false;
 
       if (subtotal > 0 && !forceEstimate) {
-        console.log(`[calculateCart] platform: ${platform}, subtotal: ${subtotal}`);
         try {
           if (platform === 'blinkit' && blinkitToken) {
             const slimItems = platformItems.map((ci) => ({
@@ -748,16 +746,13 @@ export const api = {
               if (parsedCache && parsedCache.locKey === locKey && parsedCache.storeInfo && Date.now() - parsedCache.at < 24 * 3600 * 1000) {
                 storeInfo = parsedCache.storeInfo;
                 cartMetaData = { ...cartMetaData, ...(parsedCache.cartMetaData || {}) };
-                console.log('[Swiggy API Checkout] using cached store metadata — skipping session GET');
               }
             } catch {}
 
             if (!storeInfo) {
             try {
-              const swGetCartStart = Date.now();
               const getCartRes = await this.swiggyApiFetch(`${CART_URL}?pageType=INSTAMART_CART`);
 
-              console.log(`[Swiggy API Checkout] GET status: ${getCartRes.status} (${Date.now() - swGetCartStart}ms)`);
               if (getCartRes.ok) {
                 const getCartJson = await getCartRes.json();
                 const cart = getCartJson?.data?.data;
@@ -789,9 +784,7 @@ export const api = {
 
             if (!storeInfo) {
               try {
-                const swHomeStart = Date.now();
                 const homeResponse = await this.swiggyApiFetch(HOME_URL);
-                console.log(`[Swiggy API Checkout] home/v2 status: ${homeResponse.status} (${Date.now() - swHomeStart}ms)`);
                 if (homeResponse.ok) {
                   storeInfo = findStoreInfo(await homeResponse.json());
                 }
@@ -838,7 +831,6 @@ export const api = {
               // Fallback builder: fresh search/v2 per item (concurrent pool).
               const freshSearchBodies = async (): Promise<{ bodies: any[]; unmappedName: string | null }> => {
               const searchItem = async (title: string, quantity: string): Promise<any> => {
-                const itemSearchStart = Date.now();
                 try {
                   const searchRes = await this.swiggyApiFetch(`https://www.swiggy.com/api/instamart/search/v2?${storeParams}`, 'POST', JSON.stringify({
                     facets: [],
@@ -848,7 +840,6 @@ export const api = {
                     page_type: 'INSTAMART_PRE_SEARCH_PAGE',
                     is_pre_search_tag: false
                   }));
-                  console.log(`[timing] swiggy catalog search "${title.slice(0, 24)}": ${Date.now() - itemSearchStart}ms (status: ${searchRes.status})`);
                   if (searchRes.ok) {
                     const candidates = extractSwiggySearchProducts(await searchRes.json(), title);
                     return pickInstamartCandidate(candidates, title, quantity);
@@ -890,8 +881,6 @@ export const api = {
               if (unmappedName) {
                 console.warn(`[Swiggy API Checkout] no catalog match for "${unmappedName}" — bill not priced`);
               } else if (bodies.length > 0) {
-                console.log(`[Swiggy API Checkout] POST basket:`, JSON.stringify(bodies));
-                const swPostStart = Date.now();
                 const postBasket = async (storeIds: string[], preferredAddressId: any = null) => this.swiggyApiFetch(CART_URL, 'POST', JSON.stringify({
                   data: {
                     items: bodies,
@@ -940,7 +929,6 @@ export const api = {
                   }
                 }
 
-                console.log(`[Swiggy API Checkout] POST status: ${postCartRes.status} (${Date.now() - swPostStart}ms incl. retries)`);
                 if (postCartRes.ok) {
                   const postCartJson = await postCartRes.json();
 
@@ -949,16 +937,6 @@ export const api = {
                   // its cart page), so look in both.
                   const applySwiggyFees = (b: any) => {
                     const fees = parseSwiggyBill(b);
-                    console.log(`[Swiggy API Checkout] Bill parsed:`, fees);
-                    // Dev-only: inspect how waivers/discounts are encoded.
-                    console.log(`[Swiggy API Checkout] charges: ${JSON.stringify(b?.charges)?.slice(0, 2000)}`);
-                    // Dev-only: surface ANY surge/rain-shaped field wherever
-                    // it hides in the bill tree.
-                    try {
-                      const s = JSON.stringify(b);
-                      const hits = s.match(/"[^"]*(?:surge|rain)[^"]*"\s*:\s*("[^"]*"|[\d.]+|true|false|null)/gi);
-                      console.log(`[Swiggy API Checkout] surge/rain fields: ${hits ? hits.slice(0, 15).join(' | ') : 'NONE'}`);
-                    } catch {}
                     if (fees.subtotal !== null) subtotal = fees.subtotal;
                     if (fees.deliveryFee !== null) deliveryFee = fees.deliveryFee;
                     if (fees.handlingFee !== null) handlingFee = fees.handlingFee;
@@ -973,7 +951,6 @@ export const api = {
                   if (!bill) {
                     try {
                       const refetchRes = await this.swiggyApiFetch(`${CART_URL}?pageType=INSTAMART_CART`);
-                      console.log(`[Swiggy API Checkout] bill refetch GET status: ${refetchRes.status}`);
                       if (refetchRes.ok) {
                         bill = findSwiggyBillNode(await refetchRes.json());
                       }
@@ -1019,14 +996,11 @@ export const api = {
         live: liveBill
       };
 
-      console.log(`[timing] calculateCart ${platform}: ${Date.now() - platformStart}ms (live bill: ${liveBill ? 'yes' : 'no'})`);
-
       onPlatformResult?.(calc);
       return calc;
     });
 
     const results = await Promise.all(promises);
-    console.log(`[timing] calculateCart TOTAL: ${Date.now() - runStart}ms`);
     return results;
   }
 };
@@ -1036,14 +1010,14 @@ export const api = {
 // ==========================================
 
 // --- Swiggy Helpers ---
-interface SwiggyStoreInfo {
+export interface SwiggyStoreInfo {
   storeId: string;
   primaryStoreId: string;
   secondaryStoreId: string;
   layoutId: string;
 }
 
-function findStoreInfo(json: any): SwiggyStoreInfo {
+export function findStoreInfo(json: any): SwiggyStoreInfo {
   const info: SwiggyStoreInfo = { storeId: '', primaryStoreId: '', secondaryStoreId: '', layoutId: '' };
   if (!json || typeof json !== 'object') return info;
   function setIf(attr: keyof SwiggyStoreInfo, v: any) {
@@ -1225,7 +1199,7 @@ function extractVariation(product: any, v: any, productId: string): any {
   };
 }
 
-function extractSwiggySearchProducts(json: any, query?: string): any[] {
+export function extractSwiggySearchProducts(json: any, query?: string): any[] {
   const out: any[] = [];
   const seen: Record<string, boolean> = {};
   if (!json || typeof json !== 'object') return out;
@@ -1549,7 +1523,7 @@ function parseBlinkitBill(json: any): BillFees {
   };
 }
 
-function instamartNormKey(s: any): string {
+export function instamartNormKey(s: any): string {
   return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
 
@@ -1557,7 +1531,7 @@ function instamartNormKey(s: any): string {
 // pack size to break ties) — mirrors matchInstamartCandidate in the desktop
 // grocery-order-optimizer extension. Requires some name overlap so a wrong
 // product never gets priced in place of the real one.
-function pickInstamartCandidate(candidates: any[], name: string, unit: string): any | null {
+export function pickInstamartCandidate(candidates: any[], name: string, unit: string): any | null {
   const nn = instamartNormKey(name);
   const nu = instamartNormKey(unit);
   let best: any = null;

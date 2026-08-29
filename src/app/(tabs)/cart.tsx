@@ -6,6 +6,7 @@ import { Plus, Minus, Trophy, ShieldCheck, Layers, RefreshCw, Trash2, Send } fro
 import { storage, Platform } from '../../services/storage';
 import { api, UnifiedProduct, CartCalculation, resolvePlatformProduct } from '../../services/api';
 import { exportCartToBlinkit } from '../../services/blinkitExport';
+import { exportCartToSwiggy } from '../../services/swiggyExport';
 import { colors, fonts, platformThemes, PLATFORM_ORDER } from '../../constants/theme';
 
 function LogoTile({ platform, size = 26 }: { platform: Platform; size?: number }) {
@@ -35,7 +36,7 @@ export default function CartScreen() {
   // cards so an already-arrived platform shows up immediately.
   const [pendingPlatforms, setPendingPlatforms] = useState<Platform[]>([]);
   const [splitComputing, setSplitComputing] = useState(false);
-  const [exporting, setExporting] = useState(false);
+  const [exporting, setExporting] = useState<Platform | 'blinkit' | 'swiggy' | null>(null);
   const [loaded, setLoaded] = useState(false);
   const calcRunIdRef = useRef(0);
 
@@ -282,65 +283,59 @@ export default function CartScreen() {
     }
   };
 
-  // Push the optimized basket into the user's real Blinkit account as a
-  // single /v5/carts POST (the new cart replaces the old one — there is no
-  // separate empty-cart API), then open a visible Blinkit page that writes
-  // the basket into localStorage['cart'] and opens the cart drawer.
-  const handleExportToBlinkit = async () => {
+  // Push the optimized basket into the user's real account on a platform:
+  //  - Blinkit: single /v5/carts POST (the new cart replaces the old one — no
+  //    separate empty-cart API), then a visible page writes the basket into
+  //    localStorage['cart'] and opens the cart page.
+  //  - Swiggy (Instamart): clear → write → verify over the real checkout/v2
+  //    cart APIs, then the visible page wipes local caches and navigates to
+  //    /instamart/cart.
+  const handleExport = async (platform: 'blinkit' | 'swiggy') => {
     if (exporting || cartItems.length === 0) return;
-    const linked = await storage.getToken('blinkit');
+    const display = platform === 'swiggy' ? 'Swiggy' : 'Blinkit';
+    const linked = await storage.getToken(platform);
     if (!linked) {
-      Alert.alert('Blinkit not linked', 'Link your Blinkit account in the Accounts tab first, then export your basket.', [
+      Alert.alert(`${display} not linked`, `Link your ${display} account in the Accounts tab first, then export your basket.`, [
         { text: 'OK' }
       ]);
       return;
     }
-    setExporting(true);
+    setExporting(platform);
     try {
-      const result = await exportCartToBlinkit(cartItems);
-      if (!result) {
-        Alert.alert('Blinkit not linked', 'Link your Blinkit account in the Accounts tab first, then export your basket.', [
+      if (platform === 'blinkit') {
+        const blinkitResult = await exportCartToBlinkit(cartItems);
+        if (!blinkitResult) {
+          Alert.alert('Blinkit not linked', 'Link your Blinkit account in the Accounts tab first, then export your basket.', [
+            { text: 'OK' }
+          ]);
+          return;
+        }
+        const cartB64 = btoaUnicode(JSON.stringify(blinkitResult.cartLocalStorage));
+        router.push({
+          pathname: '/webview',
+          params: { platform: 'blinkit', mode: 'export', cart: cartB64 }
+        });
+        return;
+      }
+
+      // Swiggy
+      const swiggyResult = await exportCartToSwiggy(cartItems);
+      if (!swiggyResult) {
+        Alert.alert('Swiggy not linked', 'Link your Swiggy account in the Accounts tab first, then export your basket.', [
           { text: 'OK' }
         ]);
         return;
       }
-      const resolvedCount = result.items.length;
-      const missing = result.missing
-        .slice(0, 5)
-        .map((m) => `• ${m.name}`)
-        .join('\n');
-      const msgParts: string[] = [];
-      if (resolvedCount > 0) {
-        msgParts.push(`${resolvedCount} item${resolvedCount === 1 ? '' : 's'} placed in your Blinkit cart.`);
-      }
-      if (result.payableAmount != null) {
-        msgParts.push(`Live payable: ₹${result.payableAmount}`);
-      }
-      if (missing) {
-        msgParts.push(`Couldn't match:\n${missing}`);
-      }
-      Alert.alert(
-        'Export to Blinkit',
-        msgParts.length > 0 ? msgParts.join('\n\n') : 'Nothing to export — no items could be resolved.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Open Blinkit',
-            onPress: () => {
-              const cartB64 = btoaUnicode(JSON.stringify(result.cartLocalStorage));
-              router.push({
-                pathname: '/webview',
-                params: { platform: 'blinkit', mode: 'export', cart: cartB64 }
-              });
-            }
-          }
-        ]
-      );
+      const swiggyCartB64 = swiggyResult.writePayload ? btoaUnicode(JSON.stringify(swiggyResult.writePayload)) : '';
+      router.push({
+        pathname: '/webview',
+        params: { platform: 'swiggy', mode: 'export', url: swiggyResult.cartUrl, cartId: swiggyResult.cartId || '', oldCartId: swiggyResult.oldCartId || '', cart: swiggyCartB64 }
+      });
     } catch (err) {
       console.error(err);
-      Alert.alert('Export failed', 'Could not place the basket in Blinkit right now. Please try again.', [{ text: 'OK' }]);
+      Alert.alert('Export failed', `Could not place the basket in ${display} right now. Please try again.`, [{ text: 'OK' }]);
     } finally {
-      setExporting(false);
+      setExporting(null);
     }
   };
 
@@ -374,14 +369,24 @@ export default function CartScreen() {
         {cartItems.length > 0 && (
           <View style={styles.headerActions}>
             <TouchableOpacity
-              onPress={handleExportToBlinkit}
-              disabled={exporting}
-              style={[styles.exportBtn, exporting && { opacity: 0.6 }]}
+              onPress={() => handleExport('blinkit')}
+              disabled={exporting !== null}
+              style={[styles.exportBtn, exporting !== null && { opacity: 0.6 }]}
             >
-              {exporting
+              {exporting === 'blinkit'
                 ? <ActivityIndicator size={12} color="#F8CB46" />
                 : <Send size={12} color="#F8CB46" />}
-              <Text style={styles.exportBtnText}>{exporting ? 'Exporting…' : 'Export Blinkit'}</Text>
+              <Text style={styles.exportBtnText}>{exporting === 'blinkit' ? 'Exporting…' : 'Export Blinkit'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => handleExport('swiggy')}
+              disabled={exporting !== null}
+              style={[styles.swiggyBtn, exporting !== null && { opacity: 0.6 }]}
+            >
+              {exporting === 'swiggy'
+                ? <ActivityIndicator size={12} color="#FC8019" />
+                : <Send size={12} color="#FC8019" />}
+              <Text style={styles.swiggyBtnText}>{exporting === 'swiggy' ? 'Exporting…' : 'Export Swiggy'}</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={handleRefreshPrices} disabled={isRefreshing} style={styles.fetchBtn}>
               {isRefreshing
@@ -726,6 +731,22 @@ const styles = StyleSheet.create({
     fontFamily: fonts.bodySemiBold,
     fontSize: 10.5,
     color: '#F8CB46',
+  },
+  swiggyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(252, 128, 25, 0.4)',
+    backgroundColor: 'rgba(252, 128, 25, 0.12)',
+  },
+  swiggyBtnText: {
+    fontFamily: fonts.bodySemiBold,
+    fontSize: 10.5,
+    color: '#FC8019',
   },
   fetchBtn: {
     flexDirection: 'row',

@@ -10,11 +10,26 @@
         "env": {
           "NODE_ENV": "production"
         }
+      },
+      "ios": {
+        "simulator": false
       }
     },
     "preview": {
       "android": {
         "buildType": "apk"
+      },
+      "ios": {
+        "simulator": false
+      },
+      "distribution": "internal"
+    },
+    "simulator": {
+      "android": {
+        "buildType": "apk"
+      },
+      "ios": {
+        "simulator": true
       },
       "distribution": "internal"
     }
