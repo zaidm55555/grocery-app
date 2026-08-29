@@ -143,65 +143,8 @@ const BRIDGE_SCRIPT = `
   };
   window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BL_BRIDGE_READY' }));
 
-  // Auto-fetch addresses via /v4/address on every bridge load.
-  // In APK builds, localStorage isn't shared between WebViews, so the
-  // access_token cookie (gr_1_accessToken) is used as fallback.
-  (function() {
-    try {
-      if (window.__blAddrApiFetched) return;
-      var _blFetchAttempts = 0;
-      function _blAutoFetch() {
-        try {
-          if (window.__blAddrApiFetched) return;
-          _blFetchAttempts++;
-          var accessToken = window.__blGetAccessToken();
-          if (!accessToken) {
-            if (_blFetchAttempts < 10) setTimeout(_blAutoFetch, 1000);
-            return;
-          }
-          var locRaw = localStorage.getItem('location');
-          var lat = '12.9716', lng = '77.5946';
-          if (locRaw) { try { var loc = JSON.parse(locRaw); lat = loc.coords.lat || lat; lng = loc.coords.lon || lng; } catch (e) {} }
-          var deviceId = localStorage.getItem('deviceId') || '';
-          fetch('https://blinkit.com/v4/address?cur_lat=' + lat + '&cur_lon=' + lng, {
-            method: 'GET',
-            credentials: 'include',
-            headers: {
-              'Accept': 'application/json',
-              'access_token': accessToken,
-              'auth_key': 'c761ec3633c22afad934fb17a66385c1c06c5472b4898b866b7306186d0bb477',
-              'app_client': 'consumer_web',
-              'lat': lat,
-              'lon': lng,
-              'device_id': deviceId,
-              'platform': 'mobile_web'
-            }
-          }).then(function(r) {
-            window.__blAddrApiFetched = true;
-            if (!r.ok) return null;
-            return r.text();
-          }).then(function(t) {
-            if (!t) return;
-            try {
-              var aj = JSON.parse(t);
-              var list = aj.addresses || aj.data || aj.addresses_data || (Array.isArray(aj) ? aj : null);
-              if (list && !Array.isArray(list) && list.addresses_data) list = list.addresses_data;
-              if (Array.isArray(list) && list.length) {
-                var a = list[0];
-                var aId = a.id || a.address_id || '';
-                var aLat = a.latitude || a.lat || '';
-                var aLng = a.longitude || a.lng || a.lon || '';
-                if (aId) { window.__blStoredAddrId = String(aId); localStorage.setItem('selected_address_id', String(aId)); }
-                if (aLat && aLng) { window.__blStoredLat = String(aLat); window.__blStoredLng = String(aLng); localStorage.setItem('selected_lat', String(aLat)); localStorage.setItem('selected_lng', String(aLng)); }
-                window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BL_ADDR_RESOLVED', addressId: String(aId), lat: String(aLat), lng: String(aLng) }));
-              }
-            } catch (e) {}
-          }).catch(function() { window.__blAddrApiFetched = true; });
-        } catch (e) {}
-      }
-      _blAutoFetch();
-    } catch (e) {}
-  })();
+  // Auto-fetch addresses via /v4/address is now handled dynamically on the native side.
+  // This block has been commented out to prevent bridge auto-fetch from overwriting the correct closest address.
 
   try {
     var storageKeys = ['cart', 'checkout'];

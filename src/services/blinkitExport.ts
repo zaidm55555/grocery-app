@@ -140,8 +140,25 @@ export async function exportCartToBlinkit(
   const location = await storage.getLocation();
   const lat = location?.latitude ?? 12.9716;
   const lng = location?.longitude ?? 77.5946;
-  const addrRaw = await AsyncStorage.getItem('@blinkit_address_id');
-  const addrNum = addrRaw ? Number(addrRaw) : NaN;
+  let addrNum = NaN;
+  try {
+    const closestAddr = await api.getClosestBlinkitAddress(lat, lng);
+    if (closestAddr && closestAddr.id) {
+      addrNum = Number(closestAddr.id);
+      await AsyncStorage.setItem('@blinkit_address_id', String(closestAddr.id));
+      await AsyncStorage.setItem('@blinkit_address_name', closestAddr.address || closestAddr.text || '');
+      const aLat = closestAddr.latitude || closestAddr.lat;
+      const aLng = closestAddr.longitude || closestAddr.lon || closestAddr.lng;
+      if (aLat && aLng) {
+        await AsyncStorage.setItem('@blinkit_lat', String(aLat));
+        await AsyncStorage.setItem('@blinkit_lng', String(aLng));
+      }
+    }
+  } catch {}
+  if (isNaN(addrNum)) {
+    const addrRaw = await AsyncStorage.getItem('@blinkit_address_id');
+    addrNum = addrRaw ? Number(addrRaw) : NaN;
+  }
 
   const missing: { name: string; quantity: string }[] = [];
   const items: BlinkitExportItem[] = [];

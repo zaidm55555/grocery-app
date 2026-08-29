@@ -117,6 +117,65 @@ export const api = {
     ]);
   },
 
+  async getBlinkitAddresses(lat: number, lng: number): Promise<any[]> {
+    const token = await storage.getToken('blinkit');
+    if (!token) return [];
+
+    const url = `https://blinkit.com/v4/address?cur_lat=${lat}&cur_lon=${lng}`;
+    try {
+      const response = await this.fetchWithTimeout(url, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+          'access_token': token,
+          'auth_key': 'c761ec3633c22afad934fb17a66385c1c06c5472b4898b866b7306186d0bb477',
+          'app_client': 'consumer_web',
+          'lat': String(lat),
+          'lon': String(lng),
+          'platform': 'mobile_web',
+          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1'
+        }
+      });
+
+      if (!response.ok) {
+        return [];
+      }
+
+      const json = await response.json();
+      const list = json?.addresses || json?.data || json?.addresses_data || (Array.isArray(json) ? json : null);
+      if (list && !Array.isArray(list) && list.addresses_data) {
+        return list.addresses_data;
+      }
+      return Array.isArray(list) ? list : [];
+    } catch {
+      return [];
+    }
+  },
+
+  async getClosestBlinkitAddress(lat: number, lng: number): Promise<any | null> {
+    const addresses = await this.getBlinkitAddresses(lat, lng);
+    if (addresses.length === 0) return null;
+
+    let closest = addresses[0];
+    let minDistance = Infinity;
+
+    for (const addr of addresses) {
+      const aLat = parseFloat(addr.latitude || addr.lat);
+      const aLng = parseFloat(addr.longitude || addr.lon || addr.lng);
+      if (!isNaN(aLat) && !isNaN(aLng)) {
+        const dLat = lat - aLat;
+        const dLon = lng - aLng;
+        const dist = Math.sqrt(dLat * dLat + dLon * dLon);
+        if (dist < minDistance) {
+          minDistance = dist;
+          closest = addr;
+        }
+      }
+    }
+
+    return closest;
+  },
+
   /**
    * Swiggy Instamart APIs sit behind auth + WAF and reject calls made outside
    * a real page context (same constraint the desktop optimizer extension
@@ -503,10 +562,27 @@ export const api = {
             const siteAccessToken = atCookieM ? decodeURIComponent(atCookieM[1]) : '';
             const BLINKIT_APP_VERSION = '52434333';
 
-            // The saved address personalizes the bill (fee cohorts, delivery
-            // constructs) — the reference extension always sends it when known.
-            const addrRaw = simulateNoAddress ? '' : (await AsyncStorage.getItem('@blinkit_address_id'));
-            const addrNum = addrRaw ? Number(addrRaw) : NaN;
+            // Resolve the closest address from saved addresses based on the current GPS location
+            let addrNum: number = NaN;
+            if (!simulateNoAddress) {
+              try {
+                const closestAddr = await this.getClosestBlinkitAddress(lat, lng);
+                if (closestAddr && closestAddr.id) {
+                  addrNum = Number(closestAddr.id);
+                  await AsyncStorage.setItem('@blinkit_address_id', String(closestAddr.id));
+                  await AsyncStorage.setItem('@blinkit_address_name', closestAddr.address || closestAddr.text || '');
+                  const aLat = closestAddr.latitude || closestAddr.lat;
+                  const aLng = closestAddr.longitude || closestAddr.lon || closestAddr.lng;
+                  if (aLat && aLng) {
+                    await AsyncStorage.setItem('@blinkit_lat', String(aLat));
+                    await AsyncStorage.setItem('@blinkit_lng', String(aLng));
+                  }
+                }
+              } catch (e) {
+                const addrRaw = await AsyncStorage.getItem('@blinkit_address_id');
+                if (addrRaw) addrNum = Number(addrRaw);
+              }
+            }
 
             const cartsBody = JSON.stringify({
               items: slimItems,

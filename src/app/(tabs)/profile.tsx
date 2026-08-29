@@ -1,10 +1,12 @@
 import React, { useState, useCallback } from 'react';
 import { StyleSheet, View, Text, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, Alert } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { MapPin, Link2, Link2Off, Compass, Trash2, Key, Info } from 'lucide-react-native';
+import { MapPin, Link2, Link2Off, Compass, Trash2, Key, Info, RefreshCw } from 'lucide-react-native';
 import * as Location from 'expo-location';
 import { storage, Platform, LocationData } from '../../services/storage';
 import { colors, fonts, platformThemes } from '../../constants/theme';
+import { api } from '../../services/api';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export default function ProfileScreen() {
   const router = useRouter();
@@ -14,11 +16,20 @@ export default function ProfileScreen() {
   });
   const [location, setLocation] = useState<LocationData | null>(null);
   const [locLoading, setLocLoading] = useState(false);
+  const [blinkitAddressName, setBlinkitAddressName] = useState<string | null>(null);
+  const [blinkitAddressId, setBlinkitAddressId] = useState<string | null>(null);
+  const [addrLoading, setAddrLoading] = useState(false);
 
   const loadData = async () => {
     const blinkitToken = await storage.getToken('blinkit');
     const swiggyToken = await storage.getToken('swiggy');
     const userLoc = await storage.getLocation();
+
+    const savedName = await AsyncStorage.getItem('@blinkit_address_name');
+    const savedId = await AsyncStorage.getItem('@blinkit_address_id');
+    setBlinkitAddressName(savedName);
+    setBlinkitAddressId(savedId);
+
     setTokens({
       blinkit: blinkitToken,
       swiggy: swiggyToken
@@ -34,6 +45,45 @@ export default function ProfileScreen() {
       return () => clearTimeout(timer);
     }, [])
   );
+
+  const refreshBlinkitAddress = async (lat: number, lng: number) => {
+    const hasToken = await storage.getToken('blinkit');
+    if (!hasToken) return;
+    setAddrLoading(true);
+    try {
+      const closest = await api.getClosestBlinkitAddress(lat, lng);
+      if (closest) {
+        console.log('[Blinkit Address Object]', JSON.stringify(closest));
+        const addrText = closest.display_address 
+          || closest.address_string 
+          || closest.address 
+          || closest.line1 
+          || closest.text 
+          || closest.display_text 
+          || (closest.house_number ? `${closest.house_number}, ${closest.line2 || ''}` : '')
+          || 'Unnamed Address';
+        const aLat = closest.latitude || closest.lat;
+        const aLng = closest.longitude || closest.lon || closest.lng;
+        
+        setBlinkitAddressName(addrText);
+        setBlinkitAddressId(String(closest.id));
+        await AsyncStorage.setItem('@blinkit_address_id', String(closest.id));
+        await AsyncStorage.setItem('@blinkit_address_name', addrText);
+        if (aLat && aLng) {
+          await AsyncStorage.setItem('@blinkit_lat', String(aLat));
+          await AsyncStorage.setItem('@blinkit_lng', String(aLng));
+        }
+      } else {
+        setBlinkitAddressName('No Saved Addresses Found');
+        setBlinkitAddressId(null);
+      }
+    } catch (e) {
+      console.error(e);
+      setBlinkitAddressName('Error Fetching Address');
+    } finally {
+      setAddrLoading(false);
+    }
+  };
 
   const handleLink = (platform: Platform) => {
     router.push({
@@ -91,6 +141,12 @@ export default function ProfileScreen() {
 
       await storage.saveLocation(newLoc);
       setLocation(newLoc);
+      
+      const bToken = await storage.getToken('blinkit');
+      if (bToken) {
+        await refreshBlinkitAddress(loc.coords.latitude, loc.coords.longitude);
+      }
+
       Alert.alert('Location Updated', `Coordinates synced for ${city}.`);
     } catch (error) {
       console.error(error);
@@ -113,6 +169,11 @@ export default function ProfileScreen() {
 
     await storage.saveLocation(newLoc);
     setLocation(newLoc);
+    
+    const bToken = await storage.getToken('blinkit');
+    if (bToken) {
+      await refreshBlinkitAddress(lat, lng);
+    }
   };
 
   const clearAllData = async () => {
@@ -238,7 +299,36 @@ export default function ProfileScreen() {
               <Text style={styles.tokenLabel}>Extracted Token:</Text>
             </View>
             <Text style={styles.tokenText}>{truncateToken(tokens.blinkit)}</Text>
-            <TouchableOpacity style={styles.unlinkButton} onPress={() => handleUnlink('blinkit')}>
+            
+            <View style={[styles.row, { marginTop: 8 }]}>
+              <MapPin size={14} color={platformThemes.blinkit.color} />
+              <Text style={styles.tokenLabel}>Saved Address (Closest):</Text>
+            </View>
+            <Text style={styles.addressDisplayVal}>
+              {blinkitAddressName || 'No saved address found or synced'}
+            </Text>
+            {blinkitAddressId && (
+              <Text style={styles.addressIdVal}>
+                ID: {blinkitAddressId}
+              </Text>
+            )}
+
+            <TouchableOpacity 
+              style={[styles.refreshAddrButton, addrLoading && styles.disabledRefreshBtn]} 
+              onPress={() => refreshBlinkitAddress(location?.latitude || 12.9716, location?.longitude || 77.5946)}
+              disabled={addrLoading}
+            >
+              {addrLoading ? (
+                <ActivityIndicator size="small" color={platformThemes.blinkit.color} />
+              ) : (
+                <>
+                  <RefreshCw size={14} color={platformThemes.blinkit.color} style={{ marginRight: 6 }} />
+                  <Text style={[styles.refreshBtnText, { color: platformThemes.blinkit.color }]}>Refresh Saved Address</Text>
+                </>
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity style={[styles.unlinkButton, { marginTop: 16 }]} onPress={() => handleUnlink('blinkit')}>
               <Link2Off size={16} color="#EF4444" style={styles.btnIcon} />
               <Text style={styles.unlinkText}>Disconnect Session</Text>
             </TouchableOpacity>
@@ -546,5 +636,37 @@ const styles = StyleSheet.create({
     color: '#EF4444',
     fontSize: 13,
     fontWeight: '600',
+  },
+  addressDisplayVal: {
+    fontSize: 13,
+    color: colors.textPrimary,
+    fontFamily: fonts.bodyMedium,
+    marginTop: 6,
+    lineHeight: 18,
+  },
+  addressIdVal: {
+    fontSize: 11,
+    color: colors.textMuted,
+    fontFamily: fonts.body,
+    marginTop: 4,
+  },
+  refreshAddrButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: 36,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 192, 0, 0.3)',
+    backgroundColor: 'rgba(255, 192, 0, 0.05)',
+    marginTop: 12,
+    marginBottom: 6,
+  },
+  refreshBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  disabledRefreshBtn: {
+    opacity: 0.5,
   },
 });
