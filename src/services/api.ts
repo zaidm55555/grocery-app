@@ -1330,7 +1330,7 @@ function formatBlinkitImageUrl(url: string | null): string {
   return 'https://cdn.grofers.com/cdn-cgi/image/f=auto,fit=scale-down,q=70,metadata=none,w=270/' + url;
 }
 
-function parseBlinkitProducts(json: any): any[] {
+export function parseBlinkitProducts(json: any): any[] {
   const out: any[] = [];
   if (!json || typeof json !== 'object') return out;
   const visited = new Set<any>();

@@ -1,10 +1,11 @@
 import React, { useState, useCallback, useRef } from 'react';
 import { StyleSheet, View, Text, ScrollView, TouchableOpacity, Image, Alert, ActivityIndicator } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useFocusEffect } from 'expo-router';
-import { Plus, Minus, Trophy, ShieldCheck, Layers, RefreshCw, Trash2 } from 'lucide-react-native';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { Plus, Minus, Trophy, ShieldCheck, Layers, RefreshCw, Trash2, Send } from 'lucide-react-native';
 import { storage, Platform } from '../../services/storage';
 import { api, UnifiedProduct, CartCalculation, resolvePlatformProduct } from '../../services/api';
+import { exportCartToBlinkit } from '../../services/blinkitExport';
 import { colors, fonts, platformThemes, PLATFORM_ORDER } from '../../constants/theme';
 
 function LogoTile({ platform, size = 26 }: { platform: Platform; size?: number }) {
@@ -23,6 +24,7 @@ function LogoTile({ platform, size = 26 }: { platform: Platform; size?: number }
 }
 
 export default function CartScreen() {
+  const router = useRouter();
   const [cartItems, setCartItems] = useState<{ product: UnifiedProduct; quantity: number }[]>([]);
   const [calculations, setCalculations] = useState<CartCalculation[]>([]);
   const [winnerPlatform, setWinnerPlatform] = useState<Platform | null>(null);
@@ -33,6 +35,7 @@ export default function CartScreen() {
   // cards so an already-arrived platform shows up immediately.
   const [pendingPlatforms, setPendingPlatforms] = useState<Platform[]>([]);
   const [splitComputing, setSplitComputing] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const calcRunIdRef = useRef(0);
 
@@ -279,6 +282,68 @@ export default function CartScreen() {
     }
   };
 
+  // Push the optimized basket into the user's real Blinkit account as a
+  // single /v5/carts POST (the new cart replaces the old one — there is no
+  // separate empty-cart API), then open a visible Blinkit page that writes
+  // the basket into localStorage['cart'] and opens the cart drawer.
+  const handleExportToBlinkit = async () => {
+    if (exporting || cartItems.length === 0) return;
+    const linked = await storage.getToken('blinkit');
+    if (!linked) {
+      Alert.alert('Blinkit not linked', 'Link your Blinkit account in the Accounts tab first, then export your basket.', [
+        { text: 'OK' }
+      ]);
+      return;
+    }
+    setExporting(true);
+    try {
+      const result = await exportCartToBlinkit(cartItems);
+      if (!result) {
+        Alert.alert('Blinkit not linked', 'Link your Blinkit account in the Accounts tab first, then export your basket.', [
+          { text: 'OK' }
+        ]);
+        return;
+      }
+      const resolvedCount = result.items.length;
+      const missing = result.missing
+        .slice(0, 5)
+        .map((m) => `• ${m.name}`)
+        .join('\n');
+      const msgParts: string[] = [];
+      if (resolvedCount > 0) {
+        msgParts.push(`${resolvedCount} item${resolvedCount === 1 ? '' : 's'} placed in your Blinkit cart.`);
+      }
+      if (result.payableAmount != null) {
+        msgParts.push(`Live payable: ₹${result.payableAmount}`);
+      }
+      if (missing) {
+        msgParts.push(`Couldn't match:\n${missing}`);
+      }
+      Alert.alert(
+        'Export to Blinkit',
+        msgParts.length > 0 ? msgParts.join('\n\n') : 'Nothing to export — no items could be resolved.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Open Blinkit',
+            onPress: () => {
+              const cartB64 = btoaUnicode(JSON.stringify(result.cartLocalStorage));
+              router.push({
+                pathname: '/webview',
+                params: { platform: 'blinkit', mode: 'export', cart: cartB64 }
+              });
+            }
+          }
+        ]
+      );
+    } catch (err) {
+      console.error(err);
+      Alert.alert('Export failed', 'Could not place the basket in Blinkit right now. Please try again.', [{ text: 'OK' }]);
+    } finally {
+      setExporting(false);
+    }
+  };
+
   // Per-line variant rows (one sub-row per app pricing this item)
   const basketLines = cartItems.map(line => {
     const variants = PLATFORM_ORDER
@@ -305,20 +370,30 @@ export default function CartScreen() {
             <Text style={styles.title}>Optimized Basket Comparison</Text>
             <Text style={styles.subtitle}>{cartItems.length} item{cartItems.length === 1 ? '' : 's'} · live checkout bills</Text>
           </View>
-          {cartItems.length > 0 && (
-            <View style={styles.headerActions}>
-              <TouchableOpacity onPress={handleRefreshPrices} disabled={isRefreshing} style={styles.fetchBtn}>
-                {isRefreshing
-                  ? <ActivityIndicator size={12} color="#60A5FA" />
-                  : <RefreshCw size={12} color="#60A5FA" />}
-                <Text style={styles.fetchBtnText}>{isRefreshing ? 'Fetching…' : 'Fetch Real Charges'}</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={handleClearCart} style={styles.clearBtn}>
-                <Trash2 size={16} color={colors.rose} />
-              </TouchableOpacity>
-            </View>
-          )}
         </View>
+        {cartItems.length > 0 && (
+          <View style={styles.headerActions}>
+            <TouchableOpacity
+              onPress={handleExportToBlinkit}
+              disabled={exporting}
+              style={[styles.exportBtn, exporting && { opacity: 0.6 }]}
+            >
+              {exporting
+                ? <ActivityIndicator size={12} color="#F8CB46" />
+                : <Send size={12} color="#F8CB46" />}
+              <Text style={styles.exportBtnText}>{exporting ? 'Exporting…' : 'Export Blinkit'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={handleRefreshPrices} disabled={isRefreshing} style={styles.fetchBtn}>
+              {isRefreshing
+                ? <ActivityIndicator size={12} color="#60A5FA" />
+                : <RefreshCw size={12} color="#60A5FA" />}
+              <Text style={styles.fetchBtnText}>{isRefreshing ? 'Fetching…' : 'Fetch Real Charges'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={handleClearCart} style={styles.clearBtn}>
+              <Trash2 size={16} color={colors.rose} />
+            </TouchableOpacity>
+          </View>
+        )}
       </View>
 
       {loaded && cartItems.length === 0 ? (
@@ -571,6 +646,18 @@ const s_row = StyleSheet.create({
   },
 });
 
+// UTF-8-safe base64url encoder for passing the cart object through a route
+// param (URL-safe so + / = can't corrupt the query string).
+function btoaUnicode(str: string): string {
+  let b = '';
+  try {
+    b = btoa(unescape(encodeURIComponent(str)));
+  } catch {
+    b = globalThis.btoa ? globalThis.btoa(str) : str;
+  }
+  return b.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -620,7 +707,25 @@ const styles = StyleSheet.create({
   headerActions: {
     flexDirection: 'row',
     alignItems: 'center',
+    flexWrap: 'wrap',
     gap: 8,
+    marginTop: 12,
+  },
+  exportBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(248, 203, 70, 0.4)',
+    backgroundColor: 'rgba(248, 203, 70, 0.12)',
+  },
+  exportBtnText: {
+    fontFamily: fonts.bodySemiBold,
+    fontSize: 10.5,
+    color: '#F8CB46',
   },
   fetchBtn: {
     flexDirection: 'row',

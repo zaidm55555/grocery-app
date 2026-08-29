@@ -8,13 +8,121 @@ import { setSwiggySetupMode } from '../services/swiggyBridgeUi';
 import { notifyBlinkitBridgeCookies, reloadBlinkitBridge } from '../services/blinkitBridge';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
+// Builds the injected script that (1) disables + unregisters Blinkit's
+// service worker (its stale cache is what served the blank white screen and
+// broken CSS after the reload), (2) replays the captured session cookies into
+// this visible page, (3) writes the resolved basket into localStorage['cart']
+// preserving keys it doesn't own, and (4) reloads ONLY once the service worker
+// is unregistered so the fresh assets load instead of a cached shell.
+function buildBlinkitExportCartScript(cartB64: string, cookieStr: string): string {
+  const js = `
+  (function(){
+    var reloaded = false;
+    function doReload(){ if (reloaded) return; reloaded = true; try { window.location.reload(); } catch(e) {} }
+
+    function applyCart() {
+      var raw = '';
+      try {
+        var s = ${JSON.stringify(cartB64)}.replace(/-/g, '+').replace(/_/g, '/');
+        while (s.length % 4) { s += '='; }
+        raw = decodeURIComponent(escape(window.atob(s)));
+      } catch(e) {}
+      var cart = {};
+      try { cart = JSON.parse(raw) || {}; } catch(e) { cart = {}; }
+
+      // Replay non-HttpOnly session cookies (same mirror the hidden bridge
+      // uses) so the page sees the user's logged-in session.
+      var parts = String(${JSON.stringify(cookieStr)}).split(/;\\s*/);
+      for (var i = 0; i < parts.length; i++) {
+        if (!parts[i]) continue;
+        var eq = parts[i].indexOf('=');
+        if (eq <= 0) continue;
+        try { document.cookie = parts[i] + '; path=/; domain=.blinkit.com; secure; SameSite=None'; } catch(e2) {}
+      }
+
+      // Persist the basket exactly as the extension does (items, count,
+      // total, uniqueSkuInCart) while preserving the live cart's other keys.
+      var existing = null;
+      try { existing = JSON.parse(localStorage.getItem('cart')) || {}; } catch(e3) {}
+      var merged = existing;
+      for (var k in cart) { if (cart.hasOwnProperty(k)) merged[k] = cart[k]; }
+      try {
+        localStorage.setItem('cart', JSON.stringify(merged));
+        localStorage.setItem('count', String(cart.count || 0));
+        localStorage.setItem('total', String(cart.total || 0));
+        localStorage.setItem('uniqueSkuInCart', String(cart.uniqueSkuInCart || 0));
+      } catch(e4) {}
+      window.__bbExportReady = true;
+    }
+
+    applyCart();
+
+    // Disable + unregister the service worker so the upcoming reload is not
+    // served from its stale cache (root cause of the blank white page and
+    // broken basket CSS). Reload only after unregistration resolves.
+    try {
+      navigator.serviceWorker.register = function(){ return Promise.reject(new Error('sw-disabled')); };
+    } catch(e6) {}
+    try {
+      navigator.serviceWorker.getRegistrations().then(function(rs){
+        var list = Array.prototype.slice.call(rs || []);
+        if (!list.length) { doReload(); return; }
+        var remain = list.length;
+        list.forEach(function(r){
+          var done = function(){ remain--; if (remain <= 0) doReload(); };
+          try { r.unregister().then(done, done); } catch(e7) { done(); }
+        });
+      }).catch(function(){ doReload(); });
+      // Safety net: never get stuck if getRegistrations hangs.
+      setTimeout(doReload, 4000);
+    } catch(e5) { doReload(); }
+    setTimeout(doReload, 5000);
+  })();
+  `;
+  return js;
+}
+
+// After the export reload, land the user on Blinkit's dedicated cart page so
+// they can review and checkout. The SPA reads the basket we wrote into
+// localStorage['cart'] when it hydrates /cart. The service worker is already
+// killed, so navigating to /cart loads fresh assets (not a cached shell).
+function buildBlinkitOpenCartScript(): string {
+  const js = `
+  (function(){
+    function goCart() {
+      var target = '/cart';
+      try {
+        var base = window.location.origin || 'https://blinkit.com';
+        if (String(window.location.pathname).indexOf('/cart') === 0) { window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BLINKIT_CART_OPENED' })); return true; }
+        window.location.assign(base + target);
+        return true;
+      } catch(e) { return false; }
+    }
+    if (goCart()) {
+      // Wait for the cart route to actually be current before signalling the
+      // RN side that the redirect completed.
+      var iv = setInterval(function(){
+        if (String(window.location.pathname).indexOf('/cart') === 0) {
+          clearInterval(iv);
+          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BLINKIT_CART_OPENED' }));
+        }
+      }, 500);
+      setTimeout(function(){ clearInterval(iv); }, 15000);
+    }
+  })();
+  `;
+  return js;
+}
+
 export default function WebViewScreen() {
   const params = useLocalSearchParams();
   const router = useRouter();
   const platform = (params.platform as Platform) || 'blinkit';
+  const isExport = params.mode === 'export';
   const launchedSwiggySession = useRef(false);
   const [loading, setLoading] = useState(true);
   const webViewRef = useRef<WebView>(null);
+  const cartAppliedRef = useRef(isExport ? false : true);
 
   // Swiggy login/address work happens inside the single persistent bridge
   // WebView (its cookie jar is what prices carts), so just expand it.
@@ -25,6 +133,33 @@ export default function WebViewScreen() {
       router.back();
     }
   }, [platform, params.mode, router]);
+
+  // Blinkit export: replay the captured session cookies into a visible
+  // Blinkit page, write the resolved basket into localStorage['cart'], reload
+  // so the SPA hydrates, then open the cart drawer (openCartFn /
+  // cartDrawerOpenFn — the only DOM step, per the reference extension).
+  const exportCartB64 = isExport ? String(params.cart || '') : '';
+
+  useEffect(() => {
+    if (!isExport || platform !== 'blinkit') return;
+    if (!exportCartB64) return;
+
+    let applied = false;
+    const injectCookieAndCart = async () => {
+      if (applied || cartAppliedRef.current) return;
+      let cookieStr = '';
+      try {
+        cookieStr = (await AsyncStorage.getItem('@blinkit_cookies')) || '';
+      } catch {}
+      cartAppliedRef.current = true;
+      applied = true;
+      webViewRef.current?.injectJavaScript(
+        buildBlinkitExportCartScript(exportCartB64, cookieStr)
+      );
+    };
+    const timer = setTimeout(injectCookieAndCart, 1500);
+    return () => clearTimeout(timer);
+  }, [isExport, platform, exportCartB64]);
 
   const platformMeta = {
     blinkit: {
@@ -248,6 +383,10 @@ export default function WebViewScreen() {
 
   const currentMeta = platformMeta[platform];
 
+  const isExportMode = isExport && platform === 'blinkit';
+  const exportCookie = isExport ? '' : '';
+  void exportCookie;
+
   const handleMessage = async (event: any) => {
     try {
       const data = JSON.parse(event.nativeEvent.data);
@@ -255,6 +394,13 @@ export default function WebViewScreen() {
         return;
       }
       if (data.type === 'BLINKIT_NETLOG') {
+        return;
+      }
+      if (data.type === 'BLINKIT_CART_OPENED') {
+        // The export completed and we've landed on Blinkit's cart page — keep
+        // the webview open there so the user can review/checkout. (No app-side
+        // redirect: the user wants to remain on the Blinkit cart, not return
+        // to the app basket.)
         return;
       }
       if (data.type === 'BLINKIT_ADDRESS' && data.addressId) {
@@ -361,8 +507,10 @@ export default function WebViewScreen() {
           <ArrowLeft size={24} color="#FFF" />
         </TouchableOpacity>
         <View style={styles.titleContainer}>
-          <Text style={styles.headerTitle}>Link {currentMeta.name}</Text>
-          <Text style={styles.headerSubtitle}>Login to sync account</Text>
+          <Text style={styles.headerTitle}>{isExportMode ? 'Export to Blinkit' : `Link ${currentMeta.name}`}</Text>
+          <Text style={styles.headerSubtitle}>
+            {isExportMode ? 'Basket written — cart will open on the site' : 'Login to sync account'}
+          </Text>
         </View>
         <TouchableOpacity style={styles.reloadButton} onPress={reloadPage}>
           <RotateCw size={20} color="#FFF" />
@@ -373,7 +521,16 @@ export default function WebViewScreen() {
         <WebView
           ref={webViewRef}
           source={{ uri: currentMeta.url }}
-          injectedJavaScript={currentMeta.injectScript}
+          injectedJavaScript={isExportMode ? undefined : currentMeta.injectScript}
+          onLoadEnd={() => {
+            // Export: after the cart is written + page reloads, open the
+            // cart drawer so the user lands on their ready checkout.
+            if (isExportMode && cartAppliedRef.current) {
+              setTimeout(() => {
+                webViewRef.current?.injectJavaScript(buildBlinkitOpenCartScript());
+              }, 600);
+            }
+          }}
           onMessage={handleMessage}
           javaScriptEnabled={true}
           domStorageEnabled={true}
@@ -383,7 +540,9 @@ export default function WebViewScreen() {
           renderLoading={() => (
             <View style={styles.loaderContainer}>
               <ActivityIndicator size="large" color={currentMeta.primaryColor} />
-              <Text style={styles.loaderText}>Loading secure browser...</Text>
+              <Text style={styles.loaderText}>
+                {isExportMode ? 'Opening your Blinkit basket…' : 'Loading secure browser...'}
+              </Text>
             </View>
           )}
         />
@@ -392,7 +551,9 @@ export default function WebViewScreen() {
       <View style={styles.footer}>
         <View style={[styles.indicatorBall, { backgroundColor: currentMeta.primaryColor }]} />
         <Text style={styles.footerText}>
-          Enter phone number & verify OTP. The app will capture the token and close automatically.
+          {isExportMode
+            ? 'Your optimized basket is now in Blinkit. Review it, add the delivery address if asked, and place the order.'
+            : 'Enter phone number & verify OTP. The app will capture the token and close automatically.'}
         </Text>
       </View>
     </SafeAreaView>
