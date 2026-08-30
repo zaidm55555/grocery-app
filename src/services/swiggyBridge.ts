@@ -48,42 +48,6 @@ export function unregisterSwiggyInjector(fn: Injector): void {
   }
 }
 
-export function isSwiggyBridgeConnected(): boolean {
-  return injector !== null;
-}
-
-export function isSwiggyBridgeReady(): boolean {
-  return injector !== null && ready;
-}
-
-// Cookies captured by the visible linking browser (full document.cookie).
-// The hidden bridge page lives in a separate WebView whose cookie jar does
-// not reliably inherit the login, so the captured cookies are replayed into
-// the bridge page (non-HttpOnly ones) before its API calls.
-let pendingCookies: string | null = null;
-let onCookiesSink: ((cookies: string) => void) | null = null;
-
-export function notifySwiggyBridgeCookies(cookies: string): void {
-  pendingCookies = cookies;
-  try {
-    onCookiesSink?.(cookies);
-  } catch {}
-}
-
-export function takeSwiggyBridgeCookies(): string | null {
-  const c = pendingCookies;
-  pendingCookies = null;
-  return c;
-}
-
-export function registerSwiggyCookieSink(fn: (cookies: string) => void): void {
-  onCookiesSink = fn;
-}
-
-export function unregisterSwiggyCookieSink(fn: (cookies: string) => void): void {
-  if (onCookiesSink === fn) onCookiesSink = null;
-}
-
 function dispatch(entry: QueuedRequest): boolean {
   if (!injector || !ready) return false;
   try {
@@ -104,7 +68,7 @@ export function notifySwiggyBridgeReady(): void {
   }
 }
 
-export function handleSwiggyBridgeResponse(id: number, status: number, text: string): void {
+function handleSwiggyBridgeResponse(id: number, status: number, text: string): void {
   const entry = pending.get(id);
   if (!entry) return;
   clearTimeout(entry.timer);

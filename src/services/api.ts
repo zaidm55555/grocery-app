@@ -1,5 +1,5 @@
 import { storage, Platform, LocationData } from './storage';
-import { requestViaSwiggyBridge, isSwiggyBridgeConnected } from './swiggyBridge';
+import { requestViaSwiggyBridge } from './swiggyBridge';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { requestViaBlinkitBridge, getBlinkitPageStorage } from './blinkitBridge';
 
@@ -269,8 +269,9 @@ export const api = {
    * Internal direct API calls
    */
   async fetchDirectAPI(platform: Platform, query: string, token: string, location: LocationData | null): Promise<UnifiedProduct[]> {
-    const lat = location?.latitude || 12.9716;
-    const lng = location?.longitude || 77.5946;
+    if (!location) return [];
+    const lat = location.latitude;
+    const lng = location.longitude;
 
     // fetchWithTimeout is now a shared property on the api object
 
@@ -458,32 +459,15 @@ export const api = {
   },
 
   /**
-   * Post direct item add to cart or simulate it
-   */
-  async addToCart(platform: Platform, productId: string, quantity: number): Promise<boolean> {
-    const token = await storage.getToken(platform);
-    if (!token) return true; // Simulated success
-
-    try {
-      // Add implementations for Blinkit and Swiggy Instamart as needed
-      return true;
-    } catch {
-      return false; // Fallback to local app simulation
-    }
-  },
-
-  /**
    * Calculate Comparative Cart Totals.
    * Both platforms are priced in parallel; onPlatformResult fires as soon as
    * each platform's bill is resolved so the UI can show partial results.
    */
   async calculateCart(
     items: { product: UnifiedProduct; quantity: number }[],
-    forceEstimate: boolean = false,
     onPlatformResult?: (calc: CartCalculation) => void
   ): Promise<CartCalculation[]> {
     const platforms: Platform[] = ['blinkit', 'swiggy'];
-    const runStart = Date.now();
 
     const simulateNoAddress = (await AsyncStorage.getItem('@blinkit_simulate_no_address')) === '1';
 
@@ -502,14 +486,16 @@ export const api = {
       location = {
         latitude: parseFloat(bLat),
         longitude: parseFloat(bLng),
-        address: storedLocation?.address || 'Bengaluru, Karnataka, India'
+        address: storedLocation?.address || ''
       };
     }
-    const lat = location?.latitude ?? 12.9716;
-    const lng = location?.longitude ?? 77.5946;
+    const lat = location?.latitude;
+    const lng = location?.longitude;
+    // Live pricing needs real coordinates — without a synced location the
+    // calc stays a subtotal estimate rather than guessing a city.
+    const hasCoordinates = typeof lat === 'number' && typeof lng === 'number';
 
     const promises = platforms.map(async (platform) => {
-      const platformStart = Date.now();
       // Filter and use only the items that exist on this platform — either
       // via an auto-matched variant (platformPrices) or by originating here.
       const platformItems = items
@@ -533,7 +519,7 @@ export const api = {
       let total = subtotal;
       let liveBill = false;
 
-      if (subtotal > 0 && !forceEstimate) {
+      if (subtotal > 0 && hasCoordinates) {
         try {
           if (platform === 'blinkit' && blinkitToken) {
             const slimItems = platformItems.map((ci) => ({
@@ -578,7 +564,7 @@ export const api = {
                     await AsyncStorage.setItem('@blinkit_lng', String(aLng));
                   }
                 }
-              } catch (e) {
+              } catch {
                 const addrRaw = await AsyncStorage.getItem('@blinkit_address_id');
                 if (addrRaw) addrNum = Number(addrRaw);
               }
@@ -596,10 +582,6 @@ export const api = {
             // When simulateNoAddress is on, skip the bridge entirely so the
             // server sees no address context (replicates the APK no-address bug).
             let resJson: any = null;
-            let billStatus = 0;
-            const blPostStart = Date.now();
-            if (simulateNoAddress) {
-            }
             const bridgeHeaders: Record<string, string> = {
               'app_client': 'consumer_web',
               'auth_key': blinkitToken,
@@ -639,7 +621,6 @@ export const api = {
               );
             }
             if (bridged) {
-              billStatus = bridged.status;
               if (bridged.status === 200) {
                 try { resJson = JSON.parse(bridged.text); } catch {}
               }
@@ -671,7 +652,6 @@ export const api = {
             if (!isFinite(cartId) || !cartId) {
               // POST quotes are ephemeral (no id) — ask the site's session
               // which cart is currently active.
-              const blGetStart = Date.now();
               const got = await requestViaBlinkitBridge('https://blinkit.com/v5/carts', 'GET', '', {
                 'app_client': 'consumer_web',
                 'auth_key': blinkitToken,
@@ -707,7 +687,6 @@ export const api = {
                 });
                 await AsyncStorage.setItem('@blinkit_session_uuid', sessionUuid);
               }
-              const blPutStart = Date.now();
               const putRes = await requestViaBlinkitBridge(
                 `https://blinkit.com/v5/carts/${cartId}`,
                 'PUT',
@@ -733,7 +712,6 @@ export const api = {
                 try {
                   const putJson = JSON.parse(putRes.text);
                   resJson = putJson;
-                  billStatus = 200;
                 } catch {}
               } else {
                 if (putRes && (putRes.status === 404 || putRes.status === 410)) {
@@ -767,7 +745,6 @@ export const api = {
               }, 6000);
 
               if (response.ok) {
-                billStatus = response.status;
                 resJson = await response.json();
               }
             }
@@ -1447,7 +1424,7 @@ export function parseBlinkitProducts(json: any): any[] {
           const cleanName = String(name).trim();
           let cleanUnit = (unit && typeof unit === 'string') ? unit.trim() : '';
           let cartItem: any = null;
-          try { cartItem = node.atc_action && node.atc_action.add_to_cart && node.atc_action.add_to_cart.cart_item; } catch (e) {}
+          try { cartItem = node.atc_action && node.atc_action.add_to_cart && node.atc_action.add_to_cart.cart_item; } catch {}
           if (!cartItem && node.cart_item) cartItem = node.cart_item;
           if (!cleanUnit && cartItem && (cartItem.unit || cartItem.variant)) {
             cleanUnit = String(cartItem.unit || cartItem.variant).trim();

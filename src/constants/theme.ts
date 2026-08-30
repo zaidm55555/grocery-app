@@ -35,7 +35,7 @@ export const colors = {
   ambientBlue: 'rgba(40, 116, 240, 0.10)',
 };
 
-export interface PlatformTheme {
+interface PlatformTheme {
   name: string;
   tagline: string;
   etaBadge: string;

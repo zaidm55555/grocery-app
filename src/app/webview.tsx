@@ -14,7 +14,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 // NOT wipe localStorage/sessionStorage/IndexedDB here — Swiggy's SPA persists
 // auth + app state there, and clearing it crashes hydration into a blank page.
 // No DOM clicking — Swiggy has a real /instamart/cart route.
-function buildSwiggyOpenCartScript(cartUrl: string, cookieStr: string, exportCartB64: string, cartId?: string): string {
+function buildSwiggyOpenCartScript(cartUrl: string, cookieStr: string, exportCartB64: string): string {
   const js = `
   (function(){
     try {
@@ -230,7 +230,6 @@ export default function WebViewScreen() {
   const platform = (params.platform as Platform) || 'blinkit';
   const isExport = params.mode === 'export';
   const launchedSwiggySession = useRef(false);
-  const [loading, setLoading] = useState(true);
   const webViewRef = useRef<WebView>(null);
   const cartAppliedRef = useRef(isExport ? false : true);
 
@@ -246,13 +245,10 @@ export default function WebViewScreen() {
     }
   }, [isExport, platform, params.mode, router]);
 
-  // Blinkit export: replay the captured session cookies into a visible
-  // Blinkit page, write the resolved basket into localStorage['cart'], reload
-  // so the SPA hydrates, then open the cart page.
-  const exportCartB64 = isExport ? String(params.cart || '') : '';
   // Swiggy export: the basket is already committed server-side via the bridge
-  // API calls; the visible page wipes local caches and navigates to this URL.
+  // API calls; the visible page navigates to this cache-busted cart URL.
   const exportCartUrl = isExport ? String(params.url || '') : '';
+  const exportCartB64 = isExport ? String(params.cart || '') : '';
   const exportCartId = isExport ? String(params.cartId || '') : '';
   const exportOldCartId = isExport ? String(params.oldCartId || '') : '';
 
@@ -270,7 +266,7 @@ export default function WebViewScreen() {
       try {
         cookieStr = (await storage.getToken('swiggy')) || '';
       } catch {}
-      webViewRef.current?.injectJavaScript(buildSwiggyOpenCartScript(exportCartUrl, cookieStr, exportCartB64, exportCartId));
+      webViewRef.current?.injectJavaScript(buildSwiggyOpenCartScript(exportCartUrl, cookieStr, exportCartB64));
     };
     const timer = setTimeout(injectSwiggy, 1200);
     return () => clearTimeout(timer);
@@ -379,8 +375,8 @@ export default function WebViewScreen() {
           }
 
           function tryFetchAddresses(token, lat, lng, deviceId) {
-            var curLat = lat || '12.9716';
-            var curLng = lng || '77.5946';
+            var curLat = lat;
+            var curLng = lng;
             var url = 'https://blinkit.com/v4/address?cur_lat=' + curLat + '&cur_lon=' + curLng;
             window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BLINKIT_ADDR_DEBUG', url: url, status: 'fetching', token: token ? token.slice(0, 30) + '...' : 'none' }));
             fetch(url, {
@@ -454,10 +450,13 @@ export default function WebViewScreen() {
               var deviceId = localStorage.getItem('deviceId') || 'basketbuddy_' + Date.now();
               if (accessToken && !tokenFound) {
                 tokenFound = true;
-                // Try to fetch addresses from Blinkit /v4/address API
+                // Try to fetch addresses from Blinkit /v4/address API — only
+                // when real coordinates are known (no fabricated city defaults).
                 var storedLat = localStorage.getItem('selected_lat') || localStorage.getItem('latitude') || '';
                 var storedLng = localStorage.getItem('selected_lng') || localStorage.getItem('longitude') || '';
-                tryFetchAddresses(accessToken, storedLat, storedLng, deviceId);
+                if (storedLat && storedLng) {
+                  tryFetchAddresses(accessToken, storedLat, storedLng, deviceId);
+                }
               }
 
               // Send SUCCESS once we have a token. If we already found an
@@ -608,25 +607,13 @@ export default function WebViewScreen() {
             await AsyncStorage.setItem('@blinkit_lng', String(lng));
           }
         }
-        // Automatically fetch and save dummy coordinates if not set to mimic full session
-        const existingLocation = await storage.getLocation();
-        if (!existingLocation) {
-          // Prefer the Blinkit address coords when available
-          const bLat = await AsyncStorage.getItem('@blinkit_lat');
-          const bLng = await AsyncStorage.getItem('@blinkit_lng');
-          await storage.saveLocation({
-            latitude: bLat ? parseFloat(bLat) : 12.9716,
-            longitude: bLng ? parseFloat(bLng) : 77.5946,
-            address: 'Bengaluru, Karnataka, India'
-          });
-        }
         alert(`${currentMeta.name} Linked successfully!`);
         if (platform === 'blinkit') {
           setTimeout(() => reloadBlinkitBridge(), 500);
         }
         router.back();
       }
-    } catch (err) {
+    } catch {
     }
   };
 

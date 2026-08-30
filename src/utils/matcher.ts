@@ -3,7 +3,7 @@
 // (score 0 on the name term) kills the match.
 import { itemName, stripSizeToken, variantSize } from './productKey';
 
-export const MATCH_THRESHOLD = 0.4;
+const MATCH_THRESHOLD = 0.4;
 
 // Accepts both match targets ({name, unit}) and UnifiedProduct rows ({title, quantity}).
 export interface MatchableItem {
@@ -58,7 +58,7 @@ export function matchScore(target: MatchableItem, candidate: MatchableItem): num
   return Math.round((name * 0.6 + size * 0.25 + price * 0.15) * 1000) / 1000;
 }
 
-export interface BestMatch<T extends MatchableItem> {
+interface BestMatch<T extends MatchableItem> {
   candidate: T;
   score: number;
 }

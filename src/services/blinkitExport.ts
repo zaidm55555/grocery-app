@@ -55,8 +55,7 @@ async function resolveProductId(
   line: { product: UnifiedProduct; quantity: number },
   lat: number,
   lng: number,
-  authKey: string,
-  location: { latitude: number; longitude: number; address?: string } | null
+  authKey: string
 ): Promise<{ item: BlinkitExportItem | null; notFound: boolean }> {
   const v = resolvePlatformProduct(line, 'blinkit');
   const base = v?.product || null;
@@ -78,7 +77,7 @@ async function resolveProductId(
 
   // Fallback: live search to resolve the line.
   try {
-    const found = await searchBlinkitProduct(name, unit, lat, lng, authKey, location);
+    const found = await searchBlinkitProduct(name, unit, lat, lng, authKey);
     if (found) {
       return {
         item: { product_id: String(found.productId), quantity: qty, name, price, mrp, imageUrl, unit },
@@ -94,8 +93,7 @@ async function searchBlinkitProduct(
   unit: string,
   lat: number,
   lng: number,
-  authKey: string,
-  location: { latitude: number; longitude: number; address?: string } | null
+  authKey: string
 ): Promise<{ productId: string } | null> {
   const q = encodeURIComponent(name);
   const baseUrl = `https://blinkit.com/v1/layout/search?q=${q}&search_type=type_to_search&merchant_id=&offset=0&limit=60&actual_query=${q}`;
@@ -174,14 +172,15 @@ export async function createBlinkitShareLink(
   if (!authKey) return null;
 
   const location = await storage.getLocation();
-  const lat = location?.latitude ?? 12.9716;
-  const lng = location?.longitude ?? 77.5946;
+  if (!location) return null;
+  const lat = location.latitude;
+  const lng = location.longitude;
 
   const missing: { name: string; quantity: string }[] = [];
   const items: BlinkitExportItem[] = [];
 
   for (const line of cart) {
-    const { item, notFound } = await resolveProductId(line, lat, lng, authKey, location || null);
+    const { item, notFound } = await resolveProductId(line, lat, lng, authKey);
     if (item) items.push(item);
     else if (notFound) missing.push({ name: line.product.title, quantity: line.product.quantity });
   }

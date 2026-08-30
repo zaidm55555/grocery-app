@@ -31,12 +31,10 @@ export default function CartScreen() {
   const [calculations, setCalculations] = useState<CartCalculation[]>([]);
   const [winnerPlatform, setWinnerPlatform] = useState<Platform | null>(null);
   const [mostCompleteKeys, setMostCompleteKeys] = useState<Platform[]>([]);
-  const [splitSuggestion, setSplitSuggestion] = useState<any>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   // Platforms whose live bill is still being fetched — rendered as skeleton
   // cards so an already-arrived platform shows up immediately.
   const [pendingPlatforms, setPendingPlatforms] = useState<Platform[]>([]);
-  const [splitComputing, setSplitComputing] = useState(false);
   const [exporting, setExporting] = useState<Platform | 'blinkit' | 'swiggy' | null>(null);
   const [loaded, setLoaded] = useState(false);
   const calcRunIdRef = useRef(0);
@@ -95,7 +93,10 @@ export default function CartScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      // Intentionally run once per focus with the latest cart — re-adding
+      // loadCartData here would re-subscribe on every render.
       loadCartData();
+      // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [])
   );
 
@@ -105,7 +106,6 @@ export default function CartScreen() {
       setCalculations([]);
       setWinnerPlatform(null);
       setMostCompleteKeys([]);
-      setSplitSuggestion(null);
       setPendingPlatforms([]);
       return;
     }
@@ -120,7 +120,6 @@ export default function CartScreen() {
     const platformsWithItems = PLATFORM_ORDER
       .filter(p => items.some(i => i.product.platform === p || i.product.platformPrices?.[p]));
 
-    setSplitSuggestion(null);
     setWinnerPlatform(null);
     setMostCompleteKeys([]);
     setCalculations([]);
@@ -128,7 +127,7 @@ export default function CartScreen() {
 
     const arrivedCalcs: CartCalculation[] = [];
     try {
-      await api.calculateCart(items, false, (calc) => {
+      await api.calculateCart(items, (calc) => {
         if (isStale()) return;
         arrivedCalcs.push(calc);
         setCalculations(prev => [...prev.filter(c => c.platform !== calc.platform), calc]);
@@ -147,101 +146,6 @@ export default function CartScreen() {
       setPendingPlatforms([]);
     }
     if (isStale()) return;
-
-    const priced = arrivedCalcs.filter(c => c.items.length > 0);
-    const cheapestTotal = priced.length > 0 ? Math.min(...priced.map(c => c.total)) : 0;
-
-    setSplitComputing(true);
-    try {
-      await calculateSmartSplit(items, cheapestTotal, isStale);
-    } finally {
-      setSplitComputing(false);
-    }
-  };
-
-  const calculateSmartSplit = async (
-    items: { product: UnifiedProduct; quantity: number }[],
-    cheapestSingleTotal: number,
-    isStale?: () => boolean
-  ) => {
-    if (items.length <= 1) {
-      setSplitSuggestion(null);
-      return;
-    }
-
-    const blinkitItems: typeof items = [];
-    const swiggyItems: typeof items = [];
-
-    // Allocate each item to the cheapest store for that item
-    const allocationPromises = items.map(async (item) => {
-      const singleItemCalcs = (await api.calculateCart([item], true)).filter(c => c.items.length > 0);
-      if (singleItemCalcs.length === 0) return;
-
-      const cheapestOption = singleItemCalcs.reduce((min, curr) => curr.total < min.total ? curr : min, singleItemCalcs[0]);
-
-      const allocatedPlatform = cheapestOption.platform;
-      const matchedItem = cheapestOption.items[0]; // platform representation of the item
-
-      if (allocatedPlatform === 'blinkit') blinkitItems.push(allocatedItemDetail(matchedItem, 'blinkit'));
-      else if (allocatedPlatform === 'swiggy') swiggyItems.push(allocatedItemDetail(matchedItem, 'swiggy'));
-    });
-
-    await Promise.all(allocationPromises);
-    if (isStale?.()) return;
-
-    let splitTotal = 0;
-    const buckets: any[] = [];
-
-    // Price each bucket through the platform's own cart/bill APIs so every
-    // charge (delivery, packaging/convenience, small-cart, tax) is live.
-    const addBucket = async (platform: Platform, bucketItems: typeof items) => {
-      if (bucketItems.length === 0) return;
-      const bucketCalcs = await api.calculateCart(bucketItems);
-      const calc = bucketCalcs.find(c => c.platform === platform);
-      if (!calc) return;
-      splitTotal += calc.total;
-      buckets.push({
-        platform,
-        items: bucketItems,
-        total: calc.total,
-        delivery: calc.deliveryFee,
-        handling: calc.handlingFee,
-        smallCart: calc.smallCartFee,
-        tax: calc.tax
-      });
-    };
-
-    // The two buckets hit different platform sessions, so they can price in
-    // parallel — no reason to serialize the slower store behind the faster.
-    await Promise.all([
-      addBucket('blinkit', blinkitItems),
-      addBucket('swiggy', swiggyItems)
-    ]);
-    if (isStale?.()) return;
-
-    const activeBucketsCount = buckets.filter(b => b.items.length > 0).length;
-
-    // Show suggestion if splitting actually saves money AND we are utilizing more than one store
-    if (splitTotal < cheapestSingleTotal && activeBucketsCount > 1) {
-      setSplitSuggestion({
-        buckets,
-        total: splitTotal,
-        savings: cheapestSingleTotal - splitTotal
-      });
-    } else {
-      setSplitSuggestion(null);
-    }
-  };
-
-  // Helper to ensure product platform matches key
-  const allocatedItemDetail = (item: { product: UnifiedProduct; quantity: number }, platform: Platform) => {
-    return {
-      product: {
-        ...item.product,
-        platform
-      },
-      quantity: item.quantity
-    };
   };
 
   const handleUpdateQuantity = async (productId: string, delta: number) => {
@@ -607,7 +511,7 @@ export default function CartScreen() {
                       <Text style={[styles.statusText, { color: '#60A5FA' }]}>Fetching…</Text>
                     </View>
                   </View>
-                  {[64, 52, 70].map((w, i) => (
+                  {[64, 52, 70].map((_, i) => (
                     <View key={i} style={[styles.skeletonBar, { width: `${100 - i * 18}%`, marginTop: 10 }]} />
                   ))}
                   <View style={[styles.skeletonBar, { width: '45%', height: 16, marginTop: 18 }]} />
@@ -615,45 +519,6 @@ export default function CartScreen() {
               );
             })}
           </View>
-
-          {/* Smart split computing hint */}
-          {splitComputing && !splitSuggestion && (
-            <View style={styles.splitComputingRow}>
-              <ActivityIndicator size="small" color={colors.accentSecondary} />
-              <Text style={styles.splitComputingText}>Evaluating smart split options…</Text>
-            </View>
-          )}
-
-          {/* Smart Split suggestion */}
-          {splitSuggestion && (
-            <View style={styles.splitCard}>
-              <View style={styles.splitHeader}>
-                <Trophy size={16} color={colors.accentSecondary} />
-                <Text style={styles.splitTitle}>Save extra ₹{splitSuggestion.savings} with a split order</Text>
-              </View>
-              <Text style={styles.splitDescription}>
-                Buying each item from its cheaper app beats the best single-store checkout — even after both delivery fees.
-              </Text>
-
-              <View style={styles.splitRoute}>
-                {splitSuggestion.buckets.map((b: any) => {
-                  const t = platformThemes[b.platform as Platform];
-                  return (
-                    <View key={b.platform} style={styles.splitCell}>
-                      <LogoTile platform={b.platform as Platform} size={22} />
-                      <Text style={[styles.splitAppName, { color: t.color }]}>{t.name}</Text>
-                      <Text style={styles.splitCellDetail}>{b.items.length} items · ₹{b.total}</Text>
-                    </View>
-                  );
-                })}
-              </View>
-
-              <View style={styles.splitTotalRow}>
-                <Text style={styles.splitTotalLabel}>Split combined total</Text>
-                <Text style={styles.splitTotalValue}>₹{splitSuggestion.total}</Text>
-              </View>
-            </View>
-          )}
 
           <View style={styles.footerNote}>
             <Text style={styles.noteText}>
@@ -1065,91 +930,6 @@ const styles = StyleSheet.create({
     height: 10,
     borderRadius: 5,
     backgroundColor: 'rgba(255, 255, 255, 0.06)',
-  },
-  splitComputingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingVertical: 13,
-    paddingHorizontal: 14,
-    marginTop: 14,
-    backgroundColor: 'rgba(139, 92, 246, 0.08)',
-    borderWidth: 1,
-    borderColor: 'rgba(139, 92, 246, 0.35)',
-    borderRadius: 16,
-  },
-  splitComputingText: {
-    fontFamily: fonts.bodyMedium,
-    fontSize: 12,
-    color: '#C4B5FD',
-  },
-  splitCard: {
-    backgroundColor: 'rgba(139, 61, 255, 0.12)',
-    borderWidth: 1,
-    borderColor: 'rgba(139, 61, 255, 0.4)',
-    borderRadius: 18,
-    padding: 16,
-    marginTop: 16,
-  },
-  splitHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 7,
-  },
-  splitTitle: {
-    fontFamily: fonts.heading,
-    fontSize: 14,
-    color: '#DDD6FE',
-    flex: 1,
-  },
-  splitDescription: {
-    fontFamily: fonts.body,
-    fontSize: 11.5,
-    color: '#C4B5FD',
-    lineHeight: 17,
-    marginBottom: 13,
-  },
-  splitRoute: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  splitCell: {
-    flex: 1,
-    backgroundColor: 'rgba(11, 15, 25, 0.55)',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(139, 61, 255, 0.25)',
-    padding: 11,
-    gap: 5,
-  },
-  splitAppName: {
-    fontFamily: fonts.bodySemiBold,
-    fontSize: 12,
-  },
-  splitCellDetail: {
-    fontFamily: fonts.body,
-    fontSize: 10.5,
-    color: '#C4B5FD',
-  },
-  splitTotalRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(139, 61, 255, 0.35)',
-    paddingTop: 13,
-    marginTop: 13,
-  },
-  splitTotalLabel: {
-    fontFamily: fonts.bodyMedium,
-    fontSize: 11.5,
-    color: '#C4B5FD',
-  },
-  splitTotalValue: {
-    fontFamily: fonts.headingBold,
-    fontSize: 19,
-    color: '#FFF',
   },
   emptyState: {
     alignItems: 'center',

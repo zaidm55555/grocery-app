@@ -155,7 +155,7 @@ export default function SearchScreen() {
     }
   }, []);
 
-  const startTargetSearches = useCallback((target: MatchTarget, sourcePlatform: Platform, others: Platform[]) => {
+  const startTargetSearches = useCallback((target: MatchTarget, others: Platform[]) => {
     setMatchFlow(prev => {
       if (!prev) return prev;
       const cells: Partial<Record<Platform, MatchCell>> = {};
@@ -193,7 +193,7 @@ export default function SearchScreen() {
     const existing = matchFlowRef.current;
     if (existing && existing.sourcePlatform === p.platform) {
       // Batch: merge into the open session (like the desktop optimizer)
-      startTargetSearches(target, existing.sourcePlatform, existing.otherPlatforms);
+      startTargetSearches(target, existing.otherPlatforms);
     } else {
       const flow: MatchFlowState = {
         step: 'searching',
@@ -205,7 +205,7 @@ export default function SearchScreen() {
       };
       setMatchFlow(flow);
       // let state land, then kick off searches which mutate via updater
-      setTimeout(() => startTargetSearches(target, p.platform, others), 0);
+      setTimeout(() => startTargetSearches(target, others), 0);
     }
   }, [startTargetSearches]);
 
@@ -293,7 +293,6 @@ export default function SearchScreen() {
     setCartItems(updated);
     await storage.saveCart(updated);
     beginMatchFlow(newLine);
-    await api.addToCart(product.platform, product.originalId || product.id, 1);
   };
 
   // A product and its auto-matched twins share ONE basket line — resolve by

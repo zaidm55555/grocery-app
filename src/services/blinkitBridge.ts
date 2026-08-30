@@ -35,10 +35,6 @@ export function unregisterBlinkitInjector(fn: Injector): void {
   }
 }
 
-export function isBlinkitBridgeReady(): boolean {
-  return injector !== null && ready;
-}
-
 let pendingCookies: string | null = null;
 
 // Reload callback registered by the bridge WebView component.
@@ -56,25 +52,11 @@ export function reloadBlinkitBridge(): void {
   if (reloadCallback) reloadCallback();
 }
 
-let clearCallback: (() => void) | null = null;
-
-export function registerBlinkitBridgeClearLocalStorage(fn: () => void): void {
-  clearCallback = fn;
-}
-
-export function unregisterBlinkitBridgeClearLocalStorage(): void {
-  clearCallback = null;
-}
-
-export function clearBlinkitBridgeLocalStorage(): void {
-  if (clearCallback) clearCallback();
-}
-
 // Full values of interesting localStorage keys relayed by the page
 // ('cart' holds the persistent cart object incl. its id).
 const pageStorage: Record<string, string> = {};
 
-export function handleBlinkitLocalStorage(key: string, value: string): void {
+function handleBlinkitLocalStorage(key: string, value: string): void {
   pageStorage[key] = value;
 }
 
@@ -102,7 +84,7 @@ function dispatch(entry: QueuedRequest): boolean {
   }
 }
 
-export function notifyBlinkitBridgeReady(): void {
+function notifyBlinkitBridgeReady(): void {
   if (ready) return;
   ready = true;
   while (queue.length > 0) {

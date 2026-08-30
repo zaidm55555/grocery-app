@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { StyleSheet, View, Text, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, Alert } from 'react-native';
+import { StyleSheet, View, Text, ScrollView, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { MapPin, Link2, Link2Off, Compass, Trash2, Key, Info, RefreshCw } from 'lucide-react-native';
 import * as Location from 'expo-location';
@@ -129,9 +129,8 @@ export default function ProfileScreen() {
         longitude: loc.coords.longitude
       });
 
-      const city = geocode[0]?.city || geocode[0]?.subregion || 'Bengaluru';
-      const area = geocode[0]?.street || geocode[0]?.district || 'Central Area';
-      const addressString = `${area}, ${city}, ${geocode[0]?.region || ''}`;
+      const city = geocode[0]?.city || geocode[0]?.subregion || 'Unknown location';
+      const addressString = [geocode[0]?.street, geocode[0]?.district, city, geocode[0]?.region].filter(Boolean).join(', ') || 'Unknown location';
 
       const newLoc = {
         latitude: loc.coords.latitude,
@@ -147,32 +146,12 @@ export default function ProfileScreen() {
         await refreshBlinkitAddress(loc.coords.latitude, loc.coords.longitude);
       }
 
-      Alert.alert('Location Updated', `Coordinates synced for ${city}.`);
+      Alert.alert('Location Updated', `Location synced for ${city}.`);
     } catch (error) {
       console.error(error);
-      Alert.alert('Location Error', 'Failed to retrieve GPS location coordinates.');
+      Alert.alert('Location Error', 'Failed to retrieve GPS location.');
     } finally {
       setLocLoading(false);
-    }
-  };
-
-  const handleManualLocation = async (latStr: string, lngStr: string) => {
-    const lat = parseFloat(latStr);
-    const lng = parseFloat(lngStr);
-    if (isNaN(lat) || isNaN(lng)) return;
-
-    const newLoc: LocationData = {
-      latitude: lat,
-      longitude: lng,
-      address: `Manual Coordinates (${lat.toFixed(4)}, ${lng.toFixed(4)})`
-    };
-
-    await storage.saveLocation(newLoc);
-    setLocation(newLoc);
-    
-    const bToken = await storage.getToken('blinkit');
-    if (bToken) {
-      await refreshBlinkitAddress(lat, lng);
     }
   };
 
@@ -211,21 +190,16 @@ export default function ProfileScreen() {
       <View style={styles.card}>
         <View style={styles.cardHeader}>
           <MapPin size={20} color={colors.accentSecondary} />
-          <Text style={styles.cardTitle}>Coordinates & Delivery Address</Text>
+          <Text style={styles.cardTitle}>Delivery Location</Text>
         </View>
         <Text style={styles.cardDescription}>
-          Inventories and pricing are location-dependent. Sync coordinates to get accurate catalog data.
+          Inventories and pricing are location-dependent. Sync your location to get accurate catalog data.
         </Text>
 
         <View style={styles.locationDisplay}>
           <Text style={styles.locationText} numberOfLines={1}>
             {location?.address || 'No Location Synced'}
           </Text>
-          {location && (
-            <Text style={styles.coordText}>
-              Lat: {location.latitude.toFixed(5)} | Lng: {location.longitude.toFixed(5)}
-            </Text>
-          )}
         </View>
 
         <TouchableOpacity 
@@ -242,32 +216,6 @@ export default function ProfileScreen() {
             </>
           )}
         </TouchableOpacity>
-
-        {/* Manual coordinates inputs */}
-        <View style={styles.manualInputs}>
-          <View style={styles.inputCol}>
-            <Text style={styles.inputLabel}>Latitude</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="e.g. 12.9716"
-              placeholderTextColor="#566079"
-              keyboardType="numeric"
-              defaultValue={location?.latitude ? String(location.latitude) : ''}
-              onEndEditing={(e) => handleManualLocation(e.nativeEvent.text, String(location?.longitude || '77.5946'))}
-            />
-          </View>
-          <View style={styles.inputCol}>
-            <Text style={styles.inputLabel}>Longitude</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="e.g. 77.5946"
-              placeholderTextColor="#566079"
-              keyboardType="numeric"
-              defaultValue={location?.longitude ? String(location.longitude) : ''}
-              onEndEditing={(e) => handleManualLocation(String(location?.latitude || '12.9716'), e.nativeEvent.text)}
-            />
-          </View>
-        </View>
       </View>
 
       {/* Platform Cards */}
@@ -315,7 +263,13 @@ export default function ProfileScreen() {
 
             <TouchableOpacity 
               style={[styles.refreshAddrButton, addrLoading && styles.disabledRefreshBtn]} 
-              onPress={() => refreshBlinkitAddress(location?.latitude || 12.9716, location?.longitude || 77.5946)}
+              onPress={() => {
+                if (!location) {
+                  Alert.alert('No Location Set', 'Sync your GPS location first to pick the nearest saved address.');
+                  return;
+                }
+                refreshBlinkitAddress(location.latitude, location.longitude);
+              }}
               disabled={addrLoading}
             >
               {addrLoading ? (
@@ -461,11 +415,6 @@ const styles = StyleSheet.create({
     color: colors.textPrimary,
     marginBottom: 4,
   },
-  coordText: {
-    fontSize: 11,
-    color: colors.textMuted,
-    fontFamily: fonts.bodyMedium,
-  },
   primaryButton: {
     backgroundColor: colors.accentSecondary,
     flexDirection: 'row',
@@ -484,31 +433,6 @@ const styles = StyleSheet.create({
     color: colors.textPrimary,
     fontSize: 14,
     fontFamily: fonts.bodySemiBold,
-  },
-  manualInputs: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 16,
-    gap: 12,
-  },
-  inputCol: {
-    flex: 1,
-  },
-  inputLabel: {
-    fontSize: 11,
-    fontFamily: fonts.bodySemiBold,
-    color: colors.textMuted,
-    marginBottom: 6,
-  },
-  input: {
-    backgroundColor: colors.bgDark,
-    borderWidth: 1,
-    borderColor: colors.glassBorder,
-    borderRadius: 8,
-    height: 40,
-    paddingHorizontal: 12,
-    color: '#FFF',
-    fontSize: 13,
   },
   sectionTitle: {
     fontSize: 16,

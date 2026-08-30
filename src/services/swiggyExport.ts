@@ -218,8 +218,9 @@ export async function exportCartToSwiggy(
   if (!token) return null;
 
   const location = await storage.getLocation();
-  const lat = location?.latitude ?? 12.9716;
-  const lng = location?.longitude ?? 77.5946;
+  if (!location) return null;
+  const lat = location.latitude;
+  const lng = location.longitude;
 
   // Resolve items: fast-path stored IDs first, then fresh search.
   const missing: { name: string; quantity: string }[] = [];
@@ -251,7 +252,7 @@ export async function exportCartToSwiggy(
   if (unresolvedNames.length && resolvedStoreId && storeInfo) {
     for (let i = 0; i < resolved.length; i++) {
       if (resolved[i]) continue;
-      const need = unresolvedNames.find((u, ui) => u.origIndex === i);
+      const need = unresolvedNames.find((u) => u.origIndex === i);
       if (!need) continue;
       const found = await freshSearchItem(need.name, need.unit, storeInfo);
       if (found) {
