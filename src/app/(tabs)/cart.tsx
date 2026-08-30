@@ -1,11 +1,12 @@
 import React, { useState, useCallback, useRef } from 'react';
-import { StyleSheet, View, Text, ScrollView, TouchableOpacity, Image, Alert, ActivityIndicator } from 'react-native';
+import { StyleSheet, View, Text, ScrollView, TouchableOpacity, Image, Alert, ActivityIndicator, Linking } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Plus, Minus, Trophy, ShieldCheck, Layers, RefreshCw, Trash2, Send } from 'lucide-react-native';
 import { storage, Platform } from '../../services/storage';
 import { api, UnifiedProduct, CartCalculation, resolvePlatformProduct } from '../../services/api';
-import { exportCartToBlinkit } from '../../services/blinkitExport';
+import { createBlinkitShareLink } from '../../services/blinkitExport';
 import { exportCartToSwiggy } from '../../services/swiggyExport';
 import { colors, fonts, platformThemes, PLATFORM_ORDER } from '../../constants/theme';
 
@@ -305,18 +306,38 @@ export default function CartScreen() {
     setExporting(platform);
     try {
       if (platform === 'blinkit') {
-        const blinkitResult = await exportCartToBlinkit(cartItems);
-        if (!blinkitResult) {
-          Alert.alert('Blinkit not linked', 'Link your Blinkit account in the Accounts tab first, then export your basket.', [
+        const share = await createBlinkitShareLink(cartItems);
+        if (!share) {
+          Alert.alert('Could not create a share link', 'None of the basket items could be resolved to Blinkit products. Try removing unmatched items.', [
             { text: 'OK' }
           ]);
           return;
         }
-        const cartB64 = btoaUnicode(JSON.stringify(blinkitResult.cartLocalStorage));
-        router.push({
-          pathname: '/webview',
-          params: { platform: 'blinkit', mode: 'export', cart: cartB64 }
-        });
+        if (!share.url) {
+          console.warn('[BlinkitShare] no share url extracted', share);
+          Alert.alert('Could not create a share link', 'Blinkit did not return a shareable link. Please try again in a moment.', [
+            { text: 'OK' }
+          ]);
+          return;
+        }
+        try {
+          await Clipboard.setStringAsync(share.url);
+        } catch {}
+        if (share.missing.length > 0) {
+          Alert.alert(
+            `${share.missing.length} item${share.missing.length === 1 ? '' : 's'} skipped`,
+            `${share.missing.map((m) => m.name).join(', ')} could not be matched on Blinkit and was left out of the share link.`,
+            [{ text: 'OK' }]
+          );
+        }
+        try {
+          await Linking.openURL(share.url);
+        } catch (e) {
+          console.warn('[BlinkitShare] open failed', e);
+          Alert.alert('Could not open the link', 'Copy the basket link and open it in Blinkit manually.', [
+            { text: 'OK' }
+          ]);
+        }
         return;
       }
 
