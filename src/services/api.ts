@@ -87,28 +87,6 @@ export interface CartCalculation {
 
 // fetchWithTimeout is now defined inside the api object
 
-// Simulated data generator for fallback
-const MOCK_PRODUCTS: Record<Platform, { title: string; brand: string; quantity: string; price: number; originalPrice: number; imageUrl: string }[]> = {
-  blinkit: [
-    { title: 'Amul Taaza Toned Milk', brand: 'Amul', quantity: '500 ml', price: 28, originalPrice: 28, imageUrl: 'https://images.unsplash.com/photo-1550583724-b2692b85b150?auto=format&fit=crop&w=200&q=80' },
-    { title: 'Nandini GoodLife UHT Milk', brand: 'Nandini', quantity: '1 L', price: 58, originalPrice: 58, imageUrl: 'https://images.unsplash.com/photo-1563636619-e9143da7973b?auto=format&fit=crop&w=200&q=80' },
-    { title: 'Britannia Sandwich Bread', brand: 'Britannia', quantity: '400 g', price: 38, originalPrice: 45, imageUrl: 'https://images.unsplash.com/photo-1509440159596-0249088772ff?auto=format&fit=crop&w=200&q=80' },
-    { title: 'Harvest Gold Brown Bread', brand: 'Harvest Gold', quantity: '400 g', price: 46, originalPrice: 50, imageUrl: 'https://images.unsplash.com/photo-1549931319-a545dcf3bc73?auto=format&fit=crop&w=200&q=80' },
-    { title: 'Eggs Table White Pack', brand: 'Blinkit Select', quantity: '6 pcs', price: 42, originalPrice: 50, imageUrl: 'https://images.unsplash.com/photo-1506976785307-8732e854ad03?auto=format&fit=crop&w=200&q=80' },
-    { title: 'Amul Salted Butter', brand: 'Amul', quantity: '100 g', price: 59, originalPrice: 60, imageUrl: 'https://images.unsplash.com/photo-1589985270826-4b7bb135bc9d?auto=format&fit=crop&w=200&q=80' },
-    { title: 'Amul Cheese Slices', brand: 'Amul', quantity: '10 pcs (200 g)', price: 138, originalPrice: 145, imageUrl: 'https://images.unsplash.com/photo-1589985270826-4b7bb135bc9d?auto=format&fit=crop&w=200&q=80' },
-  ],
-  swiggy: [
-    { title: 'Amul Taaza Toned Fresh Milk', brand: 'Amul', quantity: '500 ml', price: 28, originalPrice: 28, imageUrl: 'https://images.unsplash.com/photo-1550583724-b2692b85b150?auto=format&fit=crop&w=200&q=80' },
-    { title: 'Nandini GoodLife Premium Milk', brand: 'Nandini', quantity: '1 L', price: 57, originalPrice: 58, imageUrl: 'https://images.unsplash.com/photo-1563636619-e9143da7973b?auto=format&fit=crop&w=200&q=80' },
-    { title: 'Britannia Jumbo Sandwich Bread', brand: 'Britannia', quantity: '400 g', price: 42, originalPrice: 45, imageUrl: 'https://images.unsplash.com/photo-1509440159596-0249088772ff?auto=format&fit=crop&w=200&q=80' },
-    { title: 'Harvest Gold Brown Bread Premium', brand: 'Harvest Gold', quantity: '400 g', price: 47, originalPrice: 50, imageUrl: 'https://images.unsplash.com/photo-1549931319-a545dcf3bc73?auto=format&fit=crop&w=200&q=80' },
-    { title: 'Egg First Premium Fresh Eggs', brand: 'Egg First', quantity: '6 pcs', price: 50, originalPrice: 60, imageUrl: 'https://images.unsplash.com/photo-1506976785307-8732e854ad03?auto=format&fit=crop&w=200&q=80' },
-    { title: 'Amul Salted Butter Classic', brand: 'Amul', quantity: '100 g', price: 60, originalPrice: 60, imageUrl: 'https://images.unsplash.com/photo-1589985270826-4b7bb135bc9d?auto=format&fit=crop&w=200&q=80' },
-    { title: 'Amul Cheese Slices Value Pack', brand: 'Amul', quantity: '10 pcs (200 g)', price: 142, originalPrice: 145, imageUrl: 'https://images.unsplash.com/photo-1589985270826-4b7bb135bc9d?auto=format&fit=crop&w=200&q=80' },
-  ]
-};
-
 export const api = {
   fetchWithTimeout(url: string, options: RequestInit, timeout = 6000): Promise<Response> {
     return Promise.race([
@@ -156,24 +134,36 @@ export const api = {
     const addresses = await this.getBlinkitAddresses(lat, lng);
     if (addresses.length === 0) return null;
 
-    let closest = addresses[0];
+    const distanceKm = (aLat: number, aLng: number, bLat: number, bLng: number): number => {
+      const R = 6371;
+      const dLat = (bLat - aLat) * Math.PI / 180;
+      const dLng = (bLng - aLng) * Math.PI / 180;
+      return 2 * R * Math.asin(Math.sqrt(
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(aLat * Math.PI / 180) * Math.cos(bLat * Math.PI / 180) * Math.sin(dLng / 2) ** 2
+      ));
+    };
+
+    let closest: any = null;
     let minDistance = Infinity;
 
     for (const addr of addresses) {
       const aLat = parseFloat(addr.latitude || addr.lat);
       const aLng = parseFloat(addr.longitude || addr.lon || addr.lng);
       if (!isNaN(aLat) && !isNaN(aLng)) {
-        const dLat = lat - aLat;
-        const dLon = lng - aLng;
-        const dist = Math.sqrt(dLat * dLat + dLon * dLon);
-        if (dist < minDistance) {
-          minDistance = dist;
+        const d = distanceKm(lat, lng, aLat, aLng);
+        if (d < minDistance) {
+          minDistance = d;
           closest = addr;
         }
       }
     }
 
-    return closest;
+    // Only return the address if it is within 35km of the user's current/manual location
+    if (closest && minDistance <= 35) {
+      return closest;
+    }
+    return null;
   },
 
   /**
@@ -338,12 +328,10 @@ export const api = {
         if (!id) continue;
         if (!found.has(id)) {
           found.set(id, { id, a, source, name, coords });
-          console.log(`[Swiggy Address API] + Address id="${id}" name="${name || 'unnamed'}" coords=${coords ? `${coords.lat.toFixed(4)},${coords.lon.toFixed(4)}` : 'NONE'} source=[${source}]`);
         } else {
           const existing = found.get(id)!;
           if (!existing.coords && coords) {
             found.set(id, { id, a: { ...existing.a, ...a }, source: `${existing.source}+${source}`, name: name || existing.name, coords });
-            console.log(`[Swiggy Address API] ^ Upgraded coords for id="${id}" to ${coords.lat.toFixed(4)},${coords.lon.toFixed(4)} from [${source}]`);
           }
         }
       }
@@ -385,14 +373,10 @@ export const api = {
               }
             }
             if (parsedData) {
-              const prevCount = found.size;
               ingest(source, parsedData);
-              console.log(`[Swiggy Address API] [${source}] parsed ${found.size - prevCount} new address(es) (total: ${found.size})`);
             }
           }
-        } catch (e: any) {
-          console.log(`[Swiggy Address API] [${source}] fetch error:`, e?.message || e);
-        }
+        } catch {}
       })
     );
 
@@ -407,9 +391,7 @@ export const api = {
         if (orderRes && orderRes.ok) {
           const json = await orderRes.json().catch(() => null);
           if (json?.data?.orders && Array.isArray(json.data.orders) && json.data.orders.length > 0) {
-            const prevCount = found.size;
             ingest(`orders-p${page + 1}`, json);
-            console.log(`[Swiggy Address API] [orders-p${page + 1}] parsed ${found.size - prevCount} new address(es) (total: ${found.size})`);
             const last = json.data.orders[json.data.orders.length - 1];
             if (last?.order_id && String(last.order_id) !== lastOrderId) {
               lastOrderId = String(last.order_id);
@@ -423,9 +405,7 @@ export const api = {
           break;
         }
       }
-    } catch (e: any) {
-      console.log('[Swiggy Address API] order pagination error:', e?.message || e);
-    }
+    } catch {}
 
     // In-page bridge evaluation across React/Redux state, Next data, and storage
     try {
@@ -506,13 +486,9 @@ export const api = {
       `, 4000);
       if (evalRes && evalRes.text) {
         const parsed = JSON.parse(evalRes.text);
-        const prevCount = found.size;
         ingest('bridge-eval', parsed);
-        console.log(`[Swiggy Address API] [bridge-eval] parsed ${found.size - prevCount} new address(es) (total: ${found.size})`);
       }
-    } catch (e: any) {
-      console.log('[Swiggy Address API] [bridge-eval] error:', e?.message || e);
-    }
+    } catch {}
 
     return [...found.values()].map(e => ({
       id: e.id,
@@ -557,7 +533,8 @@ export const api = {
     if (!force && cached?.id && typeof cached.lat === 'number' && typeof cached.lng === 'number') {
       const fresh = typeof cached.at === 'number' && Date.now() - cached.at < 24 * 3600 * 1000;
       const nearby = distanceKm(lat, lng, cached.lat, cached.lng) < 6;
-      if (fresh && nearby) {
+      const cachedLocNearby = !cached.location || distanceKm(lat, lng, cached.location.latitude, cached.location.longitude) <= 35;
+      if (fresh && nearby && cachedLocNearby) {
         return {
           id: String(cached.id),
           name: cached.name || null,
@@ -569,7 +546,6 @@ export const api = {
 
     try {
       const addresses = await this.getSwiggyAddresses(lat, lng);
-      console.log(`[Swiggy Address] GPS ${lat.toFixed(5)},${lng.toFixed(5)} — found ${addresses.length} address(es)`);
 
       const scored = addresses.map((a) => {
         const d = (typeof a.latitude === 'number' && typeof a.longitude === 'number')
@@ -590,11 +566,25 @@ export const api = {
       });
 
       if (scored.length === 0) {
-        console.warn('[Swiggy Address] no saved addresses found in user account');
+        await AsyncStorage.removeItem(KEY);
+        await AsyncStorage.removeItem('@swiggy_address_id');
+        await AsyncStorage.removeItem('@swiggy_address_name');
+        await AsyncStorage.removeItem('@swiggy_lat');
+        await AsyncStorage.removeItem('@swiggy_lng');
         return null;
       }
 
       const best = scored[0];
+      if (!best || best.distanceKm > 35 || best.distanceKm < 0) {
+        // No saved address within 35km of current location
+        await AsyncStorage.removeItem(KEY);
+        await AsyncStorage.removeItem('@swiggy_address_id');
+        await AsyncStorage.removeItem('@swiggy_address_name');
+        await AsyncStorage.removeItem('@swiggy_lat');
+        await AsyncStorage.removeItem('@swiggy_lng');
+        return null;
+      }
+
       await AsyncStorage.setItem(KEY, JSON.stringify({
         id: best.id,
         name: best.name,
@@ -610,7 +600,6 @@ export const api = {
         await AsyncStorage.setItem('@swiggy_lat', String(best.location.latitude));
         await AsyncStorage.setItem('@swiggy_lng', String(best.location.longitude));
       }
-      console.log(`[Swiggy Address] selected "${best.name || best.id}" (${best.distanceKm >= 0 ? `${best.distanceKm}km` : 'unknown dist'} from GPS) location:`, best.location);
       return {
         id: best.id,
         name: best.name,
@@ -618,7 +607,6 @@ export const api = {
         distanceKm: best.distanceKm
       };
     } catch (e) {
-      console.warn('[Swiggy Address] resolve failed:', e);
       return null;
     }
   },
@@ -633,7 +621,6 @@ export const api = {
         text: async () => bridged.text
       };
     }
-    console.warn('[Swiggy API Checkout] bridge not connected — falling back to direct fetch');
     const token = await storage.getToken('swiggy');
     const headers: Record<string, string> = {
       'Accept': 'application/json, text/plain, */*',
@@ -649,38 +636,21 @@ export const api = {
     }, 8000);
   },
 
-  /**
-   * Universal Search Products across platforms.
-   * Platforms are queried in parallel; onPlatformResults fires the moment a
-   * single platform answers so the UI can render partial results without
-   * waiting for both Blinkit and Swiggy.
-   */
   async search(query: string, onPlatformResults?: (platform: Platform, results: UnifiedProduct[]) => void): Promise<UnifiedProduct[]> {
     const platforms: Platform[] = ['blinkit', 'swiggy'];
     const searchPromises = platforms.map(async (platform) => {
-      const startedAt = Date.now();
       const token = await storage.getToken(platform);
       const location = await storage.getLocation();
 
-      let results: UnifiedProduct[];
-      if (!token) {
-        // Return simulated products for this platform
-        results = this.getSimulatedProducts(platform, query);
-      } else {
+      let results: UnifiedProduct[] = [];
+      if (token) {
         try {
-          // Make the direct network fetch
           results = await this.fetchDirectAPI(platform, query, token, location);
         } catch (error) {
-          console.warn(`Direct fetch failed for ${platform}, falling back to simulation.`, error);
-          // Fall back to simulation but mark them as simulated
-          results = this.getSimulatedProducts(platform, query).map(p => ({
-            ...p,
-            isSimulated: true
-          }));
+          results = [];
         }
       }
 
-      console.log(`[timing] search "${query}" ${platform}: ${Date.now() - startedAt}ms (${results.length} items)`);
       onPlatformResults?.(platform, results);
       return results;
     });
@@ -689,10 +659,6 @@ export const api = {
     return allResults.flat();
   },
 
-  /**
-   * Search a single platform — used by the auto-matcher to find candidates
-   * for the same product on the other apps. Empty array when no session.
-   */
   async searchSingle(platform: Platform, query: string): Promise<UnifiedProduct[]> {
     const token = await storage.getToken(platform);
     if (!token) return [];
@@ -700,20 +666,14 @@ export const api = {
     try {
       return await this.fetchDirectAPI(platform, query, token, location);
     } catch (error) {
-      console.warn(`[searchSingle] ${platform} failed for "${query}":`, error);
       return [];
     }
   },
 
-  /**
-   * Internal direct API calls
-   */
   async fetchDirectAPI(platform: Platform, query: string, token: string, location: LocationData | null): Promise<UnifiedProduct[]> {
     if (!location) return [];
     const lat = location.latitude;
     const lng = location.longitude;
-
-    // fetchWithTimeout is now a shared property on the api object
 
     if (platform === 'blinkit') {
       let bLat = lat;
@@ -768,12 +728,10 @@ export const api = {
     }
 
     if (platform === 'swiggy') {
-      // Step 1: Discover store and layout info for the delivery location (respecting pinned address if set)
       const delivery = await this.resolveSwiggyDeliveryAddress(lat, lng);
       const searchLat = delivery?.location?.latitude ?? lat;
       const searchLng = delivery?.location?.longitude ?? lng;
 
-      const homeStart = Date.now();
       const homeUrl = `https://www.swiggy.com/api/instamart/home/v2?offset=0&storeId=&primaryStoreId=&secondaryStoreId=&clientId=INSTAMART-APP&lat=${searchLat.toFixed(6)}&lng=${searchLng.toFixed(6)}&overrideLocation=true`;
       let homeResponse = await this.swiggyApiFetch(homeUrl);
       if (!homeResponse.ok) {
@@ -787,20 +745,17 @@ export const api = {
         });
       }
 
-      console.log(`[Swiggy API Home] status: ${homeResponse.status} (${Date.now() - homeStart}ms)`);
       if (!homeResponse.ok) {
         throw new Error(`Swiggy home/v2 discovery error: ${homeResponse.status}`);
       }
 
       const homeJson = await homeResponse.json();
       const store = findStoreInfo(homeJson);
-      console.log(`[Swiggy API Home] storeId: ${store.storeId}, layoutId: ${store.layoutId}`);
 
       if (!store.storeId) {
         throw new Error('No active Swiggy store ID discovered from your location');
       }
 
-      // Step 2: Search products using discovered store params
       const params = 'offset=0&ageConsent=false' +
         (store.layoutId ? '&layoutId=' + encodeURIComponent(store.layoutId) : '') +
         '&voiceSearchTrackingId=' +
@@ -809,7 +764,6 @@ export const api = {
         '&secondaryStoreId=' + encodeURIComponent(store.secondaryStoreId || store.storeId);
 
       const searchUrl = `https://www.swiggy.com/api/instamart/search/v2?${params}`;
-      const searchStart = Date.now();
       const searchBody = JSON.stringify({
         facets: [],
         sortAttribute: '',
@@ -832,24 +786,12 @@ export const api = {
         });
       }
 
-      console.log(`[Swiggy API Search] status: ${searchResponse.status} (${Date.now() - searchStart}ms)`);
       if (!searchResponse.ok) {
         throw new Error(`Swiggy search/v2 API error: ${searchResponse.status}`);
       }
 
       const searchJson = await searchResponse.json();
-      const widgetList: any[] = searchJson?.data?.widgets || searchJson?.data?.searchResults?.widgets || searchJson?.widgets || [];
-      console.log(`[Swiggy API Search] widgets: ${JSON.stringify(widgetList.map((w: any) => w.type || w.name).filter(Boolean).slice(0, 14))}`);
       const parsed = extractSwiggySearchProducts(searchJson, query);
-      console.log(`[Swiggy API Search] parsed items: ${parsed.length}, sample product:`, parsed[0] ? { name: parsed[0].name, price: parsed[0].price, mrp: parsed[0].mrp } : 'none');
-      if (parsed[0]) {
-        console.log('[Swiggy Search IDs] First item:', {
-          productId: parsed[0].productId,
-          itemId: parsed[0].itemId,
-          spinId: parsed[0].spinId,
-          storeId: parsed[0].storeId
-        });
-      }
 
       return parsed.map((item: any) => ({
         id: `swiggy-${item.itemId || Math.random()}`,
@@ -867,57 +809,7 @@ export const api = {
       }));
     }
 
-
     return [];
-  },
-
-  /**
-   * Helper to fetch simulated/mock data
-   */
-  getSimulatedProducts(platform: Platform, query: string): UnifiedProduct[] {
-    const q = query.toLowerCase();
-    const sourceList = MOCK_PRODUCTS[platform];
-    const filtered = sourceList.filter(p =>
-      p.title.toLowerCase().includes(q) ||
-      p.brand.toLowerCase().includes(q) ||
-      query === ''
-    );
-
-    // If query didn't match standard terms, generate dynamic search responses
-    if (filtered.length === 0 && query !== '') {
-      const capitalized = query.charAt(0).toUpperCase() + query.slice(1);
-      return [
-        {
-          id: `${platform}-gen-1`,
-          title: `${capitalized} Fresh Pack`,
-          brand: `${platform.toUpperCase()} Premium`,
-          quantity: '500 g',
-          price: platform === 'blinkit' ? 85 : 92,
-          originalPrice: 100,
-          imageUrl: 'https://images.unsplash.com/photo-1542838132-92c53300491e?auto=format&fit=crop&w=200&q=80',
-          platform,
-          isSimulated: true
-        },
-        {
-          id: `${platform}-gen-2`,
-          title: `Organic ${capitalized} Selection`,
-          brand: 'Organic Farm',
-          quantity: '1 unit',
-          price: platform === 'blinkit' ? 149 : 139,
-          originalPrice: 180,
-          imageUrl: 'https://images.unsplash.com/photo-1542838132-92c53300491e?auto=format&fit=crop&w=200&q=80',
-          platform,
-          isSimulated: true
-        }
-      ];
-    }
-
-    return filtered.map((p, index) => ({
-      id: `${platform}-${index}-${p.title.replace(/\s+/g, '-').toLowerCase()}`,
-      ...p,
-      platform,
-      isSimulated: true
-    }));
   },
 
   /**
@@ -934,28 +826,14 @@ export const api = {
     const simulateNoAddress = (await AsyncStorage.getItem('@blinkit_simulate_no_address')) === '1';
 
     // Load tokens and location in parallel
-    const [blinkitToken, swiggyToken, storedLocation, bLat, bLng] = await Promise.all([
+    const [blinkitToken, swiggyToken, storedLocation] = await Promise.all([
       storage.getToken('blinkit'),
       storage.getToken('swiggy'),
-      storage.getLocation(),
-      AsyncStorage.getItem('@blinkit_lat'),
-      AsyncStorage.getItem('@blinkit_lng')
+      storage.getLocation()
     ]);
-    // Coordinates are split PER platform:
-    //  - Swiggy prices/delivers against wherever the user actually is, so it
-    //    must use the synced GPS location (@user_location).
-    //  - Blinkit's fees key to the user's saved delivery address, so its
-    //    branch prefers the coords captured with that address (@blinkit_lat/
-    //    @blinkit_lng). Using the Blinkit address for Swiggy used to point
-    //    Swiggy at an unrelated store (its own saved Home/Office).
     const gpsLat = storedLocation?.latitude;
     const gpsLng = storedLocation?.longitude;
     const gpsCoords = typeof gpsLat === 'number' && typeof gpsLng === 'number';
-    const blLat = !simulateNoAddress && bLat ? parseFloat(bLat) : storedLocation?.latitude;
-    const blLng = !simulateNoAddress && bLng ? parseFloat(bLng) : storedLocation?.longitude;
-    const blinkitCoords = typeof blLat === 'number' && typeof blLng === 'number';
-    // Live pricing needs real coordinates — without a synced location the
-    // calc stays a subtotal estimate rather than guessing a city.
 
     const promises = platforms.map(async (platform) => {
       // Filter and use only the items that exist on this platform — either
@@ -983,7 +861,7 @@ export const api = {
 
       if (subtotal > 0) {
         try {
-          if (platform === 'blinkit' && blinkitToken && blinkitCoords) {
+          if (platform === 'blinkit' && blinkitToken && gpsCoords) {
             const slimItems = platformItems.map((ci) => ({
               product_id: String(ci.product.originalId || ci.product.id.replace('blinkit-', '')),
               quantity: ci.quantity
@@ -1012,9 +890,12 @@ export const api = {
 
             // Resolve the closest address from saved addresses based on the current GPS location
             let addrNum: number = NaN;
-            if (!simulateNoAddress) {
+            let blLat = gpsLat;
+            let blLng = gpsLng;
+
+            if (!simulateNoAddress && gpsCoords) {
               try {
-                const closestAddr = await this.getClosestBlinkitAddress(blLat, blLng);
+                const closestAddr = await this.getClosestBlinkitAddress(gpsLat, gpsLng);
                 if (closestAddr && closestAddr.id) {
                   addrNum = Number(closestAddr.id);
                   await AsyncStorage.setItem('@blinkit_address_id', String(closestAddr.id));
@@ -1022,9 +903,16 @@ export const api = {
                   const aLat = closestAddr.latitude || closestAddr.lat;
                   const aLng = closestAddr.longitude || closestAddr.lon || closestAddr.lng;
                   if (aLat && aLng) {
+                    blLat = Number(aLat);
+                    blLng = Number(aLng);
                     await AsyncStorage.setItem('@blinkit_lat', String(aLat));
                     await AsyncStorage.setItem('@blinkit_lng', String(aLng));
                   }
+                } else {
+                  await AsyncStorage.removeItem('@blinkit_address_id');
+                  await AsyncStorage.removeItem('@blinkit_address_name');
+                  await AsyncStorage.removeItem('@blinkit_lat');
+                  await AsyncStorage.removeItem('@blinkit_lng');
                 }
               } catch {
                 const addrRaw = await AsyncStorage.getItem('@blinkit_address_id');
@@ -1464,8 +1352,6 @@ export const api = {
                     ?? null;
                   if (billedAddrId && delivery?.id && String(billedAddrId) !== String(delivery.id)) {
                     console.warn(`[Swiggy Address] MISMATCH: bill priced for address "${billedAddrId}" but we sent "${delivery.id}"`);
-                  } else if (delivery?.id) {
-                    console.log(`[Swiggy Address] bill address "${billedAddrId || 'n/a'}" matches sent id "${delivery.id}"`);
                   }
 
                   // The POST often only acknowledges the write — the bill then
@@ -1749,11 +1635,6 @@ export function extractSwiggySearchProducts(json: any, query?: string): any[] {
     }
     if (Array.isArray(node.variations) && node.variations.length && typeof node.displayName === 'string') {
       const productId = (typeof node.productId === 'string') ? node.productId : '';
-      // Log raw first variation to understand real field names from Swiggy API
-      if (out.length === 0 && node.variations[0]) {
-        console.log('[Swiggy extractVariation] RAW first variation keys:', Object.keys(node.variations[0]));
-        console.log('[Swiggy extractVariation] RAW first variation sample:', JSON.stringify(node.variations[0]).slice(0, 400));
-      }
       for (let v = 0; v < node.variations.length && out.length < 120; v++) {
         const p = extractVariation(node, node.variations[v], productId);
         if (p && p.inStock !== false) {

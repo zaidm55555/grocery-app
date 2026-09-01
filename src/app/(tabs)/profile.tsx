@@ -76,7 +76,6 @@ export default function ProfileScreen() {
     try {
       const closest = await api.getClosestBlinkitAddress(lat, lng);
       if (closest) {
-        console.log('[Blinkit Address Object]', JSON.stringify(closest));
         const addrText = closest.display_address 
           || closest.address_string 
           || closest.address 
@@ -97,8 +96,12 @@ export default function ProfileScreen() {
           await AsyncStorage.setItem('@blinkit_lng', String(aLng));
         }
       } else {
-        setBlinkitAddressName('No Saved Addresses Found');
+        setBlinkitAddressName('No Saved Address in this Area');
         setBlinkitAddressId(null);
+        await AsyncStorage.removeItem('@blinkit_address_id');
+        await AsyncStorage.removeItem('@blinkit_address_name');
+        await AsyncStorage.removeItem('@blinkit_lat');
+        await AsyncStorage.removeItem('@blinkit_lng');
       }
     } catch (e) {
       console.error(e);
@@ -119,7 +122,7 @@ export default function ProfileScreen() {
         setSwiggyAddressId(resolved.id);
         setSwiggyAddressLocation(resolved.location);
       } else {
-        setSwiggyAddressName('No Saved Addresses Found');
+        setSwiggyAddressName('No Saved Address in this Area');
         setSwiggyAddressId(null);
         setSwiggyAddressLocation(null);
       }

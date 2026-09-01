@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { StyleSheet, View, Text, TextInput, FlatList, TouchableOpacity, ActivityIndicator, Image, Keyboard, KeyboardAvoidingView, Platform as RNPlatform, Pressable, ScrollView } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Search, MapPin, X, Plus, Minus, ChevronDown, Check, Zap, ShoppingCart, ShoppingBag } from 'lucide-react-native';
+import { Search, MapPin, X, Plus, Minus, ChevronDown, Check, Zap, ShoppingCart, ShoppingBag, LogIn, Link2Off } from 'lucide-react-native';
 import { api, UnifiedProduct, PlatformVariant } from '../../services/api';
 import { storage, Platform, LocationData } from '../../services/storage';
 import { colors, fonts, platformThemes, PLATFORM_ORDER } from '../../constants/theme';
@@ -36,6 +36,7 @@ export default function SearchScreen() {
   const [products, setProducts] = useState<UnifiedProduct[]>([]);
   const [pendingPlatforms, setPendingPlatforms] = useState<Platform[]>([]);
   const [location, setLocation] = useState<LocationData | null>(null);
+  const [tokens, setTokens] = useState<{ blinkit: string | null; swiggy: string | null }>({ blinkit: null, swiggy: null });
   const [cartItems, setCartItems] = useState<{ product: UnifiedProduct; quantity: number }[]>([]);
   const [storeFilter, setStoreFilter] = useState<StoreFilter>('all');
   const [switcherOpen, setSwitcherOpen] = useState(false);
@@ -55,9 +56,14 @@ export default function SearchScreen() {
   }, [matchToast]);
 
   const loadInitialData = async () => {
-    const userLoc = await storage.getLocation();
+    const [blinkitToken, swiggyToken, userLoc, cart] = await Promise.all([
+      storage.getToken('blinkit'),
+      storage.getToken('swiggy'),
+      storage.getLocation(),
+      storage.getCart(),
+    ]);
+    setTokens({ blinkit: blinkitToken, swiggy: swiggyToken });
     setLocation(userLoc);
-    const cart = await storage.getCart();
     setCartItems(cart);
   };
 
@@ -324,27 +330,26 @@ export default function SearchScreen() {
     return idx > -1 ? cartItems[idx].quantity : 0;
   };
 
-  // Filter & sort products
-  const filteredProducts = products
-    .filter(p => storeFilter === 'all' || p.platform === storeFilter)
-    .sort((a, b) => a.price - b.price);
+  // Filter products by active store selection, preserving the server's relevance ranking order
+  const filteredProducts = products.filter(p => storeFilter === 'all' || p.platform === storeFilter);
 
   // Collapse identical products (any pack size, either app) into ONE card —
   // tap it to open the variant picker, like the desktop optimizer.
+  // Preserves the native relevance ranking order returned by the platform's search API.
   const productGroups = (() => {
     const map = new Map<string, UnifiedProduct[]>();
     for (const pr of filteredProducts) {
       // Per-app groups only — a card never mixes Blinkit & Instamart
       // listings; auto-match owns all cross-app linking.
-      const k = pr.platform + '|' + familyKey(pr);
-      if (!familyKey(pr)) { map.set(`id:${pr.id}`, [pr]); continue; }
+      const k = pr.platform + '|' + (familyKey(pr) || `id:${pr.id}`);
       const arr = map.get(k);
       if (arr) arr.push(pr);
       else map.set(k, [pr]);
     }
-    return Array.from(map.values())
-      .map(items => ({ items, minPrice: Math.min(...items.map(i => i.price || Infinity)) }))
-      .sort((a, b) => a.minPrice - b.minPrice);
+    return Array.from(map.values()).map(items => ({
+      items,
+      minPrice: Math.min(...items.map(i => i.price || Infinity))
+    }));
   })();
 
   const filterLabel = storeFilter === 'all' ? 'All Stores' : platformThemes[storeFilter].name;
@@ -481,13 +486,75 @@ export default function SearchScreen() {
             </Text>
           </View>
         ) : products.length === 0 ? (
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyEmoji}>🛒</Text>
-            <Text style={styles.emptyTitle}>Build your optimized basket</Text>
-            <Text style={styles.emptySubtitle}>
-              Search a product, tap +, and we’ll auto-match it on the other app with live checkout pricing.
-            </Text>
-          </View>
+          (() => {
+            const noTokens = !tokens.blinkit && !tokens.swiggy;
+            const singleStoreUnlinked = storeFilter !== 'all' && !tokens[storeFilter];
+
+            if (noTokens) {
+              return (
+                <View style={styles.emptyContainer}>
+                  <View style={styles.emptyIconCircle}>
+                    <Link2Off size={32} color="#EF4444" />
+                  </View>
+                  <Text style={styles.emptyTitle}>Not Logged In</Text>
+                  <Text style={styles.emptySubtitle}>
+                    Login to Blinkit or Swiggy Instamart to search live catalog prices and stock.
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.loginRedirectBtn}
+                    onPress={() => router.push('/(tabs)/profile')}
+                  >
+                    <LogIn size={16} color="#FFF" style={{ marginRight: 8 }} />
+                    <Text style={styles.loginRedirectBtnText}>Go to Profile / Login</Text>
+                  </TouchableOpacity>
+                </View>
+              );
+            }
+
+            if (singleStoreUnlinked) {
+              const theme = platformThemes[storeFilter as Platform];
+              return (
+                <View style={styles.emptyContainer}>
+                  <View style={[styles.emptyIconCircle, { backgroundColor: theme.bgLight, borderColor: theme.borderColor }]}>
+                    <LogoTile platform={storeFilter as Platform} size={36} />
+                  </View>
+                  <Text style={styles.emptyTitle}>Not Logged into {theme.name}</Text>
+                  <Text style={styles.emptySubtitle}>
+                    Link your {theme.name} account in Profile to search its live store catalog.
+                  </Text>
+                  <TouchableOpacity
+                    style={[styles.loginRedirectBtn, { backgroundColor: theme.color }]}
+                    onPress={() => router.push('/(tabs)/profile')}
+                  >
+                    <LogIn size={16} color="#FFF" style={{ marginRight: 8 }} />
+                    <Text style={styles.loginRedirectBtnText}>Login to {theme.name}</Text>
+                  </TouchableOpacity>
+                </View>
+              );
+            }
+
+            if (query.trim().length > 0) {
+              return (
+                <View style={styles.emptyContainer}>
+                  <Text style={styles.emptyEmoji}>🔍</Text>
+                  <Text style={styles.emptyTitle}>No Live Results Found</Text>
+                  <Text style={styles.emptySubtitle}>
+                    We couldn't find any live products matching “{query}” in your local store.
+                  </Text>
+                </View>
+              );
+            }
+
+            return (
+              <View style={styles.emptyContainer}>
+                <Text style={styles.emptyEmoji}>🛒</Text>
+                <Text style={styles.emptyTitle}>Build your optimized basket</Text>
+                <Text style={styles.emptySubtitle}>
+                  Search a product, tap +, and we’ll auto-match it on the other app with live checkout pricing.
+                </Text>
+              </View>
+            );
+          })()
         ) : (
           <View style={styles.liveSection}>
             <View style={styles.liveHeader}>
@@ -904,6 +971,37 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 19,
     marginTop: 8,
+  },
+  emptyIconCircle: {
+    width: 64,
+    height: 64,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.25)',
+    marginBottom: 16,
+  },
+  loginRedirectBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.accentPrimary,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 12,
+    marginTop: 20,
+    shadowColor: colors.accentPrimary,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  loginRedirectBtnText: {
+    fontFamily: fonts.bodySemiBold,
+    fontSize: 13.5,
+    color: '#FFF',
   },
   liveSection: {
     marginHorizontal: 14,

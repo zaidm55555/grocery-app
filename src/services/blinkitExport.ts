@@ -206,21 +206,29 @@ export async function createBlinkitShareLink(
   });
 
   const headers = await buildBlinkitSessionHeaders(authKey, lat, lng);
-  const res = await requestViaBlinkitBridge(
+  let res = await requestViaBlinkitBridge(
     'https://blinkit.com/v1/assist/cart/share',
     'POST',
     shareBody,
     headers
   );
-  console.warn('[BlinkitShare] POST /v1/assist/cart/share', {
-    status: res?.status,
-    body: res ? String(res.text).slice(0, 900) : 'NO_RESPONSE',
-  });
+  if (!res || res.status < 200 || res.status >= 300) {
+    try {
+      const directRes = await api.fetchWithTimeout(
+        'https://blinkit.com/v1/assist/cart/share',
+        { method: 'POST', headers, body: shareBody },
+        8000
+      );
+      if (directRes.ok) {
+        const text = await directRes.text();
+        res = { status: directRes.status, text };
+      }
+    } catch {}
+  }
 
   let url = '';
   if (res && (res.status === 200 || res.status === 201) && res.text) {
     url = extractShareUrl(res.text);
-    console.warn('[BlinkitShare] extracted', url, 'from', String(res.text).slice(0, 200));
   }
 
   return { url, items, total, missing };
