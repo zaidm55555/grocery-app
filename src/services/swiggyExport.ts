@@ -129,6 +129,16 @@ async function discoverStore(
     }
   } catch {}
 
+  // Primary discovery: query HOME_URL for the target location
+  if (!storeInfo) {
+    try {
+      const homeRes = await api.swiggyApiFetch(`${HOME_URL}&lat=${lat.toFixed(6)}&lng=${lng.toFixed(6)}&overrideLocation=true`);
+      const json = await fetchViaJson(homeRes);
+      if (json) storeInfo = findStoreInfo(json);
+    } catch {}
+  }
+
+  // Fallback: check session cart if HOME_URL failed
   if (!storeInfo) {
     try {
       const getCartRes = await api.swiggyApiFetch(`${CART_URL}?pageType=INSTAMART_CART`);
@@ -154,14 +164,6 @@ async function discoverStore(
           };
         }
       }
-    } catch {}
-  }
-
-  if (!storeInfo) {
-    try {
-      const homeRes = await api.swiggyApiFetch(HOME_URL);
-      const json = await fetchViaJson(homeRes);
-      if (json) storeInfo = findStoreInfo(json);
     } catch {}
   }
 
@@ -235,12 +237,16 @@ export async function exportCartToSwiggy(
     if (!r) unresolvedNames.push({ name: cart[i].product.title, unit: cart[i].product.quantity, origIndex: i });
   });
 
+  const delivery = await api.resolveSwiggyDeliveryAddress(lat, lng);
+  const targetLat = delivery?.location?.latitude ?? lat;
+  const targetLng = delivery?.location?.longitude ?? lng;
+
   let storeInfo: SwiggyStoreInfo | null = null;
   let shipmentIdV2 = '';
   let deliveryType = 'INSTANT';
 
   if (resolved.some(Boolean) || unresolvedNames.length > 0) {
-    const disc = await discoverStore(lat, lng);
+    const disc = await discoverStore(targetLat, targetLng);
     storeInfo = disc.storeInfo;
     shipmentIdV2 = disc.shipmentIdV2;
     deliveryType = disc.deliveryType;
@@ -302,6 +308,9 @@ export async function exportCartToSwiggy(
   let newCartId: string | null = null;
   let postBodyObj: any = null;
   if (items.length > 0 && resolvedStoreId) {
+    // Bind the delivery address (closest saved address to GPS) so the cart
+    // page opens at the user's actual location instead of a stale/other
+    // address or "select delivery address".
     const bodies = items.map((i) => ({
       productId: i.productId,
       quantity: i.quantity,
@@ -320,7 +329,7 @@ export async function exportCartToSwiggy(
           contactlessDelivery: false,
           deliveryType,
           owner: 'APP',
-          preferredAddressId: null,
+          preferredAddressId: delivery?.id ?? null,
           ageConsentProvided: false,
           useGiftBagPackaging: false,
           useReusablePackaging: false,
@@ -330,6 +339,8 @@ export async function exportCartToSwiggy(
           storeIds: [resolvedStoreId],
         },
         cartType: 'INSTAMART',
+        ...(delivery?.id ? { addressId: delivery.id } : {}),
+        location: delivery?.location ? { latitude: delivery.location.latitude, longitude: delivery.location.longitude } : { latitude: targetLat, longitude: targetLng },
       },
       source: 'userInitiated',
     };

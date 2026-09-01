@@ -84,6 +84,10 @@ export function handleSwiggyBridgeMessage(payload: string): boolean {
       handleSwiggyBridgeResponse(Number(data.id), Number(data.status) || 0, String(data.text ?? ''));
       return true;
     }
+    if (data && data.type === 'GO_EVAL_RESPONSE') {
+      handleSwiggyBridgeResponse(Number(data.id), 200, String(data.text ?? ''));
+      return true;
+    }
     if (data && data.type === 'GO_BRIDGE_READY') {
       notifySwiggyBridgeReady();
       return true;
@@ -101,6 +105,26 @@ export async function requestViaSwiggyBridge(
   method: string = 'GET',
   body?: string
 ): Promise<BridgeResponse | null> {
+  return runBridge(url, method, body ?? '', REQUEST_TIMEOUT_MS);
+}
+
+// Evaluates JavaScript inside the hidden swiggy.com page (same origin, active
+// session) and relays the serialized result. Used to read SPA-only state such
+// as window.ApiData.instamartCartApiData on the real cart page — the hydrated
+// full saved-address list with coordinates that the request APIs keep hidden.
+export async function requestEvalViaSwiggyBridge(
+  code: string,
+  timeoutMs: number = REQUEST_TIMEOUT_MS
+): Promise<BridgeResponse | null> {
+  return runBridge(code, '__EVAL__', code, timeoutMs);
+}
+
+async function runBridge(
+  url: string,
+  method: string,
+  body: string,
+  timeoutMs: number
+): Promise<BridgeResponse | null> {
   if (!injector) return null;
   const id = nextId++;
   return new Promise((resolve) => {
@@ -114,10 +138,10 @@ export async function requestViaSwiggyBridge(
         try { stallListener(); } catch {}
       }
       resolve(null);
-    }, REQUEST_TIMEOUT_MS);
+    }, timeoutMs);
     pending.set(id, { resolve, timer });
 
-    const entry: QueuedRequest = [id, url, method, body ?? ''];
+    const entry: QueuedRequest = [id, url, method, body];
     if (ready) {
       if (!dispatch(entry)) {
         clearTimeout(timer);

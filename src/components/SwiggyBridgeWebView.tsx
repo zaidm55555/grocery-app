@@ -80,6 +80,59 @@ const BRIDGE_SCRIPT = `
       }));
     });
   };
+
+  // In-page JS evaluation: lets the app read SPA state (e.g.
+  // window.ApiData.instamartCartApiData on the cart page) that no single
+  // API endpoint exposes — the full saved-address list with coordinates.
+  window.__goEvaluate = function(id, code) {
+    var val;
+    try {
+      val = (0, eval)(code);
+    } catch (e) {
+      val = { __error: String((e && e.message) || e) };
+    }
+    var text;
+    try {
+      if (val === undefined) { text = JSON.stringify(null); }
+      else if (typeof val === 'string') { text = JSON.stringify({ __str: val }); }
+      else { text = JSON.stringify(val); }
+    } catch (e) {
+      text = JSON.stringify({ __error: 'stringify: ' + String((e && e.message) || e) });
+    }
+    window.ReactNativeWebView.postMessage(JSON.stringify({
+      type: 'GO_EVAL_RESPONSE', id: id, text: String(text).slice(0, 600000)
+    }));
+  };
+
+  // Watchdog for discovery: record every network call the page makes so the
+  // app can see which endpoint the address picker uses to load the FULL saved
+  // address list (the SSR sheet never ships it).
+  window.__goNetLog = [];
+  try {
+    var _origFetch = window.fetch;
+    window.fetch = function(input, init) {
+      try {
+        var u = (typeof input === 'string') ? input : (input && input.url) || '';
+        window.__goNetLog.push('F ' + u);
+        if (window.__goNetLog.length > 50) window.__goNetLog.shift();
+      } catch (e) {}
+      return _origFetch.apply(this, arguments);
+    };
+  } catch (e) {}
+  try {
+    var _origOpen = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function(m, u) {
+      try {
+        window.__goNetLog.push('X ' + String(m || '?').toUpperCase() + ' ' + String(u));
+        if (window.__goNetLog.length > 50) window.__goNetLog.shift();
+      } catch (e) {}
+      return _origOpen.apply(this, arguments);
+    };
+  } catch (e) {}
+  window.__goNetDump = function() {
+    return JSON.stringify(window.__goNetLog || []);
+  };
+
   window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'GO_BRIDGE_READY' }));
 })();
 `;
@@ -105,9 +158,10 @@ export default function SwiggyBridgeWebView() {
 
   useEffect(() => {
     const injector = (id: number, url: string, method: string, body: string) => {
-      webViewRef.current?.injectJavaScript(
-        `window.__goHandleRequest(${id}, ${JSON.stringify(url)}, ${JSON.stringify(method)}, ${JSON.stringify(body)}); true;`
-      );
+      const script = method === '__EVAL__'
+        ? `window.__goEvaluate(${id}, ${JSON.stringify(body)}); true;`
+        : `window.__goHandleRequest(${id}, ${JSON.stringify(url)}, ${JSON.stringify(method)}, ${JSON.stringify(body)}); true;`;
+      webViewRef.current?.injectJavaScript(script);
     };
     registerSwiggyInjector(injector);
     // The hidden page can stop answering (app suspension, SPA redirect);

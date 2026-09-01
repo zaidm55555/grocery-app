@@ -1,5 +1,5 @@
 import { storage, Platform, LocationData } from './storage';
-import { requestViaSwiggyBridge } from './swiggyBridge';
+import { requestViaSwiggyBridge, requestEvalViaSwiggyBridge } from './swiggyBridge';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { requestViaBlinkitBridge, getBlinkitPageStorage } from './blinkitBridge';
 
@@ -177,12 +177,480 @@ export const api = {
   },
 
   /**
-   * Swiggy Instamart APIs sit behind auth + WAF and reject calls made outside
-   * a real page context (same constraint the desktop optimizer extension
-   * documents), so requests are executed inside a hidden swiggy.com WebView
-   * via requestViaSwiggyBridge. Falls back to a direct cookie-header fetch
-   * when no page is connected.
+   * Fetch all saved addresses from Swiggy's user session across all known endpoints
+   * and in-page JavaScript state.
    */
+  async getSwiggyAddresses(lat?: number, lng?: number): Promise<any[]> {
+    const toNum = (v: any): number | null => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    const getCoords = (a: any): { lat: number; lon: number } | null => {
+      if (!a || typeof a !== 'object') return null;
+      let loc: any = a?.location ?? a?.geometry?.location ?? a?.place?.geometry?.location ?? a?.address?.location ?? a?.geo;
+      if (typeof loc === 'string') {
+        try {
+          loc = JSON.parse(loc);
+        } catch {
+          const parts = String(loc).split(',').map(Number);
+          if (parts.length === 2 && parts.every((n: number) => Number.isFinite(n))) return { lat: parts[0], lon: parts[1] };
+          loc = undefined;
+        }
+      }
+      if (Array.isArray(loc) && loc.length >= 2) {
+        const p0 = toNum(loc[0]);
+        const p1 = toNum(loc[1]);
+        if (p0 !== null && p1 !== null) {
+          if (Math.abs(p0) <= 90 && Math.abs(p1) > 90) return { lat: p0, lon: p1 };
+          if (Math.abs(p1) <= 90 && Math.abs(p0) > 90) return { lat: p1, lon: p0 };
+          return { lat: p0, lon: p1 };
+        }
+      }
+      const latVal = toNum(
+        loc?.latitude ?? loc?.lat ??
+        a?.latitude ?? a?.lat ??
+        a?.address?.latitude ?? a?.address?.lat ??
+        a?.coordinates?.lat ?? a?.coordinates?.latitude ??
+        a?.annotation_point?.latitude ?? a?.annotation_point?.lat ??
+        a?.delivery_address_point?.latitude ?? a?.delivery_address_point?.lat ??
+        a?.delivery_point?.latitude ?? a?.delivery_point?.lat ??
+        a?.point?.latitude ?? a?.point?.lat
+      );
+      const lonVal = toNum(
+        loc?.longitude ?? loc?.lon ?? loc?.lng ??
+        a?.longitude ?? a?.lon ?? a?.lng ??
+        a?.address?.longitude ?? a?.address?.lon ?? a?.address?.lng ??
+        a?.coordinates?.lng ?? a?.coordinates?.lon ?? a?.coordinates?.longitude ??
+        a?.annotation_point?.longitude ?? a?.annotation_point?.lng ??
+        a?.delivery_address_point?.longitude ?? a?.delivery_address_point?.lng ??
+        a?.delivery_point?.longitude ?? a?.delivery_point?.lng ??
+        a?.point?.longitude ?? a?.point?.lng
+      );
+      if (latVal === null || lonVal === null) return null;
+      return { lat: latVal, lon: lonVal };
+    };
+
+    const addrName = (a: any): string | null => {
+      if (!a) return null;
+      const tag = (typeof a?.tag === 'string' && a.tag.trim()) || (typeof a?.label === 'string' && a.label.trim()) || (typeof a?.name === 'string' && a.name.trim()) || null;
+      const direct = a?.formatted_address ?? a?.display_name ?? a?.display_address
+        ?? a?.address_text ?? a?.complete_address ?? a?.full_text ?? a?.address_string ?? a?.address ?? a?.address_name ?? a?.addressLine ?? a?.address_line;
+      if (typeof direct === 'string' && direct.trim()) {
+        const d = direct.trim();
+        if (tag && tag.toLowerCase() !== d.toLowerCase() && !d.toLowerCase().startsWith(tag.toLowerCase())) {
+          return `${tag} - ${d}`;
+        }
+        return d;
+      }
+      const parts = [
+        a?.address_line_1 ?? a?.line1 ?? a?.house_number,
+        a?.address_line_2 ?? a?.line2 ?? a?.street,
+        a?.city ?? a?.locality ?? a?.area,
+        a?.district ?? a?.state ?? a?.region,
+        a?.pincode ?? a?.zip ?? a?.postal_code
+      ];
+      const built = parts.filter((p): p is string => typeof p === 'string' && p.trim().length > 0);
+      if (built.length) {
+        const s = built.join(', ');
+        return tag ? `${tag} - ${s}` : s;
+      }
+      return tag || null;
+    };
+
+    const isAddressLike = (item: any): boolean => {
+      if (!item || typeof item !== 'object') return false;
+      // Reject products, freebies, widgets, layout IDs, store listings
+      if (item.productId || item.spinId || item.itemId || item.tradeFreebie || item.isGiftBag || item.widget_type || item.widgetType || item.categoryId || item.layoutId) {
+        return false;
+      }
+      // Require positive address indicators
+      if (item.formatted_address || item.display_address || item.address_line_1 || item.address_line1 || item.addressLine1 || item.address_text || item.complete_address || item.address_string || item.full_text) {
+        return true;
+      }
+      if (item.pincode || item.postal_code || item.zip || (item.city && (item.area || item.locality || item.street))) {
+        return true;
+      }
+      if (item.tag === 'Home' || item.tag === 'Work' || item.tag === 'Other' || item.label === 'Home' || item.label === 'Work' || item.label === 'Other') {
+        return true;
+      }
+      if (item.location && typeof item.location === 'object' && (typeof item.location.latitude === 'number' || typeof item.location.lat === 'number' || typeof item.location.lat === 'string')) {
+        return true;
+      }
+      if (typeof item.latitude === 'number' && typeof item.longitude === 'number') {
+        return true;
+      }
+      return false;
+    };
+
+    const found: Map<string, { id: string; a: any; source: string; name: string | null; coords: { lat: number; lon: number } | null }> = new Map();
+
+    const ingest = (source: string, raw: any) => {
+      if (!raw) return;
+      const items: any[] = [];
+      const extractItems = (obj: any, parentKey = '') => {
+        if (!obj || typeof obj !== 'object') return;
+        if (Array.isArray(obj)) {
+          for (const item of obj) {
+            if (isAddressLike(item)) {
+              items.push(item);
+            } else if (item && typeof item === 'object') {
+              if (item.delivery_address && isAddressLike(item.delivery_address)) items.push(item.delivery_address);
+              else if (item.deliveryAddress && isAddressLike(item.deliveryAddress)) items.push(item.deliveryAddress);
+              else if (item.address && isAddressLike(item.address)) items.push(item.address);
+              else extractItems(item, parentKey);
+            }
+          }
+          return;
+        }
+        for (const k of Object.keys(obj)) {
+          const v = obj[k];
+          if (/address|delivery_address|deliveryAddress|savedAddresses|addresses|customerAddresses/i.test(k) && (Array.isArray(v) || (v && typeof v === 'object'))) {
+            if (Array.isArray(v)) {
+              for (const item of v) {
+                if (isAddressLike(item)) items.push(item);
+                else extractItems(item, k);
+              }
+            } else if (isAddressLike(v)) {
+              items.push(v);
+            } else {
+              extractItems(v, k);
+            }
+          } else if (/orders|orderHistory|orderList|pastOrders|customerOrders/i.test(k) && Array.isArray(v)) {
+            for (const ord of v) {
+              if (ord && typeof ord === 'object') {
+                const addr = ord.delivery_address || ord.deliveryAddress || ord.address;
+                if (addr && isAddressLike(addr)) items.push(addr);
+                else extractItems(ord, k);
+              }
+            }
+          } else if (typeof v === 'object' && v !== null && !/widgets|searchResults|gridElements/i.test(k)) {
+            extractItems(v, k);
+          }
+        }
+      };
+      extractItems(raw);
+
+      for (const a of items) {
+        if (!a || typeof a !== 'object') continue;
+        const coords = getCoords(a);
+        const name = addrName(a);
+        const id = String(a?.id ?? a?.address_id ?? a?.addressId ?? (coords ? `${coords.lat.toFixed(4)},${coords.lon.toFixed(4)}` : name || ''));
+        if (!id) continue;
+        if (!found.has(id)) {
+          found.set(id, { id, a, source, name, coords });
+          console.log(`[Swiggy Address API] + Address id="${id}" name="${name || 'unnamed'}" coords=${coords ? `${coords.lat.toFixed(4)},${coords.lon.toFixed(4)}` : 'NONE'} source=[${source}]`);
+        } else {
+          const existing = found.get(id)!;
+          if (!existing.coords && coords) {
+            found.set(id, { id, a: { ...existing.a, ...a }, source: `${existing.source}+${source}`, name: name || existing.name, coords });
+            console.log(`[Swiggy Address API] ^ Upgraded coords for id="${id}" to ${coords.lat.toFixed(4)},${coords.lon.toFixed(4)} from [${source}]`);
+          }
+        }
+      }
+    };
+
+    // Query candidate endpoints (user address book, past order delivery addresses, profile)
+    const endpoints: { url: string; source: string; method?: string; body?: string }[] = [
+      { url: 'https://www.swiggy.com/api/instamart/checkout/v2/cart?pageType=INSTAMART_CART', source: 'cart' },
+      { url: 'https://www.swiggy.com/dapi/user/profile', source: 'user-profile' },
+      { url: 'https://www.swiggy.com/dapi/user/details', source: 'user-details' },
+      { url: 'https://www.swiggy.com/api/user/profile', source: 'api-user-profile' },
+      { url: 'https://www.swiggy.com/my-account/addresses', source: 'my-account-addresses' },
+      { url: 'https://www.swiggy.com/my-account', source: 'my-account' },
+      { url: 'https://www.swiggy.com/dapi/address/all', source: 'dapi-all' },
+      { url: 'https://www.swiggy.com/dapi/address/addresses_list', source: 'dapi-list' },
+      { url: 'https://www.swiggy.com/dapi/address/list', source: 'dapi-address-list' },
+      { url: 'https://www.swiggy.com/dapi/user/addresses', source: 'dapi-user-addresses' },
+      { url: 'https://www.swiggy.com/api/address/all', source: 'api-address-all' },
+      { url: 'https://www.swiggy.com/api/instamart/address/all', source: 'api-instamart-address-all' },
+      { url: 'https://www.swiggy.com/api/v1/addresses', source: 'api-v1-addresses' },
+    ];
+
+    await Promise.all(
+      endpoints.map(async ({ url, source, method, body }) => {
+        try {
+          const res = await this.swiggyApiFetch(url, method || 'GET', body);
+          if (res && res.ok) {
+            const rawText = await res.text();
+            let parsedData: any = null;
+            try {
+              parsedData = JSON.parse(rawText);
+            } catch {
+              // If HTML returned, search for embedded JSON state
+              const match = rawText.match(/window\.__INITIAL_STATE__\s*=\s*({.+?});/s)
+                || rawText.match(/<script id="__NEXT_DATA__"[^>]*>({.+?})<\/script>/s)
+                || rawText.match(/window\.ApiData\s*=\s*({.+?});/s);
+              if (match && match[1]) {
+                try { parsedData = JSON.parse(match[1]); } catch {}
+              }
+            }
+            if (parsedData) {
+              const prevCount = found.size;
+              ingest(source, parsedData);
+              console.log(`[Swiggy Address API] [${source}] parsed ${found.size - prevCount} new address(es) (total: ${found.size})`);
+            }
+          }
+        } catch (e: any) {
+          console.log(`[Swiggy Address API] [${source}] fetch error:`, e?.message || e);
+        }
+      })
+    );
+
+    // Walk order history pages to collect delivery addresses across all locations
+    try {
+      let lastOrderId: string | null = null;
+      for (let page = 0; page < 15; page++) {
+        const orderUrl = lastOrderId
+          ? `https://www.swiggy.com/dapi/order/all?order_id=${lastOrderId}`
+          : 'https://www.swiggy.com/dapi/order/all';
+        const orderRes = await this.swiggyApiFetch(orderUrl);
+        if (orderRes && orderRes.ok) {
+          const json = await orderRes.json().catch(() => null);
+          if (json?.data?.orders && Array.isArray(json.data.orders) && json.data.orders.length > 0) {
+            const prevCount = found.size;
+            ingest(`orders-p${page + 1}`, json);
+            console.log(`[Swiggy Address API] [orders-p${page + 1}] parsed ${found.size - prevCount} new address(es) (total: ${found.size})`);
+            const last = json.data.orders[json.data.orders.length - 1];
+            if (last?.order_id && String(last.order_id) !== lastOrderId) {
+              lastOrderId = String(last.order_id);
+            } else {
+              break;
+            }
+          } else {
+            break;
+          }
+        } else {
+          break;
+        }
+      }
+    } catch (e: any) {
+      console.log('[Swiggy Address API] order pagination error:', e?.message || e);
+    }
+
+    // In-page bridge evaluation across React/Redux state, Next data, and storage
+    try {
+      const evalRes = await requestEvalViaSwiggyBridge(`
+        (function() {
+          try {
+            var list = [];
+            // 1. Redux/SPA state
+            if (window.__INITIAL_STATE__) {
+              var s = window.__INITIAL_STATE__;
+              if (s.address && s.address.addresses) {
+                var a = s.address.addresses;
+                if (Array.isArray(a)) list.push(...a);
+                else list.push(a);
+              }
+              if (s.user && s.user.addresses) {
+                var u = s.user.addresses;
+                if (Array.isArray(u)) list.push(...u);
+                else list.push(u);
+              }
+              if (s.user && s.user.pastAddresses) {
+                var pa = s.user.pastAddresses;
+                if (Array.isArray(pa)) list.push(...pa);
+                else list.push(pa);
+              }
+              if (s.addresses) {
+                if (Array.isArray(s.addresses)) list.push(...s.addresses);
+                else list.push(s.addresses);
+              }
+            }
+            // 2. Next Data
+            if (window.__NEXT_DATA__ && window.__NEXT_DATA__.props && window.__NEXT_DATA__.props.pageProps) {
+              var pp = window.__NEXT_DATA__.props.pageProps;
+              if (pp.addresses) {
+                if (Array.isArray(pp.addresses)) list.push(...pp.addresses);
+                else list.push(pp.addresses);
+              }
+              if (pp.user && pp.user.addresses) {
+                if (Array.isArray(pp.user.addresses)) list.push(...pp.user.addresses);
+                else list.push(pp.user.addresses);
+              }
+            }
+            // 3. ApiData
+            if (window.ApiData) {
+              if (window.ApiData.addresses) {
+                var ad = window.ApiData.addresses;
+                if (Array.isArray(ad)) list.push(...ad);
+                else list.push(ad);
+              }
+              if (window.ApiData.instamartCartApiData) list.push(window.ApiData.instamartCartApiData);
+              if (window.ApiData.userAddresses) {
+                var ua = window.ApiData.userAddresses;
+                if (Array.isArray(ua)) list.push(...ua);
+                else list.push(ua);
+              }
+            }
+            // 4. LocalStorage
+            for (var i = 0; i < localStorage.length; i++) {
+              var k = localStorage.key(i);
+              try {
+                var val = JSON.parse(localStorage.getItem(k));
+                if (Array.isArray(val)) list.push(...val);
+                else if (val && typeof val === 'object') list.push(val);
+              } catch(e) {}
+            }
+            // 5. SessionStorage
+            for (var j = 0; j < sessionStorage.length; j++) {
+              var sk = sessionStorage.key(j);
+              try {
+                var sval = JSON.parse(sessionStorage.getItem(sk));
+                if (Array.isArray(sval)) list.push(...sval);
+                else if (sval && typeof sval === 'object') list.push(sval);
+              } catch(e) {}
+            }
+            return list;
+          } catch(e) { return []; }
+        })()
+      `, 4000);
+      if (evalRes && evalRes.text) {
+        const parsed = JSON.parse(evalRes.text);
+        const prevCount = found.size;
+        ingest('bridge-eval', parsed);
+        console.log(`[Swiggy Address API] [bridge-eval] parsed ${found.size - prevCount} new address(es) (total: ${found.size})`);
+      }
+    } catch (e: any) {
+      console.log('[Swiggy Address API] [bridge-eval] error:', e?.message || e);
+    }
+
+    return [...found.values()].map(e => ({
+      id: e.id,
+      name: e.name,
+      address: e.name,
+      location: e.coords ? { latitude: e.coords.lat, longitude: e.coords.lon } : null,
+      latitude: e.coords?.lat,
+      longitude: e.coords?.lon,
+      source: e.source,
+      raw: e.a
+    }));
+  },
+
+  /**
+   * Resolve the Instamart delivery address: Swiggy's cart page renders its
+   * delivery address from the SERVER cart state (GET checkout/v2/cart replies
+   * with addressId + addresses[] including coordinates in .location), not
+   * localStorage. So picking the saved address closest to the user's GPS and
+   * binding it on the cart POST (cartMetaData.preferredAddressId + addressId +
+   * location) is what makes pricing AND the opened cart use the right address.
+   * The pick is cached (@swiggy_address); re-fetching only happens when the
+   * GPS point moves ~6km+ or the cache ages out (24h).
+   */
+  async resolveSwiggyDeliveryAddress(lat: number, lng: number, force = false): Promise<{ id: string; name: string | null; location: { latitude: number; longitude: number } | null; candidates: { id: string; name: string | null; distanceKm: number; location: { latitude: number; longitude: number } | null }[] } | null> {
+    const KEY = '@swiggy_address';
+    const distanceKm = (aLat: number, aLng: number, bLat: number, bLng: number): number => {
+      const R = 6371;
+      const dLat = (bLat - aLat) * Math.PI / 180;
+      const dLng = (bLng - aLng) * Math.PI / 180;
+      return 2 * R * Math.asin(Math.sqrt(
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(aLat * Math.PI / 180) * Math.cos(bLat * Math.PI / 180) * Math.sin(dLng / 2) ** 2
+      ));
+    };
+
+    let override: any = null;
+    try {
+      const overrideRaw = await AsyncStorage.getItem('@swiggy_override_address');
+      override = overrideRaw ? JSON.parse(overrideRaw) : null;
+    } catch {}
+
+    let cached: any = null;
+    try {
+      const raw = await AsyncStorage.getItem(KEY);
+      cached = raw ? JSON.parse(raw) : null;
+    } catch {}
+
+    if (!force && override && override.id) {
+      console.log(`[Swiggy Address] using PINNED address "${override.name || override.id}" location:`, override.location);
+      return {
+        id: String(override.id),
+        name: override.name || null,
+        location: override.location ? { latitude: override.location.latitude, longitude: override.location.longitude } : null,
+        candidates: Array.isArray(cached?.candidates) ? cached.candidates : (Array.isArray(override.candidates) ? override.candidates : [])
+      };
+    }
+
+    if (!force && cached?.id && typeof cached.lat === 'number' && typeof cached.lng === 'number') {
+      const fresh = typeof cached.at === 'number' && Date.now() - cached.at < 24 * 3600 * 1000;
+      const nearby = distanceKm(lat, lng, cached.lat, cached.lng) < 6;
+      if (fresh && nearby) {
+        return {
+          id: String(cached.id),
+          name: cached.name || null,
+          location: cached.location ? { latitude: cached.location.latitude, longitude: cached.location.longitude } : null,
+          candidates: Array.isArray(cached.candidates) ? cached.candidates : []
+        };
+      }
+    }
+
+    try {
+      const addresses = await this.getSwiggyAddresses(lat, lng);
+      console.log(`[Swiggy Address] GPS ${lat.toFixed(5)},${lng.toFixed(5)} — found ${addresses.length} address(es)`);
+
+      const scored = addresses.map((a) => {
+        const d = (typeof a.latitude === 'number' && typeof a.longitude === 'number')
+          ? distanceKm(lat, lng, a.latitude, a.longitude)
+          : Number.POSITIVE_INFINITY;
+        return {
+          id: String(a.id),
+          name: a.name || null,
+          location: a.location || (typeof a.latitude === 'number' && typeof a.longitude === 'number' ? { latitude: a.latitude, longitude: a.longitude } : null),
+          distanceKm: Number.isFinite(d) ? Number(d.toFixed(2)) : -1,
+          d
+        };
+      }).sort((x, y) => {
+        if (x.d === y.d) return 0;
+        if (x.distanceKm < 0) return 1;
+        if (y.distanceKm < 0) return -1;
+        return x.d - y.d;
+      });
+
+      const candidates = scored.map(s => ({ id: s.id, name: s.name, distanceKm: s.distanceKm, location: s.location }));
+
+      candidates.forEach((c, i) => {
+        console.log(`[Swiggy Address] Candidate #${i + 1}: id="${c.id}" name="${c.name || 'unnamed'}" coords=${c.location ? `${c.location.latitude.toFixed(4)},${c.location.longitude.toFixed(4)}` : 'NONE'} dist=${c.distanceKm >= 0 ? `${c.distanceKm}km` : 'n/a'}`);
+      });
+
+      if (override && override.id) {
+        const matching = scored.find(s => s.id === String(override.id));
+        const finalLocation = override.location || matching?.location || null;
+        const finalName = override.name || matching?.name || null;
+        console.log(`[Swiggy Address] using PINNED address "${finalName || override.id}" with location:`, finalLocation, `(${candidates.length} candidate(s))`);
+        await AsyncStorage.setItem(KEY, JSON.stringify({ id: String(override.id), name: finalName, location: finalLocation, lat, lng, at: Date.now(), candidates }));
+        return {
+          id: String(override.id),
+          name: finalName,
+          location: finalLocation,
+          candidates
+        };
+      }
+
+      if (scored.length === 0) {
+        console.warn('[Swiggy Address] no saved addresses found in user account');
+        return null;
+      }
+
+      const best = scored[0];
+      await AsyncStorage.setItem(KEY, JSON.stringify({ id: best.id, name: best.name, location: best.location, lat, lng, at: Date.now(), candidates }));
+      await AsyncStorage.setItem('@swiggy_address_id', best.id);
+      if (best.name) await AsyncStorage.setItem('@swiggy_address_name', best.name);
+      if (best.location) {
+        await AsyncStorage.setItem('@swiggy_lat', String(best.location.latitude));
+        await AsyncStorage.setItem('@swiggy_lng', String(best.location.longitude));
+      }
+      console.log(`[Swiggy Address] selected "${best.name || best.id}" (${best.distanceKm >= 0 ? `${best.distanceKm}km` : 'unknown dist'} from GPS) location:`, best.location);
+      return {
+        id: best.id,
+        name: best.name,
+        location: best.location,
+        candidates
+      };
+    } catch (e) {
+      console.warn('[Swiggy Address] resolve failed:', e);
+      return null;
+    }
+  },
+
   async swiggyApiFetch(url: string, method: string = 'GET', body?: string): Promise<Response | { ok: boolean; status: number; json(): Promise<any>; text(): Promise<string> }> {
     const bridged = await requestViaSwiggyBridge(url, method, body);
     if (bridged) {
@@ -276,6 +744,17 @@ export const api = {
     // fetchWithTimeout is now a shared property on the api object
 
     if (platform === 'blinkit') {
+      let bLat = lat;
+      let bLng = lng;
+      try {
+        const savedBLat = await AsyncStorage.getItem('@blinkit_lat');
+        const savedBLng = await AsyncStorage.getItem('@blinkit_lng');
+        if (savedBLat && savedBLng && Number.isFinite(Number(savedBLat)) && Number.isFinite(Number(savedBLng))) {
+          bLat = Number(savedBLat);
+          bLng = Number(savedBLng);
+        }
+      } catch {}
+
       const q = encodeURIComponent(query);
       const url = `https://blinkit.com/v1/layout/search?offset=0&limit=60&actual_query=${q}&q=${q}&search_type=type_to_search`;
 
@@ -285,8 +764,8 @@ export const api = {
           'Accept': 'application/json, text/plain, */*',
           'app_client': 'consumer_web',
           'auth_key': token,
-          'lat': String(lat),
-          'lon': String(lng),
+          'lat': String(bLat),
+          'lon': String(bLng),
           'Content-Type': 'application/json',
           'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1'
         },
@@ -317,17 +796,24 @@ export const api = {
     }
 
     if (platform === 'swiggy') {
-      // Step 1: Discover store and layout info
+      // Step 1: Discover store and layout info for the delivery location (respecting pinned address if set)
+      const delivery = await this.resolveSwiggyDeliveryAddress(lat, lng);
+      const searchLat = delivery?.location?.latitude ?? lat;
+      const searchLng = delivery?.location?.longitude ?? lng;
+
       const homeStart = Date.now();
-      const homeUrl = 'https://www.swiggy.com/api/instamart/home/v2?offset=0&storeId=&primaryStoreId=&secondaryStoreId=&clientId=INSTAMART-APP';
-      const homeResponse = await this.fetchWithTimeout(homeUrl, {
-        method: 'GET',
-        headers: {
-          'Accept': 'application/json, text/plain, */*',
-          'Cookie': token,
-          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1'
-        }
-      });
+      const homeUrl = `https://www.swiggy.com/api/instamart/home/v2?offset=0&storeId=&primaryStoreId=&secondaryStoreId=&clientId=INSTAMART-APP&lat=${searchLat.toFixed(6)}&lng=${searchLng.toFixed(6)}&overrideLocation=true`;
+      let homeResponse = await this.swiggyApiFetch(homeUrl);
+      if (!homeResponse.ok) {
+        homeResponse = await this.fetchWithTimeout(homeUrl, {
+          method: 'GET',
+          headers: {
+            'Accept': 'application/json, text/plain, */*',
+            'Cookie': token,
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1'
+          }
+        });
+      }
 
       console.log(`[Swiggy API Home] status: ${homeResponse.status} (${Date.now() - homeStart}ms)`);
       if (!homeResponse.ok) {
@@ -352,23 +838,27 @@ export const api = {
 
       const searchUrl = `https://www.swiggy.com/api/instamart/search/v2?${params}`;
       const searchStart = Date.now();
-      const searchResponse = await this.fetchWithTimeout(searchUrl, {
-        method: 'POST',
-        headers: {
-          'Accept': 'application/json, text/plain, */*',
-          'Content-Type': 'application/json',
-          'Cookie': token,
-          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1'
-        },
-        body: JSON.stringify({
-          facets: [],
-          sortAttribute: '',
-          query: query,
-          search_results_offset: '0',
-          page_type: 'INSTAMART_PRE_SEARCH_PAGE',
-          is_pre_search_tag: false
-        })
+      const searchBody = JSON.stringify({
+        facets: [],
+        sortAttribute: '',
+        query: query,
+        search_results_offset: '0',
+        page_type: 'INSTAMART_PRE_SEARCH_PAGE',
+        is_pre_search_tag: false
       });
+      let searchResponse = await this.swiggyApiFetch(searchUrl, 'POST', searchBody);
+      if (!searchResponse.ok) {
+        searchResponse = await this.fetchWithTimeout(searchUrl, {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/json, text/plain, */*',
+            'Content-Type': 'application/json',
+            'Cookie': token,
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1'
+          },
+          body: searchBody
+        });
+      }
 
       console.log(`[Swiggy API Search] status: ${searchResponse.status} (${Date.now() - searchStart}ms)`);
       if (!searchResponse.ok) {
@@ -479,21 +969,21 @@ export const api = {
       AsyncStorage.getItem('@blinkit_lat'),
       AsyncStorage.getItem('@blinkit_lng')
     ]);
-    let location = storedLocation;
-    // Blinkit store-level fees/surge are keyed to the delivery address's own
-    // coordinates — prefer the ones captured with the saved address.
-    if (bLat && bLng && !simulateNoAddress) {
-      location = {
-        latitude: parseFloat(bLat),
-        longitude: parseFloat(bLng),
-        address: storedLocation?.address || ''
-      };
-    }
-    const lat = location?.latitude;
-    const lng = location?.longitude;
+    // Coordinates are split PER platform:
+    //  - Swiggy prices/delivers against wherever the user actually is, so it
+    //    must use the synced GPS location (@user_location).
+    //  - Blinkit's fees key to the user's saved delivery address, so its
+    //    branch prefers the coords captured with that address (@blinkit_lat/
+    //    @blinkit_lng). Using the Blinkit address for Swiggy used to point
+    //    Swiggy at an unrelated store (its own saved Home/Office).
+    const gpsLat = storedLocation?.latitude;
+    const gpsLng = storedLocation?.longitude;
+    const gpsCoords = typeof gpsLat === 'number' && typeof gpsLng === 'number';
+    const blLat = !simulateNoAddress && bLat ? parseFloat(bLat) : storedLocation?.latitude;
+    const blLng = !simulateNoAddress && bLng ? parseFloat(bLng) : storedLocation?.longitude;
+    const blinkitCoords = typeof blLat === 'number' && typeof blLng === 'number';
     // Live pricing needs real coordinates — without a synced location the
     // calc stays a subtotal estimate rather than guessing a city.
-    const hasCoordinates = typeof lat === 'number' && typeof lng === 'number';
 
     const promises = platforms.map(async (platform) => {
       // Filter and use only the items that exist on this platform — either
@@ -519,9 +1009,9 @@ export const api = {
       let total = subtotal;
       let liveBill = false;
 
-      if (subtotal > 0 && hasCoordinates) {
+      if (subtotal > 0) {
         try {
-          if (platform === 'blinkit' && blinkitToken) {
+          if (platform === 'blinkit' && blinkitToken && blinkitCoords) {
             const slimItems = platformItems.map((ci) => ({
               product_id: String(ci.product.originalId || ci.product.id.replace('blinkit-', '')),
               quantity: ci.quantity
@@ -552,7 +1042,7 @@ export const api = {
             let addrNum: number = NaN;
             if (!simulateNoAddress) {
               try {
-                const closestAddr = await this.getClosestBlinkitAddress(lat, lng);
+                const closestAddr = await this.getClosestBlinkitAddress(blLat, blLng);
                 if (closestAddr && closestAddr.id) {
                   addrNum = Number(closestAddr.id);
                   await AsyncStorage.setItem('@blinkit_address_id', String(closestAddr.id));
@@ -585,8 +1075,8 @@ export const api = {
             const bridgeHeaders: Record<string, string> = {
               'app_client': 'consumer_web',
               'auth_key': blinkitToken,
-              'lat': String(lat),
-              'lon': String(lng),
+              'lat': String(blLat),
+              'lon': String(blLng),
               'access_token': siteAccessToken,
               'Content-Type': 'application/json',
               'AppVersion': BLINKIT_APP_VERSION,
@@ -655,8 +1145,8 @@ export const api = {
               const got = await requestViaBlinkitBridge('https://blinkit.com/v5/carts', 'GET', '', {
                 'app_client': 'consumer_web',
                 'auth_key': blinkitToken,
-                'lat': String(lat),
-                'lon': String(lng),
+                'lat': String(blLat),
+                'lon': String(blLng),
                 'AppVersion': BLINKIT_APP_VERSION,
                 'appversion': BLINKIT_APP_VERSION,
                 'app_version': BLINKIT_APP_VERSION,
@@ -700,8 +1190,8 @@ export const api = {
                   'qd_sdk_request': 'true',
                   'web_app_version': '1008010016',
                   'x-age-consent-granted': 'false',
-                  'lat': String(lat),
-                  'lon': String(lng),
+                  'lat': String(blLat),
+                  'lon': String(blLng),
                   'AppVersion': BLINKIT_APP_VERSION,
                   'appversion': BLINKIT_APP_VERSION,
                   'app_version': BLINKIT_APP_VERSION,
@@ -727,8 +1217,8 @@ export const api = {
                   'Accept': 'application/json, text/plain, */*',
                   'app_client': 'consumer_web',
                   'auth_key': simulateNoAddress ? '' : blinkitToken,
-                  'lat': String(lat),
-                  'lon': String(lng),
+                  'lat': String(blLat),
+                  'lon': String(blLng),
                   'Content-Type': 'application/json',
                   'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1',
                   'DeviceID': deviceId,
@@ -761,18 +1251,18 @@ export const api = {
                 liveBill = true;
               }
             }
-          } else if (platform === 'swiggy' && swiggyToken) {
+          } else if (platform === 'swiggy' && swiggyToken && gpsCoords) {
             // Same flow as the desktop grocery-order-optimizer extension:
-            // GET the session cart for its metadata, resolve every basket item
-            // against Swiggy's own catalog (stored IDs when present, otherwise
-            // a fresh search/v2 lookup), POST the EXACT basket to
-            // checkout/v2/cart, then read every charge straight off the bill
-            // JSON (itemTotal, delivery, packaging/convenience, small-cart,
-            // gst tax line, toPay). All calls run inside a real swiggy.com
-            // page context (SwiggyBridgeWebView) — no display scraping, no
-            // estimated rates.
+            // Resolve delivery address first, discover the dark store matching the user's location,
+            // resolve every basket item against Swiggy's own catalog, POST the basket to checkout/v2/cart,
+            // then read every charge straight off the bill JSON.
             const CART_URL = 'https://www.swiggy.com/api/instamart/checkout/v2/cart';
-            const HOME_URL = 'https://www.swiggy.com/api/instamart/home/v2?offset=0&storeId=&primaryStoreId=&secondaryStoreId=&clientId=INSTAMART-APP';
+
+            // Resolve delivery address based on GPS location
+            const delivery = await this.resolveSwiggyDeliveryAddress(gpsLat, gpsLng);
+            const targetLat = delivery?.location?.latitude ?? gpsLat;
+            const targetLng = delivery?.location?.longitude ?? gpsLng;
+            const HOME_URL = `https://www.swiggy.com/api/instamart/home/v2?offset=0&storeId=&primaryStoreId=&secondaryStoreId=&clientId=INSTAMART-APP&lat=${targetLat.toFixed(6)}&lng=${targetLng.toFixed(6)}&overrideLocation=true`;
 
             let shipmentIdV2 = '';
             let cartMetaData = {
@@ -783,10 +1273,8 @@ export const api = {
             };
             let storeInfo: SwiggyStoreInfo | null = null;
 
-            // Store/session metadata is stable per location — cache it so the
-            // expensive checkout/v2/cart GET (observed 0.6–10s, occasionally
-            // stalling the whole bridge) can be skipped on later runs.
-            const locKey = `${lat.toFixed(3)},${lng.toFixed(3)}`;
+            // Store/session metadata is stable per location — cache it so discovery can be skipped on later runs.
+            const locKey = `${targetLat.toFixed(3)},${targetLng.toFixed(3)}`;
             const saveStoreCache = async () => {
               if (!storeInfo) return;
               try {
@@ -802,39 +1290,7 @@ export const api = {
               }
             } catch {}
 
-            if (!storeInfo) {
-            try {
-              const getCartRes = await this.swiggyApiFetch(`${CART_URL}?pageType=INSTAMART_CART`);
-
-              if (getCartRes.ok) {
-                const getCartJson = await getCartRes.json();
-                const cart = getCartJson?.data?.data;
-                if (cart) {
-                  const metaValues = cart.metadata?.values || {};
-                  const sessionItems = cart.items || [];
-                  shipmentIdV2 = (sessionItems[0]?.shipmentIdV2 || sessionItems[0]?.shipmentId) || '';
-                  cartMetaData = {
-                    contactlessDelivery: !!metaValues.contactless_delivery,
-                    deliveryType: cart.deliveryType || 'INSTANT',
-                    ageConsentProvided: !!metaValues.age_consent_provided,
-                    useGiftBagPackaging: !!metaValues.use_gift_bag_packaging
-                  };
-                  const sessionStoreId = sessionItems[0]?.storeId;
-                  if (sessionStoreId) {
-                    storeInfo = {
-                      storeId: String(sessionStoreId),
-                      primaryStoreId: String(sessionStoreId),
-                      secondaryStoreId: '',
-                      layoutId: ''
-                    };
-                  }
-                }
-              }
-            } catch (e) {
-              console.warn('[Swiggy API Checkout] GET cart failed:', e);
-            }
-            }
-
+            // Primary discovery: discover store from HOME_URL for the target location
             if (!storeInfo) {
               try {
                 const homeResponse = await this.swiggyApiFetch(HOME_URL);
@@ -843,6 +1299,39 @@ export const api = {
                 }
               } catch (e) {
                 console.warn('[Swiggy API Checkout] home/v2 discovery failed:', e);
+              }
+            }
+
+            // Fallback: discover from session cart if HOME_URL failed
+            if (!storeInfo) {
+              try {
+                const getCartRes = await this.swiggyApiFetch(`${CART_URL}?pageType=INSTAMART_CART`);
+                if (getCartRes.ok) {
+                  const getCartJson = await getCartRes.json();
+                  const cart = getCartJson?.data?.data;
+                  if (cart) {
+                    const metaValues = cart.metadata?.values || {};
+                    const sessionItems = cart.items || [];
+                    shipmentIdV2 = (sessionItems[0]?.shipmentIdV2 || sessionItems[0]?.shipmentId) || '';
+                    cartMetaData = {
+                      contactlessDelivery: !!metaValues.contactless_delivery,
+                      deliveryType: cart.deliveryType || 'INSTANT',
+                      ageConsentProvided: !!metaValues.age_consent_provided,
+                      useGiftBagPackaging: !!metaValues.use_gift_bag_packaging
+                    };
+                    const sessionStoreId = sessionItems[0]?.storeId;
+                    if (sessionStoreId) {
+                      storeInfo = {
+                        storeId: String(sessionStoreId),
+                        primaryStoreId: String(sessionStoreId),
+                        secondaryStoreId: '',
+                        layoutId: ''
+                      };
+                    }
+                  }
+                }
+              } catch (e) {
+                console.warn('[Swiggy API Checkout] GET cart failed:', e);
               }
             }
 
@@ -934,14 +1423,19 @@ export const api = {
               if (unmappedName) {
                 console.warn(`[Swiggy API Checkout] no catalog match for "${unmappedName}" — bill not priced`);
               } else if (bodies.length > 0) {
-                const postBasket = async (storeIds: string[], preferredAddressId: any = null) => this.swiggyApiFetch(CART_URL, 'POST', JSON.stringify({
+                // Bind the delivery address (closest saved address to GPS) so
+                // the cart is priced for AND opened at the right location —
+                // Swiggy resolves "select delivery address" from server cart
+                // state, not the local store.
+                const delivery = await this.resolveSwiggyDeliveryAddress(gpsLat, gpsLng);
+                const postBasket = async (storeIds: string[], deliveryFor?: { id: string | null; location?: { latitude: number; longitude: number } | null } | null) => this.swiggyApiFetch(CART_URL, 'POST', JSON.stringify({
                   data: {
                     items: bodies,
                     cartMetaData: {
                       contactlessDelivery: cartMetaData.contactlessDelivery,
                       deliveryType: cartMetaData.deliveryType,
                       owner: 'APP',
-                      preferredAddressId,
+                      preferredAddressId: deliveryFor?.id ?? null,
                       ageConsentProvided: cartMetaData.ageConsentProvided,
                       useGiftBagPackaging: cartMetaData.useGiftBagPackaging,
                       useReusablePackaging: false,
@@ -950,18 +1444,23 @@ export const api = {
                       primaryStoreId: resolvedStoreId,
                       storeIds
                     },
-                    cartType: 'INSTAMART'
+                    cartType: 'INSTAMART',
+                    // The SPA binds an address the same way on change
+                    // (updateCartAddressWithResetSlot): preferredAddressId +
+                    // top-level addressId + location.
+                    ...(deliveryFor?.id ? { addressId: deliveryFor.id } : {}),
+                    ...(deliveryFor?.location ? { location: deliveryFor.location } : {})
                   },
                   source: 'userInitiated'
                 }));
 
-                  let postCartRes = await postBasket([resolvedStoreId]);
+                  let postCartRes = await postBasket([resolvedStoreId], delivery);
                 if (!postCartRes.ok) {
                   const rejText = (await postCartRes.text().catch(() => '')).slice(0, 300);
                   console.warn(`[Swiggy API Checkout] POST rejected (${postCartRes.status}): ${rejText}`);
                   // Rejected baskets are retried with the SPA's paired
                   // [primaryStoreId, secondaryStoreId] shape before giving up.
-                  postCartRes = await postBasket([resolvedStoreId, resolvedStoreId]);
+                  postCartRes = await postBasket([resolvedStoreId, resolvedStoreId], delivery);
                 }
                 if (!postCartRes.ok && usedFastPath) {
                   // Stale/wrong stored IDs are what Swiggy answers with
@@ -973,17 +1472,29 @@ export const api = {
                   } else {
                     usedFastPath = false;
                     bodies = freshRetry.bodies;
-                    postCartRes = await postBasket([resolvedStoreId]);
+                    postCartRes = await postBasket([resolvedStoreId], delivery);
                     if (!postCartRes.ok) {
                       const rejText2 = (await postCartRes.text().catch(() => '')).slice(0, 300);
                       console.warn(`[Swiggy API Checkout] POST rejected (${postCartRes.status}): ${rejText2}`);
-                      postCartRes = await postBasket([resolvedStoreId, resolvedStoreId]);
+                      postCartRes = await postBasket([resolvedStoreId, resolvedStoreId], delivery);
                     }
                   }
                 }
 
                 if (postCartRes.ok) {
                   const postCartJson = await postCartRes.json();
+
+                  // Diagnose address intermittency: compare the address the
+                  // bill was actually priced for vs the one we sent.
+                  const billedAddrId = postCartJson?.data?.data?.addressId
+                    ?? postCartJson?.data?.data?.address?.id
+                    ?? postCartJson?.data?.data?.shippingAddressId
+                    ?? null;
+                  if (billedAddrId && delivery?.id && String(billedAddrId) !== String(delivery.id)) {
+                    console.warn(`[Swiggy Address] MISMATCH: bill priced for address "${billedAddrId}" but we sent "${delivery.id}"`);
+                  } else if (delivery?.id) {
+                    console.log(`[Swiggy Address] bill address "${billedAddrId || 'n/a'}" matches sent id "${delivery.id}"`);
+                  }
 
                   // The POST often only acknowledges the write — the bill then
                   // shows up on a fresh GET cart (exactly how the SPA renders
