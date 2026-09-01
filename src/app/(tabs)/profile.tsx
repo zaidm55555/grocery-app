@@ -57,6 +57,14 @@ export default function ProfileScreen() {
     if (userLoc) {
       setManualLat(String(userLoc.latitude));
       setManualLng(String(userLoc.longitude));
+
+      // If address hasn't been fetched yet for this location, auto-fetch in background
+      if (blinkitToken && !savedName) {
+        refreshBlinkitAddress(userLoc.latitude, userLoc.longitude);
+      }
+      if (swiggyToken && !swiggyAddressId) {
+        refreshSwiggyAddress(userLoc.latitude, userLoc.longitude);
+      }
     }
   };
 
