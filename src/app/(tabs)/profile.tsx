@@ -24,10 +24,7 @@ export default function ProfileScreen() {
   const [swiggyAddressName, setSwiggyAddressName] = useState<string | null>(null);
   const [swiggyAddressId, setSwiggyAddressId] = useState<string | null>(null);
   const [swiggyAddressLocation, setSwiggyAddressLocation] = useState<{ latitude: number; longitude: number } | null>(null);
-  const [swiggyCandidates, setSwiggyCandidates] = useState<{ id: string; name: string | null; distanceKm: number; location?: { latitude: number; longitude: number } | null }[]>([]);
   const [swiggyAddrLoading, setSwiggyAddrLoading] = useState(false);
-  const [swiggyPinned, setSwiggyPinned] = useState<{ id: string; name: string | null } | null>(null);
-  const [lastSwiggyResolved, setLastSwiggyResolved] = useState<{ id: string; name: string | null; location: { latitude: number; longitude: number } | null } | null>(null);
 
   const loadData = async () => {
     const blinkitToken = await storage.getToken('blinkit');
@@ -42,24 +39,13 @@ export default function ProfileScreen() {
     setSwiggyAddressName(null);
     setSwiggyAddressId(null);
     setSwiggyAddressLocation(null);
-    setSwiggyCandidates([]);
-    setLastSwiggyResolved(null);
     try {
-      const pinnedJson = await AsyncStorage.getItem('@swiggy_override_address');
-      if (pinnedJson) {
-        const p = JSON.parse(pinnedJson);
-        setSwiggyPinned(p?.id ? { id: String(p.id), name: p?.name || null } : null);
-        if (p?.location) setSwiggyAddressLocation(p.location);
-      } else {
-        setSwiggyPinned(null);
-      }
       const swiggyAddrJson = await AsyncStorage.getItem('@swiggy_address');
       if (swiggyAddrJson) {
         const parsed = JSON.parse(swiggyAddrJson);
         setSwiggyAddressName(parsed?.name || null);
         setSwiggyAddressId(parsed?.id || null);
-        if (!pinnedJson && parsed?.location) setSwiggyAddressLocation(parsed?.location || null);
-        if (Array.isArray(parsed?.candidates)) setSwiggyCandidates(parsed.candidates);
+        setSwiggyAddressLocation(parsed?.location || null);
       }
     } catch {}
 
@@ -132,54 +118,19 @@ export default function ProfileScreen() {
         setSwiggyAddressName(resolved.name);
         setSwiggyAddressId(resolved.id);
         setSwiggyAddressLocation(resolved.location);
-        setSwiggyCandidates(resolved.candidates || []);
-        setLastSwiggyResolved({ id: resolved.id, name: resolved.name, location: resolved.location });
       } else {
         setSwiggyAddressName('No Saved Addresses Found');
         setSwiggyAddressId(null);
         setSwiggyAddressLocation(null);
-        setSwiggyCandidates([]);
       }
     } catch (e) {
       console.error(e);
       setSwiggyAddressName('Error Fetching Address');
       setSwiggyAddressId(null);
       setSwiggyAddressLocation(null);
-      setSwiggyCandidates([]);
     } finally {
       setSwiggyAddrLoading(false);
     }
-  };
-
-  const selectSwiggyCandidate = async (cand: { id: string; name: string | null; distanceKm: number; location?: { latitude: number; longitude: number } | null }) => {
-    await AsyncStorage.setItem('@swiggy_override_address', JSON.stringify({ id: cand.id, name: cand.name, location: cand.location || null }));
-    setSwiggyPinned({ id: cand.id, name: cand.name });
-    setSwiggyAddressId(cand.id);
-    setSwiggyAddressName(cand.name);
-    setSwiggyAddressLocation(cand.location || null);
-    if (cand.location) {
-      await AsyncStorage.setItem('@swiggy_lat', String(cand.location.latitude));
-      await AsyncStorage.setItem('@swiggy_lng', String(cand.location.longitude));
-    }
-    console.log(`[Profile] Selected & Pinned Swiggy Address: id=${cand.id}, name=${cand.name}, location=`, cand.location);
-    Alert.alert('Address Selected & Pinned', `Swiggy pricing and export will use "${cand.name || cand.id}".`);
-  };
-
-  const pinSwiggyAddress = async () => {
-    const r = lastSwiggyResolved;
-    if (!r?.id) return;
-    await AsyncStorage.setItem('@swiggy_override_address', JSON.stringify({ id: r.id, name: r.name, location: r.location }));
-    setSwiggyPinned({ id: r.id, name: r.name });
-    Alert.alert('Address Pinned', `Pricing and export will always use "${r.name || r.id}" until you unpin it.`);
-  };
-
-  const unpinSwiggyAddress = async () => {
-    await AsyncStorage.removeItem('@swiggy_override_address');
-    setSwiggyPinned(null);
-    if (location) {
-      refreshSwiggyAddress(location.latitude, location.longitude);
-    }
-    Alert.alert('Address Unpinned', 'Swiggy will follow the nearest discovered address again.');
   };
 
   const handleLink = (platform: Platform) => {
@@ -495,54 +446,6 @@ export default function ProfileScreen() {
                 Address at: {swiggyAddressLocation.latitude.toFixed(5)}, {swiggyAddressLocation.longitude.toFixed(5)}
               </Text>
             )}
-            {swiggyCandidates.length > 0 && swiggyCandidates[0].distanceKm > 25 && (
-              <Text style={styles.farWarning}>
-                Nearest saved address is {swiggyCandidates[0].distanceKm.toFixed(0)} km away — Swiggy prices to your saved address, not your coordinates. Add a Swiggy delivery address near your current location for local pricing.
-              </Text>
-            )}
-            {swiggyCandidates.length > 0 && (
-              <View style={styles.candidatesWrap}>
-                <Text style={styles.candidatesTitle}>
-                  {swiggyCandidates.length} saved address{swiggyCandidates.length === 1 ? '' : 'es'} (tap to select):
-                </Text>
-                {swiggyCandidates.slice(0, 25).map((c) => {
-                  const isSelected = c.id === (swiggyPinned?.id || swiggyAddressId);
-                  return (
-                    <TouchableOpacity
-                      key={c.id}
-                      style={[styles.candidateItem, isSelected && styles.candidateItemSelected]}
-                      onPress={() => selectSwiggyCandidate(c)}
-                    >
-                      <Text style={[styles.candidateItemText, isSelected && styles.candidateItemTextSelected]} numberOfLines={1}>
-                        {isSelected ? '✓ ' : ''}{c.distanceKm >= 0 ? `${c.distanceKm.toFixed(1)} km` : 'n/a'} · {c.name || c.id}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            )}
-
-            {swiggyPinned ? (
-              <View style={styles.pinnedWrap}>
-                <Text style={styles.pinnedLabel}>
-                  Pinned: {swiggyPinned.name || swiggyPinned.id}
-                </Text>
-                <TouchableOpacity style={styles.pinButton} onPress={unpinSwiggyAddress}>
-                  <Text style={styles.pinButtonText}>Unpin Address</Text>
-                </TouchableOpacity>
-              </View>
-            ) : (
-              <TouchableOpacity
-                style={[styles.pinButton, !lastSwiggyResolved && styles.disabledRefreshBtn]}
-                onPress={pinSwiggyAddress}
-                disabled={!lastSwiggyResolved}
-              >
-                <Text style={styles.pinButtonText}>
-                  {lastSwiggyResolved ? 'Pin this address for pricing' : 'Pin the address shown above for pricing'}
-                </Text>
-              </TouchableOpacity>
-            )}
-
             <TouchableOpacity 
               style={[styles.refreshAddrButton, { borderColor: 'rgba(252,128,25,0.35)', backgroundColor: 'rgba(252,128,25,0.06)' }, swiggyAddrLoading && styles.disabledRefreshBtn]} 
               onPress={() => {
@@ -872,76 +775,6 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255, 192, 0, 0.05)',
     marginTop: 12,
     marginBottom: 6,
-  },
-  candidatesWrap: {
-    marginTop: 8,
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: colors.glassBorder,
-  },
-  candidatesTitle: {
-    fontSize: 11,
-    color: colors.textMuted,
-    fontFamily: fonts.bodyMedium,
-    marginBottom: 6,
-  },
-  candidateItem: {
-    paddingVertical: 6,
-    paddingHorizontal: 8,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
-    backgroundColor: 'rgba(255,255,255,0.02)',
-    marginBottom: 4,
-  },
-  candidateItemSelected: {
-    borderColor: 'rgba(252,128,25,0.4)',
-    backgroundColor: 'rgba(252,128,25,0.08)',
-  },
-  candidateItemText: {
-    fontSize: 11.5,
-    color: colors.textSecondary,
-    fontFamily: fonts.body,
-  },
-  candidateItemTextSelected: {
-    color: '#FC8019',
-    fontFamily: fonts.bodyMedium,
-  },
-  farWarning: {
-    marginTop: 8,
-    fontSize: 11,
-    fontFamily: fonts.body,
-    color: '#fbbf24',
-    lineHeight: 16,
-  },
-  pinnedWrap: {
-    marginTop: 12,
-    padding: 10,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(16,185,129,0.4)',
-    backgroundColor: 'rgba(16,185,129,0.08)',
-  },
-  pinnedLabel: {
-    fontSize: 12,
-    fontFamily: fonts.bodyMedium,
-    color: '#10B981',
-    marginBottom: 8,
-  },
-  pinButton: {
-    height: 34,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: 'rgba(16,185,129,0.4)',
-    backgroundColor: 'rgba(16,185,129,0.08)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 12,
-  },
-  pinButtonText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#10B981',
   },
   refreshBtnText: {
     fontSize: 12,

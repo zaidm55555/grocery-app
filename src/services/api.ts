@@ -536,7 +536,7 @@ export const api = {
    * The pick is cached (@swiggy_address); re-fetching only happens when the
    * GPS point moves ~6km+ or the cache ages out (24h).
    */
-  async resolveSwiggyDeliveryAddress(lat: number, lng: number, force = false): Promise<{ id: string; name: string | null; location: { latitude: number; longitude: number } | null; candidates: { id: string; name: string | null; distanceKm: number; location: { latitude: number; longitude: number } | null }[] } | null> {
+  async resolveSwiggyDeliveryAddress(lat: number, lng: number, force = false): Promise<{ id: string; name: string | null; location: { latitude: number; longitude: number } | null; distanceKm?: number } | null> {
     const KEY = '@swiggy_address';
     const distanceKm = (aLat: number, aLng: number, bLat: number, bLng: number): number => {
       const R = 6371;
@@ -548,27 +548,11 @@ export const api = {
       ));
     };
 
-    let override: any = null;
-    try {
-      const overrideRaw = await AsyncStorage.getItem('@swiggy_override_address');
-      override = overrideRaw ? JSON.parse(overrideRaw) : null;
-    } catch {}
-
     let cached: any = null;
     try {
       const raw = await AsyncStorage.getItem(KEY);
       cached = raw ? JSON.parse(raw) : null;
     } catch {}
-
-    if (!force && override && override.id) {
-      console.log(`[Swiggy Address] using PINNED address "${override.name || override.id}" location:`, override.location);
-      return {
-        id: String(override.id),
-        name: override.name || null,
-        location: override.location ? { latitude: override.location.latitude, longitude: override.location.longitude } : null,
-        candidates: Array.isArray(cached?.candidates) ? cached.candidates : (Array.isArray(override.candidates) ? override.candidates : [])
-      };
-    }
 
     if (!force && cached?.id && typeof cached.lat === 'number' && typeof cached.lng === 'number') {
       const fresh = typeof cached.at === 'number' && Date.now() - cached.at < 24 * 3600 * 1000;
@@ -578,7 +562,7 @@ export const api = {
           id: String(cached.id),
           name: cached.name || null,
           location: cached.location ? { latitude: cached.location.latitude, longitude: cached.location.longitude } : null,
-          candidates: Array.isArray(cached.candidates) ? cached.candidates : []
+          distanceKm: typeof cached.distanceKm === 'number' ? cached.distanceKm : undefined
         };
       }
     }
@@ -605,33 +589,21 @@ export const api = {
         return x.d - y.d;
       });
 
-      const candidates = scored.map(s => ({ id: s.id, name: s.name, distanceKm: s.distanceKm, location: s.location }));
-
-      candidates.forEach((c, i) => {
-        console.log(`[Swiggy Address] Candidate #${i + 1}: id="${c.id}" name="${c.name || 'unnamed'}" coords=${c.location ? `${c.location.latitude.toFixed(4)},${c.location.longitude.toFixed(4)}` : 'NONE'} dist=${c.distanceKm >= 0 ? `${c.distanceKm}km` : 'n/a'}`);
-      });
-
-      if (override && override.id) {
-        const matching = scored.find(s => s.id === String(override.id));
-        const finalLocation = override.location || matching?.location || null;
-        const finalName = override.name || matching?.name || null;
-        console.log(`[Swiggy Address] using PINNED address "${finalName || override.id}" with location:`, finalLocation, `(${candidates.length} candidate(s))`);
-        await AsyncStorage.setItem(KEY, JSON.stringify({ id: String(override.id), name: finalName, location: finalLocation, lat, lng, at: Date.now(), candidates }));
-        return {
-          id: String(override.id),
-          name: finalName,
-          location: finalLocation,
-          candidates
-        };
-      }
-
       if (scored.length === 0) {
         console.warn('[Swiggy Address] no saved addresses found in user account');
         return null;
       }
 
       const best = scored[0];
-      await AsyncStorage.setItem(KEY, JSON.stringify({ id: best.id, name: best.name, location: best.location, lat, lng, at: Date.now(), candidates }));
+      await AsyncStorage.setItem(KEY, JSON.stringify({
+        id: best.id,
+        name: best.name,
+        location: best.location,
+        distanceKm: best.distanceKm,
+        lat,
+        lng,
+        at: Date.now()
+      }));
       await AsyncStorage.setItem('@swiggy_address_id', best.id);
       if (best.name) await AsyncStorage.setItem('@swiggy_address_name', best.name);
       if (best.location) {
@@ -643,7 +615,7 @@ export const api = {
         id: best.id,
         name: best.name,
         location: best.location,
-        candidates
+        distanceKm: best.distanceKm
       };
     } catch (e) {
       console.warn('[Swiggy Address] resolve failed:', e);
