@@ -1577,8 +1577,90 @@ function variationImage(product: any, v: any): string | null {
   return imageUrlFrom(finalImg);
 }
 
+function isSwiggyInStock(product: any, v: any): boolean {
+  if (!v || typeof v !== 'object') return false;
+
+  // 1. Explicit booleans
+  if (v.inStock === false || v.in_stock === false) return false;
+  if (product && (product.inStock === false || product.in_stock === false)) return false;
+  if (v.isAvail === false || v.isAvailable === false || v.available === false) return false;
+  if (product && (product.isAvail === false || product.isAvailable === false || product.available === false)) return false;
+  if (v.outOfStock === true || v.out_of_stock === true || v.isOOS === true) return false;
+  if (product && (product.outOfStock === true || product.out_of_stock === true || product.isOOS === true)) return false;
+
+  // 2. Inventory object on variation
+  if (v.inventory && typeof v.inventory === 'object') {
+    if (v.inventory.inStock === false || v.inventory.in_stock === false || v.inventory.isAvailable === false) return false;
+    if (typeof v.inventory.totalStock === 'number' && v.inventory.totalStock <= 0) return false;
+    if (typeof v.inventory.quantity === 'number' && v.inventory.quantity <= 0) return false;
+    if (typeof v.inventory.remainingStock === 'number' && v.inventory.remainingStock <= 0) return false;
+    if (typeof v.inventory.stock === 'number' && v.inventory.stock <= 0) return false;
+    const invStatus = String(v.inventory.status || '').toUpperCase();
+    if (invStatus === 'OUT_OF_STOCK' || invStatus === 'OOS' || invStatus === 'SOLD_OUT') return false;
+  }
+
+  // 3. Inventory object on parent product
+  if (product && product.inventory && typeof product.inventory === 'object') {
+    if (product.inventory.inStock === false || product.inventory.in_stock === false || product.inventory.isAvailable === false) return false;
+    if (typeof product.inventory.totalStock === 'number' && product.inventory.totalStock <= 0) return false;
+    if (typeof product.inventory.quantity === 'number' && product.inventory.quantity <= 0) return false;
+    if (typeof product.inventory.remainingStock === 'number' && product.inventory.remainingStock <= 0) return false;
+    const pInvStatus = String(product.inventory.status || '').toUpperCase();
+    if (pInvStatus === 'OUT_OF_STOCK' || pInvStatus === 'OOS' || pInvStatus === 'SOLD_OUT') return false;
+  }
+
+  // 4. Stock quantities
+  if (typeof v.skuQuantity === 'number' && v.skuQuantity <= 0) return false;
+  if (typeof v.totalStock === 'number' && v.totalStock <= 0) return false;
+  if (typeof v.remainingStock === 'number' && v.remainingStock <= 0) return false;
+  if (typeof v.availableStock === 'number' && v.availableStock <= 0) return false;
+  if (typeof v.availableQuantity === 'number' && v.availableQuantity <= 0) return false;
+
+  // 5. Status strings
+  const skuStatus = String(v.skuStatus || (product && product.skuStatus) || v.status || '').toUpperCase();
+  if (skuStatus === 'OUT_OF_STOCK' || skuStatus === 'OOS' || skuStatus === 'INACTIVE' || skuStatus === 'SOLD_OUT') return false;
+
+  const visStatus = String(v.visibilityStatus || (product && product.visibilityStatus) || '').toUpperCase();
+  if (visStatus === 'OUT_OF_STOCK' || visStatus === 'HIDDEN') return false;
+
+  // 6. CTA & Buttons ("Notify Me", "Out of stock")
+  const checkTextOOS = (txt: any): boolean => {
+    if (!txt || typeof txt !== 'string') return false;
+    const lower = txt.toLowerCase();
+    return lower.includes('notify') || lower.includes('out of stock') || lower.includes('sold out') || lower.includes('unavailable') || lower.includes('not available');
+  };
+
+  if (v.cta) {
+    const ctaType = String(v.cta.type || '').toUpperCase();
+    if (ctaType === 'NOTIFY_ME' || ctaType === 'OUT_OF_STOCK' || ctaType === 'OOS') return false;
+    if (checkTextOOS(v.cta.text) || checkTextOOS(v.cta.title) || checkTextOOS(v.cta.cta_text)) return false;
+  }
+  if (product && product.cta) {
+    const pCtaType = String(product.cta.type || '').toUpperCase();
+    if (pCtaType === 'NOTIFY_ME' || pCtaType === 'OUT_OF_STOCK' || pCtaType === 'OOS') return false;
+    if (checkTextOOS(product.cta.text) || checkTextOOS(product.cta.title) || checkTextOOS(product.cta.cta_text)) return false;
+  }
+
+  // 7. Badges & Tags
+  const checkBadge = (b: any): boolean => {
+    if (!b) return false;
+    if (typeof b === 'string') return checkTextOOS(b);
+    if (typeof b === 'object') {
+      return checkTextOOS(b.text) || checkTextOOS(b.title) || checkTextOOS(b.name) || checkTextOOS(b.label);
+    }
+    return false;
+  };
+
+  if (checkBadge(v.badge) || (product && checkBadge(product.badge)) || checkBadge(v.tag) || (product && checkBadge(product.tag))) return false;
+  if (Array.isArray(v.badges) && v.badges.some(checkBadge)) return false;
+  if (product && Array.isArray(product.badges) && product.badges.some(checkBadge)) return false;
+
+  return true;
+}
+
 function extractVariation(product: any, v: any, productId: string): any {
   if (!v || typeof v !== 'object') return null;
+  if (!isSwiggyInStock(product, v)) return null;
   const name = (typeof v.displayName === 'string' && v.displayName.trim())
     ? v.displayName.trim()
     : (typeof product.displayName === 'string' ? product.displayName.trim() : '');
@@ -1591,10 +1673,6 @@ function extractVariation(product: any, v: any, productId: string): any {
     const m = asNum(v.price.mrp.units);
     if (m !== null && m > 0 && m !== price) mrp = m;
   }
-  let inStock = true;
-  if (v.inventory && typeof v.inventory === 'object' && v.inventory.inStock === false) inStock = false;
-  if (product.inStock === false) inStock = false;
-  if (v.isAvail === false || product.isAvail === false) inStock = false;
   // Swiggy catalog IDs — the checkout API validates against these exact
   // spaces: itemId MUST be the variation's skuId (not v.id — see the
   // optimizer's background.js comment on treating these interchangeably),
@@ -1616,7 +1694,7 @@ function extractVariation(product: any, v: any, productId: string): any {
     itemId: itemIdVal,
     spinId: spinId,
     storeId: storeIdVal,
-    inStock: inStock,
+    inStock: true,
     _rawVariation: v  // kept temporarily for debugging
   };
 }
@@ -1721,6 +1799,92 @@ function formatBlinkitImageUrl(url: string | null): string {
   return 'https://cdn.grofers.com/cdn-cgi/image/f=auto,fit=scale-down,q=70,metadata=none,w=270/' + url;
 }
 
+function isBlinkitInStock(node: any): boolean {
+  if (!node || typeof node !== 'object') return false;
+
+  // 1. Explicit booleans
+  if (node.in_stock === false || node.is_available === false || node.available === false) return false;
+  if (node.out_of_stock === true || node.is_oos === true || node.sold_out === true || node.is_sold_out === true) return false;
+  if (node.is_disabled === true || node.disabled === true) return false;
+
+  // 2. Inventory numbers
+  if (typeof node.inventory === 'number' && node.inventory <= 0) return false;
+  if (typeof node.inventory_level === 'number' && node.inventory_level <= 0) return false;
+  if (typeof node.stock_level === 'number' && node.stock_level <= 0) return false;
+  if (typeof node.available_units === 'number' && node.available_units <= 0) return false;
+  if (typeof node.available_quantity === 'number' && node.available_quantity <= 0) return false;
+  if (typeof node.stock === 'number' && node.stock <= 0) return false;
+
+  // 3. Inventory object
+  if (node.inventory && typeof node.inventory === 'object') {
+    if (node.inventory.in_stock === false || node.inventory.is_available === false) return false;
+    if (typeof node.inventory.quantity === 'number' && node.inventory.quantity <= 0) return false;
+    if (typeof node.inventory.stock === 'number' && node.inventory.stock <= 0) return false;
+    if (typeof node.inventory.total === 'number' && node.inventory.total <= 0) return false;
+    const level = String(node.inventory.level || node.inventory.status || '').toUpperCase();
+    if (level === 'OUT_OF_STOCK' || level === 'OOS' || level === 'SOLD_OUT') return false;
+  }
+
+  // 4. Status strings
+  const statusStr = String(node.inventory_status || node.product_state || node.state || node.status || '').toUpperCase();
+  if (statusStr === 'OUT_OF_STOCK' || statusStr === 'OOS' || statusStr === 'SOLD_OUT' || statusStr === 'INACTIVE') return false;
+
+  // 5. CTA / Actions / Buttons ("Notify Me", "Out of stock")
+  const checkTextOOS = (txt: any): boolean => {
+    if (!txt || typeof txt !== 'string') return false;
+    const lower = txt.toLowerCase();
+    return lower.includes('notify') || lower.includes('out of stock') || lower.includes('sold out') || lower.includes('unavailable') || lower.includes('not available');
+  };
+
+  if (node.cta) {
+    const ctaType = String(node.cta.type || '').toUpperCase();
+    if (ctaType === 'NOTIFY_ME' || ctaType === 'OUT_OF_STOCK' || ctaType === 'OOS') return false;
+    if (checkTextOOS(node.cta.text) || checkTextOOS(node.cta.title) || checkTextOOS(node.cta.cta_text)) return false;
+  }
+
+  if (node.action) {
+    const actionType = String(node.action.type || '').toUpperCase();
+    if (actionType === 'NOTIFY_ME' || actionType === 'OUT_OF_STOCK') return false;
+    if (checkTextOOS(node.action.text) || checkTextOOS(node.action.title)) return false;
+  }
+
+  if (node.button && (checkTextOOS(node.button.text) || checkTextOOS(node.button.title) || checkTextOOS(node.button.cta_text))) {
+    return false;
+  }
+
+  if (node.atc_action) {
+    if (node.atc_action.is_disabled === true) return false;
+    const atcType = String(node.atc_action.type || '').toUpperCase();
+    if (atcType === 'NOTIFY_ME' || atcType === 'OUT_OF_STOCK') return false;
+    if (checkTextOOS(node.atc_action.text) || checkTextOOS(node.atc_action.title)) return false;
+  }
+
+  // 6. Badges / Tags / Overlays
+  const checkBadge = (b: any): boolean => {
+    if (!b) return false;
+    if (typeof b === 'string') return checkTextOOS(b);
+    if (typeof b === 'object') {
+      return checkTextOOS(b.text) || checkTextOOS(b.title) || checkTextOOS(b.name) || checkTextOOS(b.label);
+    }
+    return false;
+  };
+
+  if (checkBadge(node.badge) || checkBadge(node.overlay) || checkBadge(node.tag) || checkBadge(node.tag_text) || checkBadge(node.banner) || checkBadge(node.ribbon)) {
+    return false;
+  }
+  if (Array.isArray(node.badges) && node.badges.some(checkBadge)) return false;
+  if (Array.isArray(node.tags) && node.tags.some(checkBadge)) return false;
+
+  // 7. Cart item checks
+  if (node.cart_item && typeof node.cart_item === 'object') {
+    if (node.cart_item.in_stock === false || node.cart_item.available === false) return false;
+    if (typeof node.cart_item.inventory === 'number' && node.cart_item.inventory <= 0) return false;
+    if (typeof node.cart_item.stock === 'number' && node.cart_item.stock <= 0) return false;
+  }
+
+  return true;
+}
+
 export function parseBlinkitProducts(json: any): any[] {
   const out: any[] = [];
   if (!json || typeof json !== 'object') return out;
@@ -1779,12 +1943,7 @@ export function parseBlinkitProducts(json: any): any[] {
       const numPrice = typeof price === 'number' ? price : Number((String(price).match(/\d[\d,]*/) || [])[0] || 0);
       const numMrp = typeof mrp === 'number' ? mrp : Number((String(mrp || price).match(/\d[\d,]*/) || [])[0] || 0);
       if (numPrice > 0 && name.length >= 3 && name.length <= 150) {
-        let inStock = true;
-        if (node.in_stock === false || node.is_available === false || node.available === false) inStock = false;
-        if (inStock && typeof node.inventory === 'number' && node.inventory <= 0) inStock = false;
-        if (inStock && node.inventory && typeof node.inventory === 'object' && node.inventory.in_stock === false) inStock = false;
-
-        if (inStock) {
+        if (isBlinkitInStock(node)) {
           const cleanName = String(name).trim();
           let cleanUnit = (unit && typeof unit === 'string') ? unit.trim() : '';
           let cartItem: any = null;

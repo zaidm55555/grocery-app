@@ -10,6 +10,7 @@ import { liveKey, familyKey } from '../../utils/productKey';
 import { pickBestMatch } from '../../utils/matcher';
 import MatchModal, { MatchFlowState, MatchTarget, MatchCell } from '../../components/MatchModal';
 import VariantPickerModal from '../../components/VariantPickerModal';
+import { resolveAreaName } from '../../utils/location';
 
 const QUICK_SEARCHES = ['Milk', 'Bread', 'Eggs', 'Butter', 'Cheese'];
 type StoreFilter = 'all' | Platform;
@@ -65,6 +66,16 @@ export default function SearchScreen() {
     setTokens({ blinkit: blinkitToken, swiggy: swiggyToken });
     setLocation(userLoc);
     setCartItems(cart);
+
+    if (userLoc && (!userLoc.address || userLoc.address.startsWith('Manual:'))) {
+      resolveAreaName(userLoc.latitude, userLoc.longitude).then(async (resolvedArea) => {
+        if (resolvedArea && !resolvedArea.startsWith('Manual:')) {
+          const updatedLoc = { ...userLoc, address: resolvedArea };
+          await storage.saveLocation(updatedLoc);
+          setLocation(updatedLoc);
+        }
+      }).catch(() => {});
+    }
   };
 
   useFocusEffect(

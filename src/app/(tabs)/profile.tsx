@@ -7,6 +7,7 @@ import { storage, Platform, LocationData } from '../../services/storage';
 import { colors, fonts, platformThemes } from '../../constants/theme';
 import { api } from '../../services/api';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { resolveAreaName } from '../../utils/location';
 
 export default function ProfileScreen() {
   const router = useRouter();
@@ -57,6 +58,17 @@ export default function ProfileScreen() {
     if (userLoc) {
       setManualLat(String(userLoc.latitude));
       setManualLng(String(userLoc.longitude));
+
+      // Auto-resolve human-readable area name if current address is empty or "Manual: ..."
+      if (!userLoc.address || userLoc.address.startsWith('Manual:')) {
+        resolveAreaName(userLoc.latitude, userLoc.longitude).then(async (resolvedArea) => {
+          if (resolvedArea && !resolvedArea.startsWith('Manual:')) {
+            const updatedLoc = { ...userLoc, address: resolvedArea };
+            await storage.saveLocation(updatedLoc);
+            setLocation(updatedLoc);
+          }
+        }).catch(() => {});
+      }
 
       // If address hasn't been fetched yet for this location, auto-fetch in background
       if (blinkitToken && !savedName) {
@@ -183,22 +195,18 @@ export default function ProfileScreen() {
         accuracy: Location.Accuracy.Balanced,
       });
 
-      let geocode = await Location.reverseGeocodeAsync({
-        latitude: loc.coords.latitude,
-        longitude: loc.coords.longitude
-      });
-
-      const city = geocode[0]?.city || geocode[0]?.subregion || 'Unknown location';
-      const addressString = [geocode[0]?.street, geocode[0]?.district, city, geocode[0]?.region].filter(Boolean).join(', ') || 'Unknown location';
+      const areaName = await resolveAreaName(loc.coords.latitude, loc.coords.longitude);
 
       const newLoc = {
         latitude: loc.coords.latitude,
         longitude: loc.coords.longitude,
-        address: addressString
+        address: areaName
       };
 
       await storage.saveLocation(newLoc);
       setLocation(newLoc);
+      setManualLat(String(loc.coords.latitude));
+      setManualLng(String(loc.coords.longitude));
       
       const bToken = await storage.getToken('blinkit');
       if (bToken) {
@@ -209,7 +217,7 @@ export default function ProfileScreen() {
         await refreshSwiggyAddress(loc.coords.latitude, loc.coords.longitude);
       }
 
-      Alert.alert('Location Updated', `Location synced for ${city}.`);
+      Alert.alert('Location Updated', `Location synced for ${areaName}.`);
     } catch (error) {
       console.error(error);
       Alert.alert('Location Error', 'Failed to retrieve GPS location.');
@@ -225,25 +233,33 @@ export default function ProfileScreen() {
       Alert.alert('Invalid Coordinates', 'Enter a valid latitude (-90 to 90) and longitude (-180 to 180).');
       return;
     }
-    const newLoc: LocationData = {
-      latitude: latNum,
-      longitude: lngNum,
-      address: `Manual: ${latNum.toFixed(5)}, ${lngNum.toFixed(5)}`
-    };
-    await storage.saveLocation(newLoc);
-    setLocation(newLoc);
-    console.log(`[Manual Location] applied ${latNum.toFixed(5)},${lngNum.toFixed(5)}`);
+    setLocLoading(true);
+    try {
+      const areaName = await resolveAreaName(latNum, lngNum);
+      const newLoc: LocationData = {
+        latitude: latNum,
+        longitude: lngNum,
+        address: areaName
+      };
+      await storage.saveLocation(newLoc);
+      setLocation(newLoc);
 
-    const bToken = await storage.getToken('blinkit');
-    if (bToken) {
-      await refreshBlinkitAddress(latNum, lngNum);
-    }
-    const sToken = await storage.getToken('swiggy');
-    if (sToken) {
-      await refreshSwiggyAddress(latNum, lngNum);
-    }
+      const bToken = await storage.getToken('blinkit');
+      if (bToken) {
+        await refreshBlinkitAddress(latNum, lngNum);
+      }
+      const sToken = await storage.getToken('swiggy');
+      if (sToken) {
+        await refreshSwiggyAddress(latNum, lngNum);
+      }
 
-    Alert.alert('Location Updated', `Using manual coordinates (${latNum.toFixed(5)}, ${lngNum.toFixed(5)}).`);
+      Alert.alert('Location Updated', `Location set to ${areaName}.`);
+    } catch (error) {
+      console.error(error);
+      Alert.alert('Location Error', 'Failed to resolve location for coordinates.');
+    } finally {
+      setLocLoading(false);
+    }
   };
 
   const clearAllData = async () => {
