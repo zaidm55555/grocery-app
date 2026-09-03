@@ -7,7 +7,7 @@ import { storage, Platform, LocationData } from '../../services/storage';
 import { colors, fonts, platformThemes } from '../../constants/theme';
 import { api } from '../../services/api';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { resolveAreaName } from '../../utils/location';
+import { resolveAreaName, getFastLocation } from '../../utils/location';
 
 export default function ProfileScreen() {
   const router = useRouter();
@@ -191,37 +191,37 @@ export default function ProfileScreen() {
         return;
       }
 
-      let loc = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
-      });
+      const coords = await getFastLocation();
+      if (!coords) {
+        Alert.alert('Location Error', 'Unable to retrieve GPS coordinates. Please ensure GPS is enabled or set coordinates manually.');
+        setLocLoading(false);
+        return;
+      }
 
-      const areaName = await resolveAreaName(loc.coords.latitude, loc.coords.longitude);
+      const areaName = await resolveAreaName(coords.latitude, coords.longitude);
 
       const newLoc = {
-        latitude: loc.coords.latitude,
-        longitude: loc.coords.longitude,
+        latitude: coords.latitude,
+        longitude: coords.longitude,
         address: areaName
       };
 
       await storage.saveLocation(newLoc);
       setLocation(newLoc);
-      setManualLat(String(loc.coords.latitude));
-      setManualLng(String(loc.coords.longitude));
-      
-      const bToken = await storage.getToken('blinkit');
-      if (bToken) {
-        await refreshBlinkitAddress(loc.coords.latitude, loc.coords.longitude);
-      }
-      const sToken = await storage.getToken('swiggy');
-      if (sToken) {
-        await refreshSwiggyAddress(loc.coords.latitude, loc.coords.longitude);
-      }
+      setManualLat(String(coords.latitude));
+      setManualLng(String(coords.longitude));
+      setLocLoading(false);
+
+      // Run Blinkit and Swiggy address refreshes in parallel in the background
+      Promise.allSettled([
+        storage.getToken('blinkit').then(t => t ? refreshBlinkitAddress(coords.latitude, coords.longitude) : null),
+        storage.getToken('swiggy').then(t => t ? refreshSwiggyAddress(coords.latitude, coords.longitude) : null),
+      ]);
 
       Alert.alert('Location Updated', `Location synced for ${areaName}.`);
     } catch (error) {
       console.error(error);
       Alert.alert('Location Error', 'Failed to retrieve GPS location.');
-    } finally {
       setLocLoading(false);
     }
   };
