@@ -17,6 +17,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 function buildSwiggyOpenCartScript(cartUrl: string, cookieStr: string, exportCartB64: string): string {
   const js = `
   (function(){
+    if (window.__goCartDone) return;
+    window.__goCartDone = true;
+
     try {
       var entries = [];
       [window.localStorage, window.sessionStorage].forEach(function(store, si) {
@@ -634,6 +637,9 @@ export default function WebViewScreen() {
     if (isExport && platform === 'swiggy' && exportCartId) {
       return `
         (function() {
+          if (window.__goInitDone) return;
+          try { if (sessionStorage.getItem('__go_inited')) return; } catch(e) {}
+
           try {
             var cookieStr = ${JSON.stringify(swiggyCookies)};
             if (cookieStr) {
@@ -751,6 +757,9 @@ export default function WebViewScreen() {
               });
             }
           } catch(e1) {}
+
+          try { window.__goInitDone = true; } catch(e9) {}
+          try { sessionStorage.setItem('__go_inited', '1'); } catch(e10) {}
         })();
       `;
     }
