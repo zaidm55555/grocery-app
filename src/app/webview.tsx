@@ -1,11 +1,13 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { StyleSheet, View, Text, TouchableOpacity, ActivityIndicator, SafeAreaView } from 'react-native';
+import { StyleSheet, View, Text, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { ArrowLeft, RotateCw } from 'lucide-react-native';
 import { storage, Platform } from '../services/storage';
 import { setSwiggySetupMode } from '../services/swiggyBridgeUi';
 import { notifyBlinkitBridgeCookies, reloadBlinkitBridge } from '../services/blinkitBridge';
+import { notifyBigBasketBridgeCookies, reloadBigBasketBridge } from '../services/bigbasketBridge';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // Swiggy (Instamart) export: the cart is already committed server-side via the
@@ -495,12 +497,120 @@ export default function WebViewScreen() {
           }, 1500);
         })();
       `
+    },
+    bigbasket: {
+      name: 'BigBasket',
+      url: (isExport && params.url) ? String(params.url) : 'https://www.bigbasket.com/auth/login/',
+      primaryColor: '#84C225',
+      injectScript: `
+        (function() {
+          var tokenFound = false;
+
+          function tryFetchAddresses(cookies) {
+            try {
+              // Try checkout endpoint first
+              fetch('https://www.bigbasket.com/order/v2/checkout', {
+                method: 'POST',
+                credentials: 'include',
+                headers: {
+                  'Accept': 'application/json, text/plain, */*',
+                  'Content-Type': 'application/json',
+                  'X-Caller': 'UIKIRK',
+                  'x-channel': 'BB-WEB'
+                },
+                body: JSON.stringify({ is_split_order_supported: true, offer_communication: true, action: 'default' })
+              }).then(function(res) {
+                if (res.status === 200) {
+                  return res.json().then(function(json) {
+                    var list = json?.addresses || json?.member_addresses || json?.delivery_addresses || [];
+                    if (Array.isArray(list) && list.length > 0) {
+                      var addr = list.find(function(a) { return a.is_default; }) || list[0];
+                      window.ReactNativeWebView.postMessage(JSON.stringify({
+                        type: 'SUCCESS',
+                        token: cookies,
+                        cookie: cookies,
+                        address: addr
+                      }));
+                      return true;
+                    }
+                  });
+                }
+              }).catch(function() {});
+
+              // Also scan localStorage / sessionStorage for addresses
+              try {
+                for (var i = 0; i < localStorage.length; i++) {
+                  var k = localStorage.key(i);
+                  if (/address|location|user/i.test(k)) {
+                    var val = JSON.parse(localStorage.getItem(k));
+                    var item = Array.isArray(val) ? (val.find(function(a) { return a.is_default; }) || val[0]) : val;
+                    if (item && (item.id || item.address_id || item.display_address || item.formatted_address || item.address)) {
+                      window.ReactNativeWebView.postMessage(JSON.stringify({
+                        type: 'SUCCESS',
+                        token: cookies,
+                        cookie: cookies,
+                        address: item
+                      }));
+                      return true;
+                    }
+                  }
+                }
+              } catch(eStorage) {}
+            } catch (e) {}
+            return false;
+          }
+
+          const checkToken = setInterval(() => {
+            try {
+              var path = window.location.pathname || '';
+              // CRITICAL: Never trigger SUCCESS while still on login or OTP screens
+              if (path.indexOf('/auth') !== -1) {
+                return;
+              }
+
+              const cookies = document.cookie || '';
+              var hasMemberCookie = false;
+              var cookieParts = cookies.split(';');
+              for (var i = 0; i < cookieParts.length; i++) {
+                var c = cookieParts[i].trim();
+                if (c.indexOf('_bb_mid=') === 0 || c.indexOf('_bb_vid=') === 0 || c.indexOf('_bb_tc=') === 0 || c.indexOf('_bb_bhid=') === 0 || c.indexOf('_bb_nhid=') === 0) {
+                  hasMemberCookie = true;
+                }
+              }
+
+              var hasStorageUser = false;
+              try {
+                if (localStorage.getItem('member_id') || localStorage.getItem('user_profile') || localStorage.getItem('isLoggedIn') === 'true' || localStorage.getItem('user') || sessionStorage.getItem('is_logged_in') === 'true') {
+                  hasStorageUser = true;
+                }
+              } catch (e) {}
+
+              // Only if user successfully completed login and navigated past /auth
+              if ((hasMemberCookie || hasStorageUser) && !tokenFound) {
+                tokenFound = true;
+                clearInterval(checkToken);
+
+                tryFetchAddresses(cookies);
+
+                setTimeout(function() {
+                  window.ReactNativeWebView.postMessage(JSON.stringify({
+                    type: 'SUCCESS',
+                    token: cookies,
+                    cookie: cookies
+                  }));
+                }, 1200);
+                return;
+              }
+            } catch (e) {}
+          }, 1000);
+        })();
+      `
     }
   };
 
   const currentMeta = platformMeta[platform];
 
-  const isExportMode = isExport && (platform === 'blinkit' || platform === 'swiggy');
+  const isExportMode = isExport && (platform === 'blinkit' || platform === 'swiggy' || platform === 'bigbasket');
   const exportCookie = isExport ? '' : '';
   void exportCookie;
 
@@ -610,9 +720,36 @@ export default function WebViewScreen() {
             await AsyncStorage.setItem('@blinkit_lng', String(lng));
           }
         }
+        if (platform === 'bigbasket' && data.cookie) {
+          await AsyncStorage.setItem('@bigbasket_cookies', String(data.cookie).slice(0, 3000));
+          notifyBigBasketBridgeCookies(String(data.cookie));
+        }
+        if (platform === 'bigbasket' && data.address) {
+          const addr = data.address;
+          const addrId = String(addr.id ?? addr.address_id ?? '');
+          if (addrId) {
+            await AsyncStorage.setItem('@bigbasket_address_id', addrId);
+          }
+          const addrText = addr.display_address || addr.formatted_address || addr.address_string || addr.address || addr.text || '';
+          if (addrText) {
+            await AsyncStorage.setItem('@bigbasket_address_name', addrText);
+          }
+          const lat = addr.latitude ?? addr.lat;
+          const lng = addr.longitude ?? addr.lng ?? addr.lon;
+          if (lat && lng) {
+            await AsyncStorage.setItem('@bigbasket_lat', String(lat));
+            await AsyncStorage.setItem('@bigbasket_lng', String(lng));
+          }
+          if (addr.city_id) {
+            await AsyncStorage.setItem('@bigbasket_city_id', String(addr.city_id));
+          }
+        }
         alert(`${currentMeta.name} Linked successfully!`);
         if (platform === 'blinkit') {
           setTimeout(() => reloadBlinkitBridge(), 500);
+        }
+        if (platform === 'bigbasket') {
+          setTimeout(() => reloadBigBasketBridge(), 500);
         }
         router.back();
       }
@@ -625,15 +762,101 @@ export default function WebViewScreen() {
   };
 
   const [swiggyCookies, setSwiggyCookies] = useState('');
+  const [bbContext, setBbContext] = useState<{
+    cookies: string;
+    lat: string;
+    lng: string;
+    addrId: string;
+    cityId: string;
+  }>({ cookies: '', lat: '', lng: '', addrId: '', cityId: '' });
+
   useEffect(() => {
     if (isExport && platform === 'swiggy') {
       storage.getToken('swiggy').then((c) => {
         if (c) setSwiggyCookies(c);
       }).catch(() => {});
     }
+    if (isExport && platform === 'bigbasket') {
+      Promise.all([
+        storage.getToken('bigbasket'),
+        AsyncStorage.getItem('@bigbasket_lat'),
+        AsyncStorage.getItem('@bigbasket_lng'),
+        AsyncStorage.getItem('@bigbasket_address_id'),
+        AsyncStorage.getItem('@bigbasket_city_id'),
+        storage.getLocation(),
+      ]).then(([tok, lat, lng, addrId, cityId, loc]) => {
+        setBbContext({
+          cookies: tok || '',
+          lat: lat || (loc ? String(loc.latitude) : ''),
+          lng: lng || (loc ? String(loc.longitude) : ''),
+          addrId: addrId || '',
+          cityId: cityId || '',
+        });
+      }).catch(() => {});
+    }
   }, [isExport, platform]);
 
   const beforeContentScript = (() => {
+    if (isExport && platform === 'bigbasket') {
+      const exportLat = String(params.lat || bbContext.lat || '');
+      const exportLng = String(params.lng || bbContext.lng || '');
+      const exportAddrId = String(params.addrId || bbContext.addrId || '');
+      const exportCityId = String(params.cityId || bbContext.cityId || '');
+      const realAddrId = (exportAddrId && !['location-context', 'current-gps-loc', 'null', 'undefined'].includes(exportAddrId)) ? exportAddrId : '';
+
+      return `
+        (function() {
+          try {
+            var cookieStr = ${JSON.stringify(bbContext.cookies)};
+            if (cookieStr) {
+              var parts = String(cookieStr).split(/;\\s*/);
+              for (var i = 0; i < parts.length; i++) {
+                if (!parts[i]) continue;
+                var eq = parts[i].indexOf('=');
+                if (eq <= 0) continue;
+                try {
+                  document.cookie = parts[i] + '; path=/; domain=.bigbasket.com; secure; SameSite=None';
+                } catch(e) {}
+              }
+            }
+
+            var lat = ${JSON.stringify(exportLat)};
+            var lng = ${JSON.stringify(exportLng)};
+            var addrId = ${JSON.stringify(realAddrId)};
+            var cityId = ${JSON.stringify(exportCityId)};
+
+            if (lat) document.cookie = '_bb_lat=' + encodeURIComponent(lat) + '; path=/; domain=.bigbasket.com; max-age=31536000';
+            if (lng) document.cookie = '_bb_long=' + encodeURIComponent(lng) + '; path=/; domain=.bigbasket.com; max-age=31536000';
+            document.cookie = '_bb_locSrc=saved; path=/; domain=.bigbasket.com; max-age=31536000';
+            if (addrId) {
+              document.cookie = '_bb_aid=' + encodeURIComponent(addrId) + '; path=/; domain=.bigbasket.com; max-age=31536000';
+            }
+            if (cityId) document.cookie = '_bb_cid=' + encodeURIComponent(cityId) + '; path=/; domain=.bigbasket.com; max-age=31536000';
+            document.cookie = '_bb_rd=1; path=/; domain=.bigbasket.com; max-age=31536000';
+
+            if (addrId) {
+              fetch('https://www.bigbasket.com/order/v2/checkout', {
+                method: 'POST',
+                credentials: 'include',
+                headers: {
+                  'Accept': 'application/json, text/plain, */*',
+                  'Content-Type': 'application/json',
+                  'X-Caller': 'UIKIRK',
+                  'x-channel': 'BB-WEB'
+                },
+                body: JSON.stringify({
+                  is_split_order_supported: true,
+                  offer_communication: true,
+                  action: 'change_address',
+                  address_id: Number(addrId)
+                })
+              }).catch(function() {});
+            }
+          } catch(e) {}
+        })();
+      `;
+    }
+
     if (isExport && platform === 'swiggy' && exportCartId) {
       return `
         (function() {
@@ -773,7 +996,11 @@ export default function WebViewScreen() {
           <ArrowLeft size={24} color="#FFF" />
         </TouchableOpacity>
         <View style={styles.titleContainer}>
-          <Text style={styles.headerTitle}>{isExportMode ? `Export to ${platform === 'swiggy' ? 'Swiggy' : 'Blinkit'}` : `Link ${currentMeta.name}`}</Text>
+          <Text style={styles.headerTitle}>
+            {isExportMode
+              ? `Export to ${platform === 'swiggy' ? 'Swiggy' : platform === 'bigbasket' ? 'BigBasket' : 'Blinkit'}`
+              : `Link ${currentMeta.name}`}
+          </Text>
           <Text style={styles.headerSubtitle}>
             {isExportMode ? 'Basket written — cart will open on the site' : 'Login to sync account'}
           </Text>
@@ -800,7 +1027,11 @@ export default function WebViewScreen() {
               <ActivityIndicator size="large" color={currentMeta.primaryColor} />
               <Text style={styles.loaderText}>
                 {isExportMode
-                  ? platform === 'swiggy' ? 'Opening your Swiggy Instamart basket…' : 'Opening your Blinkit basket…'
+                  ? platform === 'swiggy'
+                    ? 'Opening your Swiggy Instamart basket…'
+                    : platform === 'bigbasket'
+                    ? 'Opening your BigBasket basket…'
+                    : 'Opening your Blinkit basket…'
                   : 'Loading secure browser...'}
               </Text>
             </View>
@@ -814,6 +1045,8 @@ export default function WebViewScreen() {
           {isExportMode
             ? platform === 'swiggy'
               ? 'Your optimized basket is now in Swiggy Instamart. Review the items, add the delivery address if asked, and place the order.'
+              : platform === 'bigbasket'
+              ? 'Your optimized basket is now in BigBasket. Review the items, select delivery slot if asked, and place the order.'
               : 'Your optimized basket is now in Blinkit. Review it, add the delivery address if asked, and place the order.'
             : 'Enter phone number & verify OTP. The app will capture the token and close automatically.'}
         </Text>
@@ -862,7 +1095,7 @@ const styles = StyleSheet.create({
     position: 'relative',
   },
   loaderContainer: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(15, 15, 18, 0.95)',
     justifyContent: 'center',
     alignItems: 'center',

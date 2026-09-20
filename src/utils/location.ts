@@ -64,11 +64,28 @@ export async function resolveAreaName(lat: number, lng: number): Promise<string>
     const geocode: any = await Promise.race([geocodePromise, timeoutPromise]);
     if (geocode && geocode.length > 0) {
       const g = geocode[0];
-      const area = g.name || g.street || g.district || g.subregion;
-      const city = g.city || g.subregion || g.region;
-      const state = g.region;
-      const parts = [area, city, state].filter(Boolean) as string[];
-      const unique = Array.from(new Set(parts));
+      const parts: string[] = [];
+      if (g.name && !g.name.includes('+')) {
+        parts.push(g.name);
+      }
+      if (g.street && g.street !== g.name) {
+        parts.push(g.street);
+      }
+      const sub = g.district || g.subregion;
+      if (sub && sub !== g.name && sub !== g.street) {
+        parts.push(sub);
+      }
+      const city = g.city || (g.region !== sub ? g.region : null);
+      if (city && city !== sub && city !== g.name && city !== g.street) {
+        parts.push(city);
+      }
+      if (g.region && g.region !== city && g.region !== sub) {
+        parts.push(g.region);
+      }
+      if (g.postalCode) {
+        parts.push(g.postalCode);
+      }
+      const unique = Array.from(new Set(parts.filter(Boolean)));
       if (unique.length > 0) {
         return unique.join(', ');
       }
@@ -79,7 +96,7 @@ export async function resolveAreaName(lat: number, lng: number): Promise<string>
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 3000);
-    const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=14&addressdetails=1`, {
+    const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=16&addressdetails=1`, {
       headers: { 'User-Agent': 'BasketBuddy-App' },
       signal: controller.signal
     });
@@ -87,11 +104,17 @@ export async function resolveAreaName(lat: number, lng: number): Promise<string>
     if (res.ok) {
       const data = await res.json();
       const a = data.address || {};
-      const area = a.suburb || a.neighbourhood || a.road || a.residential || a.commercial || a.city_district || a.town || a.village;
-      const city = a.city || a.town || a.state_district || a.county;
+      const parts: string[] = [];
+      const building = a.building || a.house_number || a.road || a.pedestrian;
+      if (building) parts.push(building);
+      const sub = a.suburb || a.neighbourhood || a.residential || a.commercial || a.city_district;
+      if (sub && sub !== building) parts.push(sub);
+      const city = a.city || a.town || a.village || a.state_district;
+      if (city && city !== sub && city !== building) parts.push(city);
       const state = a.state;
-      const parts = [area, city, state].filter(Boolean) as string[];
-      const unique = Array.from(new Set(parts));
+      if (state && state !== city && state !== sub) parts.push(state);
+      if (a.postcode) parts.push(a.postcode);
+      const unique = Array.from(new Set(parts.filter(Boolean)));
       if (unique.length > 0) {
         return unique.join(', ');
       }

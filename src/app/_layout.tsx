@@ -17,6 +17,7 @@ import {
 } from '@expo-google-fonts/outfit';
 import SwiggyBridgeWebView from '../components/SwiggyBridgeWebView';
 import BlinkitBridgeWebView from '../components/BlinkitBridgeWebView';
+import BigBasketBridgeWebView from '../components/BigBasketBridgeWebView';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -50,6 +51,7 @@ export default function RootLayout() {
       </Stack>
       <SwiggyBridgeWebView />
       <BlinkitBridgeWebView />
+      <BigBasketBridgeWebView />
     </SafeAreaProvider>
   );
 }

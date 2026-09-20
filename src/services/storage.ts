@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-export type Platform = 'blinkit' | 'swiggy';
+export type Platform = 'blinkit' | 'swiggy' | 'bigbasket';
 
 export interface LocationData {
   latitude: number;

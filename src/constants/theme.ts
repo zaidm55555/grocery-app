@@ -67,9 +67,19 @@ export const platformThemes: Record<Platform, PlatformTheme> = {
     bgLight: 'rgba(248, 203, 70, 0.1)',
     borderColor: 'rgba(248, 203, 70, 0.4)',
   },
+  bigbasket: {
+    name: 'BigBasket',
+    tagline: 'BigBasket · bbnow',
+    etaBadge: '15-30 MINS',
+    color: '#84C225',
+    textColor: '#FFFFFF',
+    gradient: ['#84C225', '#689F18'],
+    bgLight: 'rgba(132, 194, 37, 0.12)',
+    borderColor: 'rgba(132, 194, 37, 0.4)',
+  },
 };
 
-export const PLATFORM_ORDER: Platform[] = ['blinkit', 'swiggy'];
+export const PLATFORM_ORDER: Platform[] = ['blinkit', 'swiggy', 'bigbasket'];
 
 export const fonts = {
   heading: 'Outfit_600SemiBold',

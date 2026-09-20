@@ -37,7 +37,7 @@ export default function SearchScreen() {
   const [products, setProducts] = useState<UnifiedProduct[]>([]);
   const [pendingPlatforms, setPendingPlatforms] = useState<Platform[]>([]);
   const [location, setLocation] = useState<LocationData | null>(null);
-  const [tokens, setTokens] = useState<{ blinkit: string | null; swiggy: string | null }>({ blinkit: null, swiggy: null });
+  const [tokens, setTokens] = useState<Record<Platform, string | null>>({ blinkit: null, swiggy: null, bigbasket: null });
   const [cartItems, setCartItems] = useState<{ product: UnifiedProduct; quantity: number }[]>([]);
   const [storeFilter, setStoreFilter] = useState<StoreFilter>('all');
   const [switcherOpen, setSwitcherOpen] = useState(false);
@@ -46,9 +46,15 @@ export default function SearchScreen() {
   const [matchToast, setMatchToast] = useState<{ platform: Platform; name: string } | null>(null);
 
   const matchFlowRef = useRef<MatchFlowState | null>(null);
-  matchFlowRef.current = matchFlow;
   const cartItemsRef = useRef(cartItems);
-  cartItemsRef.current = cartItems;
+
+  useEffect(() => {
+    matchFlowRef.current = matchFlow;
+  }, [matchFlow]);
+
+  useEffect(() => {
+    cartItemsRef.current = cartItems;
+  }, [cartItems]);
 
   useEffect(() => {
     if (!matchToast) return;
@@ -57,13 +63,14 @@ export default function SearchScreen() {
   }, [matchToast]);
 
   const loadInitialData = async () => {
-    const [blinkitToken, swiggyToken, userLoc, cart] = await Promise.all([
+    const [blinkitToken, swiggyToken, bigbasketToken, userLoc, cart] = await Promise.all([
       storage.getToken('blinkit'),
       storage.getToken('swiggy'),
+      storage.getToken('bigbasket'),
       storage.getLocation(),
       storage.getCart(),
     ]);
-    setTokens({ blinkit: blinkitToken, swiggy: swiggyToken });
+    setTokens({ blinkit: blinkitToken, swiggy: swiggyToken, bigbasket: bigbasketToken });
     setLocation(userLoc);
     setCartItems(cart);
 
@@ -498,7 +505,7 @@ export default function SearchScreen() {
           </View>
         ) : products.length === 0 ? (
           (() => {
-            const noTokens = !tokens.blinkit && !tokens.swiggy;
+            const noTokens = !tokens.blinkit && !tokens.swiggy && !tokens.bigbasket;
             const singleStoreUnlinked = storeFilter !== 'all' && !tokens[storeFilter];
 
             if (noTokens) {
@@ -509,7 +516,7 @@ export default function SearchScreen() {
                   </View>
                   <Text style={styles.emptyTitle}>Not Logged In</Text>
                   <Text style={styles.emptySubtitle}>
-                    Login to Blinkit or Swiggy Instamart to search live catalog prices and stock.
+                    Login to Blinkit, Swiggy Instamart, or BigBasket to search live catalog prices and stock.
                   </Text>
                   <TouchableOpacity
                     style={styles.loginRedirectBtn}
@@ -550,7 +557,7 @@ export default function SearchScreen() {
                   <Text style={styles.emptyEmoji}>🔍</Text>
                   <Text style={styles.emptyTitle}>No Live Results Found</Text>
                   <Text style={styles.emptySubtitle}>
-                    We couldn't find any live products matching “{query}” in your local store.
+                    We couldn&apos;t find any live products matching “{query}” in your local store.
                   </Text>
                 </View>
               );
@@ -881,7 +888,7 @@ const styles = StyleSheet.create({
     marginVertical: 12,
   },
   switcherBackdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
   },
   switcherPill: {
     flexDirection: 'row',

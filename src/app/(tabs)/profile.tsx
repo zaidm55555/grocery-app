@@ -5,7 +5,7 @@ import { MapPin, Link2, Link2Off, Compass, Trash2, Key, Info, RefreshCw } from '
 import * as Location from 'expo-location';
 import { storage, Platform, LocationData } from '../../services/storage';
 import { colors, fonts, platformThemes } from '../../constants/theme';
-import { api } from '../../services/api';
+import { api, cleanBigBasketAddrId } from '../../services/api';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { resolveAreaName, getFastLocation } from '../../utils/location';
 
@@ -13,7 +13,8 @@ export default function ProfileScreen() {
   const router = useRouter();
   const [tokens, setTokens] = useState<Record<Platform, string | null>>({
     blinkit: null,
-    swiggy: null
+    swiggy: null,
+    bigbasket: null
   });
   const [location, setLocation] = useState<LocationData | null>(null);
   const [locLoading, setLocLoading] = useState(false);
@@ -26,75 +27,19 @@ export default function ProfileScreen() {
   const [swiggyAddressId, setSwiggyAddressId] = useState<string | null>(null);
   const [swiggyAddressLocation, setSwiggyAddressLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [swiggyAddrLoading, setSwiggyAddrLoading] = useState(false);
+  const [bigbasketAddressName, setBigBasketAddressName] = useState<string | null>(null);
+  const [bigbasketAddressId, setBigBasketAddressId] = useState<string | null>(null);
+  const [bigbasketFcId, setBigBasketFcId] = useState<string | null>(null);
+  const [bigbasketAddrLoading, setBigBasketAddrLoading] = useState(false);
 
-  const loadData = async () => {
-    const blinkitToken = await storage.getToken('blinkit');
-    const swiggyToken = await storage.getToken('swiggy');
-    const userLoc = await storage.getLocation();
-
-    const savedName = await AsyncStorage.getItem('@blinkit_address_name');
-    const savedId = await AsyncStorage.getItem('@blinkit_address_id');
-    setBlinkitAddressName(savedName);
-    setBlinkitAddressId(savedId);
-
-    setSwiggyAddressName(null);
-    setSwiggyAddressId(null);
-    setSwiggyAddressLocation(null);
-    try {
-      const swiggyAddrJson = await AsyncStorage.getItem('@swiggy_address');
-      if (swiggyAddrJson) {
-        const parsed = JSON.parse(swiggyAddrJson);
-        setSwiggyAddressName(parsed?.name || null);
-        setSwiggyAddressId(parsed?.id || null);
-        setSwiggyAddressLocation(parsed?.location || null);
-      }
-    } catch {}
-
-    setTokens({
-      blinkit: blinkitToken,
-      swiggy: swiggyToken
-    });
-    setLocation(userLoc);
-    if (userLoc) {
-      setManualLat(String(userLoc.latitude));
-      setManualLng(String(userLoc.longitude));
-
-      // Auto-resolve human-readable area name if current address is empty or "Manual: ..."
-      if (!userLoc.address || userLoc.address.startsWith('Manual:')) {
-        resolveAreaName(userLoc.latitude, userLoc.longitude).then(async (resolvedArea) => {
-          if (resolvedArea && !resolvedArea.startsWith('Manual:')) {
-            const updatedLoc = { ...userLoc, address: resolvedArea };
-            await storage.saveLocation(updatedLoc);
-            setLocation(updatedLoc);
-          }
-        }).catch(() => {});
-      }
-
-      // If address hasn't been fetched yet for this location, auto-fetch in background
-      if (blinkitToken && !savedName) {
-        refreshBlinkitAddress(userLoc.latitude, userLoc.longitude);
-      }
-      if (swiggyToken && !swiggyAddressId) {
-        refreshSwiggyAddress(userLoc.latitude, userLoc.longitude);
-      }
-    }
-  };
-
-  useFocusEffect(
-    useCallback(() => {
-      loadData();
-      // Re-check after a short delay to catch tokens saved during navigation transitions
-      const timer = setTimeout(loadData, 500);
-      return () => clearTimeout(timer);
-    }, [])
-  );
-
-  const refreshBlinkitAddress = async (lat: number, lng: number) => {
+  const refreshBlinkitAddress = async (lat?: number, lng?: number) => {
     const hasToken = await storage.getToken('blinkit');
     if (!hasToken) return;
     setAddrLoading(true);
     try {
-      const closest = await api.getClosestBlinkitAddress(lat, lng);
+      const uLat = (typeof lat === 'number' && isFinite(lat)) ? lat : location?.latitude || 0;
+      const uLng = (typeof lng === 'number' && isFinite(lng)) ? lng : location?.longitude || 0;
+      const closest = await api.getClosestBlinkitAddress(uLat, uLng);
       if (closest) {
         const addrText = closest.display_address 
           || closest.address_string 
@@ -116,12 +61,8 @@ export default function ProfileScreen() {
           await AsyncStorage.setItem('@blinkit_lng', String(aLng));
         }
       } else {
-        setBlinkitAddressName('No Saved Address in this Area');
+        setBlinkitAddressName('No Saved Addresses in Account');
         setBlinkitAddressId(null);
-        await AsyncStorage.removeItem('@blinkit_address_id');
-        await AsyncStorage.removeItem('@blinkit_address_name');
-        await AsyncStorage.removeItem('@blinkit_lat');
-        await AsyncStorage.removeItem('@blinkit_lng');
       }
     } catch (e) {
       console.error(e);
@@ -131,18 +72,20 @@ export default function ProfileScreen() {
     }
   };
 
-  const refreshSwiggyAddress = async (lat: number, lng: number) => {
+  const refreshSwiggyAddress = async (lat?: number, lng?: number) => {
     const hasToken = await storage.getToken('swiggy');
     if (!hasToken) return;
     setSwiggyAddrLoading(true);
     try {
-      const resolved = await api.resolveSwiggyDeliveryAddress(lat, lng, true);
+      const uLat = (typeof lat === 'number' && isFinite(lat)) ? lat : location?.latitude || 0;
+      const uLng = (typeof lng === 'number' && isFinite(lng)) ? lng : location?.longitude || 0;
+      const resolved = await api.resolveSwiggyDeliveryAddress(uLat, uLng, true);
       if (resolved?.id) {
-        setSwiggyAddressName(resolved.name);
+        setSwiggyAddressName(resolved.name || 'Saved Address');
         setSwiggyAddressId(resolved.id);
         setSwiggyAddressLocation(resolved.location);
       } else {
-        setSwiggyAddressName('No Saved Address in this Area');
+        setSwiggyAddressName('No Saved Addresses in Account');
         setSwiggyAddressId(null);
         setSwiggyAddressLocation(null);
       }
@@ -155,6 +98,148 @@ export default function ProfileScreen() {
       setSwiggyAddrLoading(false);
     }
   };
+
+  const refreshBigBasketAddress = async (lat?: number, lng?: number) => {
+    const hasToken = await storage.getToken('bigbasket');
+    console.log('[Profile BigBasket] Refreshing address. Token present:', !!hasToken);
+    if (!hasToken) return;
+    setBigBasketAddrLoading(true);
+    try {
+      let uLat = (typeof lat === 'number' && isFinite(lat) && lat !== 0) ? lat : location?.latitude || 0;
+      let uLng = (typeof lng === 'number' && isFinite(lng) && lng !== 0) ? lng : location?.longitude || 0;
+      if (uLat === 0 && uLng === 0) {
+        const storedLoc = await storage.getLocation();
+        if (storedLoc) {
+          uLat = storedLoc.latitude;
+          uLng = storedLoc.longitude;
+        }
+      }
+
+      const closest = await api.getClosestBigBasketAddress(uLat, uLng);
+      console.log('[Profile BigBasket] Closest address resolved:', closest ? (closest.display_address || closest.formatted_address || closest.id) : 'None');
+      if (closest && closest.id !== 'location-context' && closest.id !== 'current-gps-loc') {
+        const cleanId = cleanBigBasketAddrId(closest.id);
+        let addrText = api.formatBigBasketAddress(closest);
+        const aLat = closest.latitude || closest.lat || (uLat !== 0 ? uLat : undefined);
+        const aLng = closest.longitude || closest.lon || closest.lng || (uLng !== 0 ? uLng : undefined);
+        
+        if ((!addrText || addrText.startsWith('Address #') || addrText === 'Saved Address' || addrText === 'Unnamed Address') && aLat && aLng) {
+          try {
+            const areaName = await resolveAreaName(Number(aLat), Number(aLng));
+            if (areaName && !areaName.includes('NaN')) {
+              addrText = areaName;
+            }
+          } catch {}
+        }
+        
+        setBigBasketAddressName(addrText);
+        setBigBasketAddressId(cleanId || String(closest.id));
+        await AsyncStorage.setItem('@bigbasket_address_id', cleanId || String(closest.id));
+        await AsyncStorage.setItem('@bigbasket_address_name', addrText);
+        if (closest.fc_id) {
+          setBigBasketFcId(String(closest.fc_id));
+          await AsyncStorage.setItem('@bigbasket_fc_id', String(closest.fc_id));
+        }
+        if (aLat && aLng) {
+          await AsyncStorage.setItem('@bigbasket_lat', String(aLat));
+          await AsyncStorage.setItem('@bigbasket_lng', String(aLng));
+        }
+        if (closest.city_id) {
+          await AsyncStorage.setItem('@bigbasket_city_id', String(closest.city_id));
+        }
+      } else if (uLat !== 0 && uLng !== 0) {
+        const areaName = await resolveAreaName(uLat, uLng);
+        setBigBasketAddressName(areaName);
+        setBigBasketAddressId('location-context');
+        await AsyncStorage.setItem('@bigbasket_address_id', 'location-context');
+        await AsyncStorage.setItem('@bigbasket_address_name', areaName);
+        await AsyncStorage.setItem('@bigbasket_lat', String(uLat));
+        await AsyncStorage.setItem('@bigbasket_lng', String(uLng));
+      } else {
+        setBigBasketAddressName('No Saved Addresses in Account');
+        setBigBasketAddressId(null);
+      }
+    } catch (e) {
+      console.error(e);
+      setBigBasketAddressName('Error Fetching Address');
+    } finally {
+      setBigBasketAddrLoading(false);
+    }
+  };
+
+  const loadData = async () => {
+    const blinkitToken = await storage.getToken('blinkit');
+    const swiggyToken = await storage.getToken('swiggy');
+    const bigbasketToken = await storage.getToken('bigbasket');
+    const userLoc = await storage.getLocation();
+
+    const savedName = await AsyncStorage.getItem('@blinkit_address_name');
+    const savedId = await AsyncStorage.getItem('@blinkit_address_id');
+    setBlinkitAddressName(savedName);
+    setBlinkitAddressId(savedId);
+
+    const savedBbName = await AsyncStorage.getItem('@bigbasket_address_name');
+    const savedBbId = await AsyncStorage.getItem('@bigbasket_address_id');
+    const savedBbFcId = await AsyncStorage.getItem('@bigbasket_fc_id');
+    setBigBasketAddressName(savedBbName);
+    setBigBasketAddressId(savedBbId);
+    setBigBasketFcId(savedBbFcId);
+
+    setSwiggyAddressName(null);
+    setSwiggyAddressId(null);
+    setSwiggyAddressLocation(null);
+    try {
+      const swiggyAddrJson = await AsyncStorage.getItem('@swiggy_address');
+      if (swiggyAddrJson) {
+        const parsed = JSON.parse(swiggyAddrJson);
+        setSwiggyAddressName(parsed?.name || null);
+        setSwiggyAddressId(parsed?.id || null);
+        setSwiggyAddressLocation(parsed?.location || null);
+      }
+    } catch {}
+
+    setTokens({
+      blinkit: blinkitToken,
+      swiggy: swiggyToken,
+      bigbasket: bigbasketToken
+    });
+    setLocation(userLoc);
+    if (userLoc) {
+      setManualLat(String(userLoc.latitude));
+      setManualLng(String(userLoc.longitude));
+
+      // Auto-resolve human-readable area name if current address is empty or "Manual: ..."
+      if (!userLoc.address || userLoc.address.startsWith('Manual:')) {
+        resolveAreaName(userLoc.latitude, userLoc.longitude).then(async (resolvedArea) => {
+          if (resolvedArea && !resolvedArea.startsWith('Manual:')) {
+            const updatedLoc = { ...userLoc, address: resolvedArea };
+            await storage.saveLocation(updatedLoc);
+            setLocation(updatedLoc);
+          }
+        }).catch(() => {});
+      }
+    }
+
+    // Auto-fetch in background if addresses haven't been resolved yet
+    if (blinkitToken && !savedName) {
+      refreshBlinkitAddress(userLoc?.latitude, userLoc?.longitude);
+    }
+    if (swiggyToken && !swiggyAddressId) {
+      refreshSwiggyAddress(userLoc?.latitude, userLoc?.longitude);
+    }
+    if (bigbasketToken && !savedBbName) {
+      refreshBigBasketAddress(userLoc?.latitude, userLoc?.longitude);
+    }
+  };
+
+  useFocusEffect(
+    useCallback(() => {
+      loadData();
+      // Re-check after a short delay to catch tokens saved during navigation transitions
+      const timer = setTimeout(loadData, 500);
+      return () => clearTimeout(timer);
+    }, [])
+  );
 
   const handleLink = (platform: Platform) => {
     router.push({
@@ -174,6 +259,33 @@ export default function ProfileScreen() {
           style: 'destructive',
           onPress: async () => {
             await storage.removeToken(platform);
+            if (platform === 'bigbasket') {
+              await AsyncStorage.removeItem('@bigbasket_cookies');
+              await AsyncStorage.removeItem('@bigbasket_address_id');
+              await AsyncStorage.removeItem('@bigbasket_address_name');
+              await AsyncStorage.removeItem('@bigbasket_lat');
+              await AsyncStorage.removeItem('@bigbasket_lng');
+              await AsyncStorage.removeItem('@bigbasket_city_id');
+              setBigBasketAddressName(null);
+              setBigBasketAddressId(null);
+            } else if (platform === 'blinkit') {
+              await AsyncStorage.removeItem('@blinkit_cookies');
+              await AsyncStorage.removeItem('@blinkit_address_id');
+              await AsyncStorage.removeItem('@blinkit_address_name');
+              await AsyncStorage.removeItem('@blinkit_lat');
+              await AsyncStorage.removeItem('@blinkit_lng');
+              setBlinkitAddressName(null);
+              setBlinkitAddressId(null);
+            } else if (platform === 'swiggy') {
+              await AsyncStorage.removeItem('@swiggy_address');
+              await AsyncStorage.removeItem('@swiggy_address_id');
+              await AsyncStorage.removeItem('@swiggy_address_name');
+              await AsyncStorage.removeItem('@swiggy_lat');
+              await AsyncStorage.removeItem('@swiggy_lng');
+              setSwiggyAddressName(null);
+              setSwiggyAddressId(null);
+              setSwiggyAddressLocation(null);
+            }
             loadData();
           }
         }
@@ -212,10 +324,16 @@ export default function ProfileScreen() {
       setManualLng(String(coords.longitude));
       setLocLoading(false);
 
-      // Run Blinkit and Swiggy address refreshes in parallel in the background
+      await AsyncStorage.removeItem('@bigbasket_address_id');
+      await AsyncStorage.removeItem('@bigbasket_address_name');
+      await AsyncStorage.removeItem('@blinkit_address_id');
+      await AsyncStorage.removeItem('@blinkit_address_name');
+
+      // Run Blinkit, Swiggy, and BigBasket address refreshes in parallel in the background
       Promise.allSettled([
         storage.getToken('blinkit').then(t => t ? refreshBlinkitAddress(coords.latitude, coords.longitude) : null),
         storage.getToken('swiggy').then(t => t ? refreshSwiggyAddress(coords.latitude, coords.longitude) : null),
+        storage.getToken('bigbasket').then(t => t ? refreshBigBasketAddress(coords.latitude, coords.longitude) : null),
       ]);
 
       Alert.alert('Location Updated', `Location synced for ${areaName}.`);
@@ -244,6 +362,12 @@ export default function ProfileScreen() {
       await storage.saveLocation(newLoc);
       setLocation(newLoc);
 
+      // Clear stale cached address IDs before refreshing against the new location
+      await AsyncStorage.removeItem('@bigbasket_address_id');
+      await AsyncStorage.removeItem('@bigbasket_address_name');
+      await AsyncStorage.removeItem('@blinkit_address_id');
+      await AsyncStorage.removeItem('@blinkit_address_name');
+
       const bToken = await storage.getToken('blinkit');
       if (bToken) {
         await refreshBlinkitAddress(latNum, lngNum);
@@ -251,6 +375,10 @@ export default function ProfileScreen() {
       const sToken = await storage.getToken('swiggy');
       if (sToken) {
         await refreshSwiggyAddress(latNum, lngNum);
+      }
+      const bbToken = await storage.getToken('bigbasket');
+      if (bbToken) {
+        await refreshBigBasketAddress(latNum, lngNum);
       }
 
       Alert.alert('Location Updated', `Location set to ${areaName}.`);
@@ -399,11 +527,7 @@ export default function ProfileScreen() {
             <TouchableOpacity 
               style={[styles.refreshAddrButton, addrLoading && styles.disabledRefreshBtn]} 
               onPress={() => {
-                if (!location) {
-                  Alert.alert('No Location Set', 'Sync your GPS location first to pick the nearest saved address.');
-                  return;
-                }
-                refreshBlinkitAddress(location.latitude, location.longitude);
+                refreshBlinkitAddress(location?.latitude, location?.longitude);
               }}
               disabled={addrLoading}
             >
@@ -476,11 +600,7 @@ export default function ProfileScreen() {
             <TouchableOpacity 
               style={[styles.refreshAddrButton, { borderColor: 'rgba(252,128,25,0.35)', backgroundColor: 'rgba(252,128,25,0.06)' }, swiggyAddrLoading && styles.disabledRefreshBtn]} 
               onPress={() => {
-                if (!location) {
-                  Alert.alert('No Location Set', 'Sync your GPS location first to pick the nearest saved address.');
-                  return;
-                }
-                refreshSwiggyAddress(location.latitude, location.longitude);
+                refreshSwiggyAddress(location?.latitude, location?.longitude);
               }}
               disabled={swiggyAddrLoading}
             >
@@ -503,6 +623,78 @@ export default function ProfileScreen() {
           <TouchableOpacity style={styles.linkButton} onPress={() => handleLink('swiggy')}>
             <Link2 size={16} color="#FFF" style={styles.btnIcon} />
             <Text style={styles.buttonText}>Login to Link Swiggy</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+
+      {/* BigBasket */}
+      <View style={[styles.card, styles.platformCard]}>
+        <View style={styles.platformHeader}>
+          <View style={styles.row}>
+            <View style={[styles.colorBadge, { backgroundColor: '#84C225' }]} />
+            <Text style={styles.platformName}>BigBasket</Text>
+          </View>
+          {tokens.bigbasket ? (
+            <View style={styles.statusBadge}>
+              <Text style={styles.statusTextActive}>ACTIVE SESSION</Text>
+            </View>
+          ) : (
+            <View style={[styles.statusBadge, styles.inactiveBadge]}>
+              <Text style={styles.statusTextInactive}>NOT LINKED</Text>
+            </View>
+          )}
+        </View>
+        
+        {tokens.bigbasket ? (
+          <View style={styles.tokenContainer}>
+            <View style={styles.row}>
+              <Key size={14} color={platformThemes.bigbasket.color} />
+              <Text style={styles.tokenLabel}>Extracted Token:</Text>
+            </View>
+            <Text style={styles.tokenText}>{truncateToken(tokens.bigbasket)}</Text>
+
+            <View style={[styles.row, { marginTop: 8 }]}>
+              <MapPin size={14} color="#84C225" />
+              <Text style={styles.tokenLabel}>Saved Address (Closest):</Text>
+            </View>
+            <Text style={styles.addressDisplayVal}>
+              {bigbasketAddressName || 'No saved address found or synced'}
+            </Text>
+            {bigbasketAddressId && !['location-context', 'current-gps-loc', 'null', 'undefined'].includes(bigbasketAddressId) ? (
+              <Text style={styles.addressIdVal}>
+                Saved Address ID: {bigbasketAddressId}
+              </Text>
+            ) : bigbasketAddressName && bigbasketAddressName !== 'No Saved Addresses in Account' ? (
+              <Text style={[styles.addressIdVal, { color: '#84C225' }]}>
+                Delivery Context: Active Map/GPS Location{bigbasketFcId ? ` (BB Now Store #${bigbasketFcId})` : ''}
+              </Text>
+            ) : null}
+            <TouchableOpacity 
+              style={[styles.refreshAddrButton, { borderColor: 'rgba(132,194,37,0.35)', backgroundColor: 'rgba(132,194,37,0.06)' }, bigbasketAddrLoading && styles.disabledRefreshBtn]} 
+              onPress={() => {
+                refreshBigBasketAddress(location?.latitude, location?.longitude);
+              }}
+              disabled={bigbasketAddrLoading}
+            >
+              {bigbasketAddrLoading ? (
+                <ActivityIndicator size="small" color="#84C225" />
+              ) : (
+                <>
+                  <RefreshCw size={14} color="#84C225" style={{ marginRight: 6 }} />
+                  <Text style={[styles.refreshBtnText, { color: '#84C225' }]}>Refresh Saved Address</Text>
+                </>
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.unlinkButton} onPress={() => handleUnlink('bigbasket')}>
+              <Link2Off size={16} color="#EF4444" style={styles.btnIcon} />
+              <Text style={styles.unlinkText}>Disconnect Session</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <TouchableOpacity style={styles.linkButton} onPress={() => handleLink('bigbasket')}>
+            <Link2 size={16} color="#FFF" style={styles.btnIcon} />
+            <Text style={styles.buttonText}>Login to Link BigBasket</Text>
           </TouchableOpacity>
         )}
       </View>

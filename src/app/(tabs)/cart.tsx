@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef } from 'react';
-import { StyleSheet, View, Text, ScrollView, TouchableOpacity, Image, Alert, ActivityIndicator, Linking } from 'react-native';
+import { StyleSheet, View, Text, ScrollView, TouchableOpacity, Image, Alert, ActivityIndicator, Linking, Platform as RNPlatform } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -8,6 +8,7 @@ import { storage, Platform } from '../../services/storage';
 import { api, UnifiedProduct, CartCalculation, resolvePlatformProduct } from '../../services/api';
 import { createBlinkitShareLink } from '../../services/blinkitExport';
 import { exportCartToSwiggy } from '../../services/swiggyExport';
+import { exportCartToBigBasket } from '../../services/bigbasketExport';
 import { colors, fonts, platformThemes, PLATFORM_ORDER } from '../../constants/theme';
 
 function LogoTile({ platform, size = 26 }: { platform: Platform; size?: number }) {
@@ -32,10 +33,8 @@ export default function CartScreen() {
   const [winnerPlatform, setWinnerPlatform] = useState<Platform | null>(null);
   const [mostCompleteKeys, setMostCompleteKeys] = useState<Platform[]>([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  // Platforms whose live bill is still being fetched — rendered as skeleton
-  // cards so an already-arrived platform shows up immediately.
   const [pendingPlatforms, setPendingPlatforms] = useState<Platform[]>([]);
-  const [exporting, setExporting] = useState<Platform | 'blinkit' | 'swiggy' | null>(null);
+  const [exporting, setExporting] = useState<Platform | null>(null);
   const [loaded, setLoaded] = useState(false);
   const calcRunIdRef = useRef(0);
 
@@ -84,22 +83,6 @@ export default function CartScreen() {
     return { winnerKey, mostCompleteKeys: mostComplete };
   };
 
-  const loadCartData = async () => {
-    const cart = await storage.getCart();
-    setLoaded(true);
-    setCartItems(cart);
-    await runCalculations(cart);
-  };
-
-  useFocusEffect(
-    useCallback(() => {
-      // Intentionally run once per focus with the latest cart — re-adding
-      // loadCartData here would re-subscribe on every render.
-      loadCartData();
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [])
-  );
-
   const runCalculations = async (items: { product: UnifiedProduct; quantity: number }[]) => {
     if (items.length === 0) {
       calcRunIdRef.current++;
@@ -147,6 +130,22 @@ export default function CartScreen() {
     }
     if (isStale()) return;
   };
+
+  const loadCartData = async () => {
+    const cart = await storage.getCart();
+    setLoaded(true);
+    setCartItems(cart);
+    await runCalculations(cart);
+  };
+
+  useFocusEffect(
+    useCallback(() => {
+      // Intentionally run once per focus with the latest cart — re-adding
+      // loadCartData here would re-subscribe on every render.
+      loadCartData();
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [])
+  );
 
   const handleUpdateQuantity = async (productId: string, delta: number) => {
     let updatedCart = [...cartItems];
@@ -197,9 +196,10 @@ export default function CartScreen() {
   //  - Swiggy (Instamart): clear → write → verify over the real checkout/v2
   //    cart APIs, then the visible page wipes local caches and navigates to
   //    /instamart/cart.
-  const handleExport = async (platform: 'blinkit' | 'swiggy') => {
+  const handleExport = async (platform: Platform) => {
     if (exporting || cartItems.length === 0) return;
-    const display = platform === 'swiggy' ? 'Swiggy' : 'Blinkit';
+    const display = platformThemes[platform].name;
+
     const linked = await storage.getToken(platform);
     if (!linked) {
       Alert.alert(`${display} not linked`, `Link your ${display} account in the Accounts tab first, then export your basket.`, [
@@ -209,6 +209,76 @@ export default function CartScreen() {
     }
     setExporting(platform);
     try {
+      if (platform === 'bigbasket') {
+        const bbResult = await exportCartToBigBasket(cartItems);
+        if (!bbResult) {
+          Alert.alert('BigBasket not linked', 'Link your BigBasket account in the Accounts tab first, then export your basket.', [
+            { text: 'OK' }
+          ]);
+          return;
+        }
+        if (bbResult.missing.length > 0) {
+          Alert.alert(
+            `${bbResult.missing.length} item${bbResult.missing.length === 1 ? '' : 's'} skipped`,
+            `${bbResult.missing.map((m) => m.name).join(', ')} could not be matched on BigBasket and was left out of the cart.`,
+            [{ text: 'OK' }]
+          );
+        }
+
+        // Try opening the native BigBasket application directly
+        let openedNative = false;
+        const nativeSchemes = [
+          'bigbasket://basket',
+          'bigbasket://cart',
+        ];
+
+        for (const scheme of nativeSchemes) {
+          try {
+            const canOpen = await Linking.canOpenURL(scheme);
+            if (canOpen) {
+              await Linking.openURL(scheme);
+              openedNative = true;
+              break;
+            }
+          } catch {}
+        }
+
+        if (!openedNative && RNPlatform.OS === 'android') {
+          try {
+            const intentUrl = 'intent://www.bigbasket.com/basket/#Intent;scheme=https;package=com.bigbasket.mobileapp;end';
+            const canOpenIntent = await Linking.canOpenURL(intentUrl);
+            if (canOpenIntent) {
+              await Linking.openURL(intentUrl);
+              openedNative = true;
+            }
+          } catch {}
+        }
+
+        if (!openedNative) {
+          try {
+            await Linking.openURL('bigbasket://basket');
+            openedNative = true;
+          } catch {}
+        }
+
+        // If the native app is NOT installed on the device, fallback to in-app WebView (never open external browser)
+        if (!openedNative) {
+          router.push({
+            pathname: '/webview',
+            params: {
+              platform: 'bigbasket',
+              mode: 'export',
+              url: bbResult.cartUrl,
+              addrId: bbResult.addrId || '',
+              lat: bbResult.lat || '',
+              lng: bbResult.lng || '',
+              cityId: bbResult.cityId || '',
+            }
+          });
+        }
+        return;
+      }
+
       if (platform === 'blinkit') {
         const share = await createBlinkitShareLink(cartItems);
         if (!share) {
@@ -314,6 +384,16 @@ export default function CartScreen() {
                 ? <ActivityIndicator size={12} color="#FC8019" />
                 : <Send size={12} color="#FC8019" />}
               <Text style={styles.swiggyBtnText}>{exporting === 'swiggy' ? 'Exporting…' : 'Export Swiggy'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => handleExport('bigbasket')}
+              disabled={exporting !== null}
+              style={[styles.bigbasketBtn, exporting !== null && { opacity: 0.6 }]}
+            >
+              {exporting === 'bigbasket'
+                ? <ActivityIndicator size={12} color="#84C225" />
+                : <Send size={12} color="#84C225" />}
+              <Text style={styles.bigbasketBtnText}>{exporting === 'bigbasket' ? 'Exporting…' : 'Export BigBasket'}</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={handleRefreshPrices} disabled={isRefreshing} style={styles.fetchBtn}>
               {isRefreshing
@@ -635,6 +715,22 @@ const styles = StyleSheet.create({
     fontFamily: fonts.bodySemiBold,
     fontSize: 10.5,
     color: '#FC8019',
+  },
+  bigbasketBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(132, 194, 37, 0.4)',
+    backgroundColor: 'rgba(132, 194, 37, 0.12)',
+  },
+  bigbasketBtnText: {
+    fontFamily: fonts.bodySemiBold,
+    fontSize: 10.5,
+    color: '#84C225',
   },
   fetchBtn: {
     flexDirection: 'row',

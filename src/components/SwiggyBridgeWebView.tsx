@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useSyncExternalStore } from 'react';
-import { StyleSheet, View, Text, TouchableOpacity, SafeAreaView } from 'react-native';
+import { StyleSheet, View, Text, TouchableOpacity } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 import { X } from 'lucide-react-native';
 import {
@@ -154,7 +155,9 @@ export default function SwiggyBridgeWebView() {
   const webViewRef = useRef<WebView>(null);
   const mode = useSyncExternalStore(subscribeSwiggySetupMode, getSwiggySetupMode);
   const modeRef = useRef(mode);
-  modeRef.current = mode;
+  useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
 
   useEffect(() => {
     const injector = (id: number, url: string, method: string, body: string) => {
