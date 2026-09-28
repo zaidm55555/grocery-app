@@ -4,9 +4,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { Plus, Minus, Trophy, ShieldCheck, Layers, RefreshCw, Trash2, Send, AlertTriangle, MapPinOff } from 'lucide-react-native';
+import { Plus, Minus, Trophy, ShieldCheck, Layers, RefreshCw, Trash2, Send, AlertTriangle, MapPinOff, CheckCircle2, AlertCircle, Info } from 'lucide-react-native';
 import { storage, Platform } from '../../services/storage';
-import { api, UnifiedProduct, CartCalculation, resolvePlatformProduct, getProductOverallMax } from '../../services/api';
+import { api, UnifiedProduct, CartCalculation, resolvePlatformProduct, getProductOverallMax, getProductPlatformLimit } from '../../services/api';
 import { createBlinkitShareLink } from '../../services/blinkitExport';
 import { exportCartToSwiggy } from '../../services/swiggyExport';
 import { colors, fonts, platformThemes, PLATFORM_ORDER } from '../../constants/theme';
@@ -525,6 +525,11 @@ export default function CartScreen() {
                     {variants.map(v => {
                       const t = platformThemes[v.platform];
                       const isCheapest = v.product.id === cheapestVariantId;
+                      const billedUnits = v.billedQty ?? (v.isCapped ? v.platformLimit : line.quantity);
+                      const displayPrice = v.isCapped && v.platformLimit !== undefined
+                        ? v.product.price * (billedUnits ?? 1)
+                        : v.product.price * line.quantity;
+
                       return (
                         <View key={v.platform} style={[styles.variantRow, isCheapest && styles.variantCheapest, v.isOos && styles.variantOos]}>
                           <Image source={{ uri: v.product.imageUrl }} style={[styles.variantImage, v.isOos && { opacity: 0.45 }]} />
@@ -533,12 +538,18 @@ export default function CartScreen() {
                               <Text style={[styles.variantApp, { color: v.isOos ? colors.textMuted : t.color }]}>{t.name}</Text>
                               {v.isOos ? (
                                 <View style={styles.oosBadge}>
+                                  <AlertCircle size={8.5} color={colors.rose} style={{ marginRight: 3 }} />
                                   <Text style={styles.oosBadgeText}>OUT OF STOCK</Text>
                                 </View>
                               ) : v.isCapped ? (
                                 <View style={styles.limitBadge}>
-                                  <AlertTriangle size={8} color={colors.amber} style={{ marginRight: 3 }} />
-                                  <Text style={styles.limitBadgeText}>Max {v.platformLimit} in stock</Text>
+                                  <AlertTriangle size={8.5} color={colors.amber} style={{ marginRight: 3 }} />
+                                  <Text style={styles.limitBadgeText}>Only {v.platformLimit} in stock</Text>
+                                </View>
+                              ) : v.platformLimit !== undefined && v.platformLimit <= 15 ? (
+                                <View style={styles.stockInfoBadge}>
+                                  <CheckCircle2 size={8.5} color={colors.emerald} style={{ marginRight: 3 }} />
+                                  <Text style={styles.stockInfoBadgeText}>{v.platformLimit} in stock</Text>
                                 </View>
                               ) : isCheapest ? (
                                 <View style={styles.trophyBadge}>
@@ -550,27 +561,57 @@ export default function CartScreen() {
                             <Text style={[styles.lineTitle, v.isOos && styles.lineTitleOos]} numberOfLines={2}>{v.product.title}</Text>
                             <Text style={styles.lineUnit}>{v.product.quantity}</Text>
                           </View>
-                          <View style={{ alignItems: 'flex-end' }}>
-                            <Text style={[
-                              styles.variantPrice,
-                              isCheapest && { color: colors.emerald },
-                              v.isOos && styles.variantPriceOos
-                            ]}>
-                              ₹{v.product.price}
-                            </Text>
+                          <View style={{ alignItems: 'flex-end', minWidth: 70 }}>
                             {v.isOos ? (
-                              <Text style={styles.oosSubtext}>unavailable</Text>
+                              <>
+                                <Text style={styles.variantPriceOos}>₹{v.product.price}</Text>
+                                <Text style={styles.oosSubtext}>₹0 in bill (excluded)</Text>
+                              </>
                             ) : v.isCapped ? (
-                              <Text style={styles.cappedSubtext}>prices {v.billedQty ?? v.platformLimit} units</Text>
-                            ) : isCheapest ? (
-                              <Text style={styles.cheapestCaption}>cheapest</Text>
-                            ) : null}
+                              <>
+                                <Text style={styles.cappedPriceText}>₹{displayPrice.toFixed(0)}</Text>
+                                <Text style={styles.cappedSubtext}>for {billedUnits} of {line.quantity} units</Text>
+                              </>
+                            ) : (
+                              <>
+                                <Text style={[
+                                  styles.variantPrice,
+                                  isCheapest && { color: colors.emerald }
+                                ]}>
+                                  ₹{displayPrice.toFixed(0)}
+                                </Text>
+                                {line.quantity > 1 ? (
+                                  <Text style={styles.unitSubtext}>₹{v.product.price} × {line.quantity}</Text>
+                                ) : isCheapest ? (
+                                  <Text style={styles.cheapestCaption}>cheapest</Text>
+                                ) : null}
+                              </>
+                            )}
                           </View>
                         </View>
                       );
                     })}
                     {/* Shared quantity drives every app row on this line */}
                     <View style={styles.lineQtyFooter}>
+                      <View style={{ flex: 1, justifyContent: 'center' }}>
+                        {isAtOverallMax && overall.maxAllowed < 99 ? (
+                          <View style={styles.maxStockBanner}>
+                            <AlertTriangle size={11} color={colors.amber} style={{ marginRight: 4 }} />
+                            <Text style={styles.maxStockBannerText}>
+                              Max available stock reached ({overall.maxAllowed} units)
+                            </Text>
+                          </View>
+                        ) : overall.isAsymmetric ? (
+                          <View style={styles.asymmetricStockNotice}>
+                            <Info size={11} color={colors.textSecondary} style={{ marginRight: 4 }} />
+                            <Text style={styles.asymmetricStockText}>
+                              {overall.blinkitLimit !== undefined ? `Blinkit: ${overall.blinkitLimit}` : ''}
+                              {overall.blinkitLimit !== undefined && overall.swiggyLimit !== undefined ? ' · ' : ''}
+                              {overall.swiggyLimit !== undefined ? `Swiggy: ${overall.swiggyLimit}` : ''}
+                            </Text>
+                          </View>
+                        ) : null}
+                      </View>
                       <View style={styles.qtyContainer}>
                         <TouchableOpacity style={styles.qtyBtn} onPress={() => handleUpdateQuantity(id, -1)}>
                           <Minus size={13} color="#FFF" />
@@ -590,9 +631,6 @@ export default function CartScreen() {
                           <Plus size={13} color="#FFF" />
                         </TouchableOpacity>
                       </View>
-                      {isAtOverallMax && overall.maxAllowed < 99 && (
-                        <Text style={styles.maxReachedText}>Max stock reached ({overall.maxAllowed})</Text>
-                      )}
                     </View>
                   </>
                 ) : (
@@ -600,16 +638,22 @@ export default function CartScreen() {
                     <Image source={{ uri: line.product.imageUrl }} style={[styles.lineImage, isSingleOos && { opacity: 0.45 }]} />
                     <View style={{ flex: 1 }}>
                       <Text style={[styles.lineTitle, isSingleOos && styles.lineTitleOos]} numberOfLines={2}>{line.product.title}</Text>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
                         <Text style={styles.lineUnit}>{line.product.quantity}</Text>
                         {isSingleOos ? (
                           <View style={styles.oosBadge}>
+                            <AlertCircle size={8.5} color={colors.rose} style={{ marginRight: 3 }} />
                             <Text style={styles.oosBadgeText}>OUT OF STOCK</Text>
                           </View>
                         ) : isSingleCapped ? (
                           <View style={styles.limitBadge}>
-                            <AlertTriangle size={8} color={colors.amber} style={{ marginRight: 3 }} />
-                            <Text style={styles.limitBadgeText}>Max {singleLimit} in stock</Text>
+                            <AlertTriangle size={8.5} color={colors.amber} style={{ marginRight: 3 }} />
+                            <Text style={styles.limitBadgeText}>Only {singleLimit} in stock</Text>
+                          </View>
+                        ) : singleLimit !== undefined && singleLimit <= 15 ? (
+                          <View style={styles.stockInfoBadge}>
+                            <CheckCircle2 size={8.5} color={colors.emerald} style={{ marginRight: 3 }} />
+                            <Text style={styles.stockInfoBadgeText}>{singleLimit} in stock</Text>
                           </View>
                         ) : null}
                       </View>
@@ -635,7 +679,7 @@ export default function CartScreen() {
                         </TouchableOpacity>
                       </View>
                       {isAtOverallMax && overall.maxAllowed < 99 && (
-                        <Text style={styles.maxReachedText}>Max {overall.maxAllowed}</Text>
+                        <Text style={styles.maxReachedText}>Max stock reached ({overall.maxAllowed})</Text>
                       )}
                     </View>
                   </View>
@@ -729,31 +773,105 @@ export default function CartScreen() {
                         </TouchableOpacity>
                       </View>
 
-                      {calc.outOfStockProductIds && calc.outOfStockProductIds.length > 0 && (
-                        <View style={styles.cardOosNotice}>
-                          <AlertTriangle size={12} color={colors.rose} />
-                          <Text style={styles.cardOosNoticeText}>
-                            {calc.outOfStockProductIds.length} item{calc.outOfStockProductIds.length === 1 ? '' : 's'} out of stock on {t.name}
-                          </Text>
-                        </View>
-                      )}
-
+                      {/* Store Stock & Inventory Breakdown */}
                       {(() => {
-                        const cappedCount = cartItems.filter(ci => {
+                        const storeOosLines = cartItems.filter(ci => {
+                          const isCalcOos = calc.outOfStockProductIds?.includes(ci.product.id);
+                          const resolved = resolvePlatformProduct(ci, calc.platform);
+                          const isProdOos = resolved?.product.inStock === false;
                           const lim = calc.platformItemLimits?.[ci.product.id];
+                          return isCalcOos || isProdOos || (lim !== undefined && lim <= 0);
+                        });
+
+                        const storeCappedLines = cartItems.filter(ci => {
+                          const isOos = storeOosLines.some(o => o.product.id === ci.product.id);
+                          if (isOos) return false;
+                          const lim = calc.platformItemLimits?.[ci.product.id] ?? getProductPlatformLimit(ci.product, calc.platform, calculations);
                           return lim !== undefined && lim > 0 && ci.quantity > lim;
-                        }).length;
-                        if (cappedCount > 0) {
-                          return (
-                            <View style={[styles.cardOosNotice, { backgroundColor: 'rgba(245, 158, 11, 0.12)', borderColor: 'rgba(245, 158, 11, 0.25)', marginTop: 6 }]}>
-                              <AlertTriangle size={12} color={colors.amber} />
-                              <Text style={[styles.cardOosNoticeText, { color: colors.amber }]}>
-                                {cappedCount} item{cappedCount === 1 ? '' : 's'} capped to store stock limit
+                        }).map(ci => {
+                          const lim = calc.platformItemLimits?.[ci.product.id] ?? getProductPlatformLimit(ci.product, calc.platform, calculations) ?? ci.quantity;
+                          return { line: ci, limit: lim };
+                        });
+
+                        const inStockCount = cartItems.length - storeOosLines.length;
+                        const fullyFulfilledCount = cartItems.length - storeOosLines.length - storeCappedLines.length;
+
+                        return (
+                          <View style={styles.inventoryStatusCard}>
+                            {/* Stock Coverage Progress Bar */}
+                            <View style={styles.coverageRow}>
+                              <Text style={styles.coverageLabel}>Stock Availability</Text>
+                              <Text style={[
+                                styles.coverageValue,
+                                storeOosLines.length === 0 && storeCappedLines.length === 0 ? { color: colors.emerald } : { color: colors.amber }
+                              ]}>
+                                {storeOosLines.length === 0 && storeCappedLines.length === 0
+                                  ? `All ${cartItems.length} items in stock`
+                                  : `${inStockCount} of ${cartItems.length} items available`}
                               </Text>
                             </View>
-                          );
-                        }
-                        return null;
+
+                            <View style={styles.coverageBarTrack}>
+                              {fullyFulfilledCount > 0 && (
+                                <View style={[styles.coverageBarFillGreen, { flex: fullyFulfilledCount }]} />
+                              )}
+                              {storeCappedLines.length > 0 && (
+                                <View style={[styles.coverageBarFillAmber, { flex: storeCappedLines.length }]} />
+                              )}
+                              {storeOosLines.length > 0 && (
+                                <View style={[styles.coverageBarFillRose, { flex: storeOosLines.length }]} />
+                              )}
+                            </View>
+
+                            {/* OOS Itemized Box */}
+                            {storeOosLines.length > 0 && (
+                              <View style={styles.stockAlertOosBox}>
+                                <View style={styles.stockAlertHeaderRow}>
+                                  <AlertCircle size={12} color={colors.rose} />
+                                  <Text style={styles.stockAlertOosTitle}>
+                                    {storeOosLines.length} item{storeOosLines.length === 1 ? '' : 's'} out of stock
+                                  </Text>
+                                </View>
+                                <Text style={styles.stockAlertOosDesc}>
+                                  Excluded from bill and will not be exported to {t.name}
+                                </Text>
+                                <View style={styles.stockChipWrap}>
+                                  {storeOosLines.map(item => (
+                                    <View key={item.product.id} style={styles.chipOos}>
+                                      <Text style={styles.chipTextOos} numberOfLines={1}>
+                                        ✕ {item.product.title}
+                                      </Text>
+                                    </View>
+                                  ))}
+                                </View>
+                              </View>
+                            )}
+
+                            {/* Capped Itemized Box */}
+                            {storeCappedLines.length > 0 && (
+                              <View style={styles.stockAlertCappedBox}>
+                                <View style={styles.stockAlertHeaderRow}>
+                                  <AlertTriangle size={12} color={colors.amber} />
+                                  <Text style={styles.stockAlertCappedTitle}>
+                                    {storeCappedLines.length} item{storeCappedLines.length === 1 ? '' : 's'} stock capped
+                                  </Text>
+                                </View>
+                                <Text style={styles.stockAlertCappedDesc}>
+                                  Priced for in-stock quantity only
+                                </Text>
+                                <View style={styles.stockChipWrap}>
+                                  {storeCappedLines.map(({ line, limit }) => (
+                                    <View key={line.product.id} style={styles.chipCapped}>
+                                      <Text style={styles.chipTextCapped} numberOfLines={1}>
+                                        ⚠ {line.product.title}: {limit} of {line.quantity} units
+                                      </Text>
+                                    </View>
+                                  ))}
+                                </View>
+                              </View>
+                            )}
+                          </View>
+                        );
                       })()}
 
                       {!calc.live ? (
@@ -787,7 +905,11 @@ export default function CartScreen() {
                       ) : (
                         <>
                           <View style={styles.feeRow}>
-                            <Text style={styles.feeLabel}>Item subtotal</Text>
+                            <Text style={styles.feeLabel}>
+                              Item subtotal {cartItems.filter(ci => !calc.outOfStockProductIds?.includes(ci.product.id)).length < cartItems.length
+                                ? `(${cartItems.filter(ci => !calc.outOfStockProductIds?.includes(ci.product.id)).length} of ${cartItems.length} items)`
+                                : ''}
+                            </Text>
                             <Text style={styles.feeValue}>₹{calc.subtotal}</Text>
                           </View>
                           <View style={styles.feeRow}>
@@ -829,6 +951,11 @@ export default function CartScreen() {
                           {calc.savings > 0 && (
                             <Text style={styles.savingsLine}>− ₹{calc.savings} saved off MRP on this basket</Text>
                           )}
+                          {calc.outOfStockProductIds && calc.outOfStockProductIds.length > 0 && (
+                            <Text style={styles.stockExclusionNote}>
+                              * Bill excludes {calc.outOfStockProductIds.length} unavailable item{calc.outOfStockProductIds.length === 1 ? '' : 's'}
+                            </Text>
+                          )}
                         </>
                       )}
 
@@ -864,17 +991,26 @@ export default function CartScreen() {
                             style={styles.cardExportBtnGradient}
                           >
                             {exporting === calc.platform ? (
-                              <ActivityIndicator size={13} color={t.textColor} />
+                              <ActivityIndicator size={14} color={t.textColor} />
                             ) : (
-                              <Send size={13} color={t.textColor} />
+                              <Send size={14} color={t.textColor} />
                             )}
-                            <Text style={[styles.cardExportBtnText, { color: t.textColor }]}>
-                              {exporting === calc.platform
-                                ? `Exporting to ${t.name}…`
-                                : !hasItems
-                                ? `No items available on ${t.name}`
-                                : `Export Basket to ${t.name}`}
-                            </Text>
+                            <View style={styles.cardExportBtnContent}>
+                              <Text style={[styles.cardExportBtnText, { color: t.textColor }]}>
+                                {exporting === calc.platform
+                                  ? `Exporting to ${t.name}…`
+                                  : !hasItems
+                                  ? `No items available on ${t.name}`
+                                  : (calc.outOfStockProductIds && calc.outOfStockProductIds.length > 0)
+                                  ? `Export Available Items to ${t.name}`
+                                  : `Export Basket to ${t.name}`}
+                              </Text>
+                              {hasItems && (calc.outOfStockProductIds && calc.outOfStockProductIds.length > 0) && (
+                                <Text style={[styles.cardExportBtnSubtext, { color: t.textColor }]}>
+                                  {calc.outOfStockProductIds.length} out-of-stock item{calc.outOfStockProductIds.length === 1 ? '' : 's'} will be skipped
+                                </Text>
+                              )}
+                            </View>
                           </LinearGradient>
                         </TouchableOpacity>
                       )}
@@ -1468,5 +1604,203 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: colors.amber,
     marginTop: 4,
+  },
+  stockInfoBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+    paddingHorizontal: 5.5,
+    paddingVertical: 1.5,
+    borderRadius: 5,
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.3)',
+  },
+  stockInfoBadgeText: {
+    fontFamily: fonts.bodyBold,
+    fontSize: 8.5,
+    color: colors.emerald,
+  },
+  unitSubtext: {
+    fontFamily: fonts.body,
+    fontSize: 9,
+    color: colors.textMuted,
+    marginTop: 1,
+  },
+  cappedPriceText: {
+    fontFamily: fonts.bodyBold,
+    fontSize: 13,
+    color: colors.amber,
+  },
+  maxStockBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(245, 158, 11, 0.12)',
+    paddingHorizontal: 8,
+    paddingVertical: 3.5,
+    borderRadius: 7,
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.28)',
+    alignSelf: 'flex-start',
+  },
+  maxStockBannerText: {
+    fontFamily: fonts.bodySemiBold,
+    fontSize: 10,
+    color: colors.amber,
+  },
+  asymmetricStockNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    paddingHorizontal: 8,
+    paddingVertical: 3.5,
+    borderRadius: 7,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    alignSelf: 'flex-start',
+  },
+  asymmetricStockText: {
+    fontFamily: fonts.bodyMedium,
+    fontSize: 10,
+    color: colors.textSecondary,
+  },
+  inventoryStatusCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.025)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.07)',
+    padding: 10,
+    marginBottom: 10,
+    gap: 8,
+  },
+  coverageRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  coverageLabel: {
+    fontFamily: fonts.bodyMedium,
+    fontSize: 11,
+    color: colors.textSecondary,
+  },
+  coverageValue: {
+    fontFamily: fonts.bodyBold,
+    fontSize: 11,
+  },
+  coverageBarTrack: {
+    flexDirection: 'row',
+    height: 5,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    overflow: 'hidden',
+    gap: 2,
+  },
+  coverageBarFillGreen: {
+    backgroundColor: colors.emerald,
+    borderRadius: 999,
+  },
+  coverageBarFillAmber: {
+    backgroundColor: colors.amber,
+    borderRadius: 999,
+  },
+  coverageBarFillRose: {
+    backgroundColor: colors.rose,
+    borderRadius: 999,
+  },
+  stockAlertOosBox: {
+    backgroundColor: 'rgba(244, 63, 94, 0.08)',
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: 'rgba(244, 63, 94, 0.22)',
+    padding: 8,
+  },
+  stockAlertCappedBox: {
+    backgroundColor: 'rgba(245, 158, 11, 0.08)',
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.22)',
+    padding: 8,
+  },
+  stockAlertHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  stockAlertOosTitle: {
+    fontFamily: fonts.bodyBold,
+    fontSize: 11,
+    color: colors.rose,
+  },
+  stockAlertOosDesc: {
+    fontFamily: fonts.body,
+    fontSize: 10,
+    color: colors.textSecondary,
+    marginTop: 2,
+    marginBottom: 4,
+  },
+  stockAlertCappedTitle: {
+    fontFamily: fonts.bodyBold,
+    fontSize: 11,
+    color: colors.amber,
+  },
+  stockAlertCappedDesc: {
+    fontFamily: fonts.body,
+    fontSize: 10,
+    color: colors.textSecondary,
+    marginTop: 2,
+    marginBottom: 4,
+  },
+  stockChipWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 5,
+    marginTop: 4,
+  },
+  chipOos: {
+    backgroundColor: 'rgba(244, 63, 94, 0.16)',
+    borderRadius: 6,
+    paddingHorizontal: 7,
+    paddingVertical: 2.5,
+    borderWidth: 1,
+    borderColor: 'rgba(244, 63, 94, 0.3)',
+  },
+  chipTextOos: {
+    fontFamily: fonts.bodyMedium,
+    fontSize: 9.5,
+    color: colors.rose,
+  },
+  chipCapped: {
+    backgroundColor: 'rgba(245, 158, 11, 0.16)',
+    borderRadius: 6,
+    paddingHorizontal: 7,
+    paddingVertical: 2.5,
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.3)',
+  },
+  chipTextCapped: {
+    fontFamily: fonts.bodyMedium,
+    fontSize: 9.5,
+    color: colors.amber,
+  },
+  stockExclusionNote: {
+    fontFamily: fonts.body,
+    fontSize: 10,
+    color: colors.rose,
+    marginTop: 3,
+  },
+  stockCappedNote: {
+    fontFamily: fonts.body,
+    fontSize: 10,
+    color: colors.amber,
+    marginTop: 2,
+  },
+  cardExportBtnContent: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 2,
+  },
+  cardExportBtnSubtext: {
+    fontFamily: fonts.bodySemiBold,
+    fontSize: 9.5,
+    opacity: 0.9,
   },
 });
