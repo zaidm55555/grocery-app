@@ -18,7 +18,21 @@ import {
 import SwiggyBridgeWebView from '../components/SwiggyBridgeWebView';
 import BlinkitBridgeWebView from '../components/BlinkitBridgeWebView';
 
+import { LogBox } from 'react-native';
+
+LogBox.ignoreLogs([
+  'SWIGGY_TOO_FAR',
+  'BLINKIT_TOO_FAR',
+  'SWIGGY_NO_ADDRESS',
+  'BLINKIT_NO_ADDRESS',
+  'SWIGGY_UNAVAILABLE',
+  'BLINKIT_UNAVAILABLE',
+]);
+
 SplashScreen.preventAutoHideAsync();
+
+import { storage } from '../services/storage';
+import { syncDeliveryAddresses } from '../services/addressSync';
 
 export default function RootLayout() {
   const [loaded, error] = useFonts({
@@ -36,6 +50,15 @@ export default function RootLayout() {
       SplashScreen.hideAsync();
     }
   }, [loaded, error]);
+
+  useEffect(() => {
+    // Pull delivery addresses once on app launch using the current stored GPS coordinates
+    storage.getLocation().then(loc => {
+      if (loc && typeof loc.latitude === 'number' && typeof loc.longitude === 'number') {
+        syncDeliveryAddresses(loc.latitude, loc.longitude, false).catch(() => {});
+      }
+    }).catch(() => {});
+  }, []);
 
   if (!loaded && !error) {
     return null;

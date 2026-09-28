@@ -2,6 +2,8 @@ import { storage, Platform, LocationData } from './storage';
 import { requestViaSwiggyBridge, requestEvalViaSwiggyBridge } from './swiggyBridge';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { requestViaBlinkitBridge, getBlinkitPageStorage } from './blinkitBridge';
+import { pickBestMatch } from '../utils/matcher';
+import { stripSizeToken } from '../utils/productKey';
 
 export interface UnifiedProduct {
   id: string;
@@ -17,6 +19,9 @@ export interface UnifiedProduct {
   productId?: string;
   spinId?: string;
   storeId?: string;
+  inStock?: boolean;
+  availableStock?: number;
+  maxQuantity?: number;
   // Auto-match: per-platform representation of the SAME cart line, filled by
   // the matcher so one line carries prices from every app (like the desktop
   // optimizer's platformPrices model).
@@ -35,6 +40,9 @@ export interface PlatformVariant {
   productId?: string;
   spinId?: string;
   storeId?: string;
+  inStock?: boolean;
+  availableStock?: number;
+  maxQuantity?: number;
 }
 
 // Effective product used when pricing a cart line on a given platform:
@@ -43,6 +51,8 @@ export interface PlatformVariant {
 export function resolvePlatformProduct(item: { product: UnifiedProduct; quantity: number }, platform: Platform): { product: UnifiedProduct; quantity: number } | null {
   const v = item.product.platformPrices?.[platform];
   if (v) {
+    const lim = getItemPlatformLimit(v);
+    const effectiveQty = (typeof lim === 'number' && lim > 0) ? Math.min(item.quantity, lim) : item.quantity;
     return {
       product: {
         ...item.product,
@@ -60,11 +70,22 @@ export function resolvePlatformProduct(item: { product: UnifiedProduct; quantity
         productId: v.productId,
         spinId: v.spinId,
         storeId: v.storeId,
+        inStock: v.inStock !== undefined ? v.inStock : item.product.inStock,
+        availableStock: v.availableStock,
+        maxQuantity: v.maxQuantity,
       },
-      quantity: item.quantity
+      quantity: effectiveQty
     };
   }
-  return item.product.platform === platform ? item : null;
+  if (item.product.platform === platform) {
+    const lim = getItemPlatformLimit(item.product);
+    const effectiveQty = (typeof lim === 'number' && lim > 0) ? Math.min(item.quantity, lim) : item.quantity;
+    return {
+      product: item.product,
+      quantity: effectiveQty
+    };
+  }
+  return null;
 }
 
 export interface CartCalculation {
@@ -83,9 +104,121 @@ export interface CartCalculation {
   // True when a live checkout bill was fetched from the platform's own API
   // (false = baseline estimate only / not fetched).
   live?: boolean;
+  outOfStockProductIds?: string[];
+  inStockProductIds?: string[];
+  platformItemLimits?: Record<string, number>;
+  platformItemQuantities?: Record<string, number>;
 }
 
-// fetchWithTimeout is now defined inside the api object
+export function getItemPlatformLimit(product: UnifiedProduct | PlatformVariant | null | undefined): number | undefined {
+  if (!product) return undefined;
+  const stock = typeof product.availableStock === 'number' && product.availableStock >= 0 ? product.availableStock : undefined;
+  const maxQ = typeof product.maxQuantity === 'number' && product.maxQuantity > 0 ? product.maxQuantity : undefined;
+  if (stock !== undefined && maxQ !== undefined) return Math.min(stock, maxQ);
+  return stock ?? maxQ;
+}
+
+export function getProductPlatformLimit(
+  product: UnifiedProduct,
+  platform: Platform,
+  calculations?: CartCalculation[]
+): number | undefined {
+  let limit: number | undefined = undefined;
+
+  // 1. Direct platform of product
+  if (product.platform === platform) {
+    limit = getItemPlatformLimit(product);
+  } else if (product.platformPrices?.[platform]) {
+    limit = getItemPlatformLimit(product.platformPrices[platform]);
+  }
+
+  // 2. Check live calculation limits if present
+  if (calculations && calculations.length > 0) {
+    for (const c of calculations) {
+      if (c.platform === platform && c.platformItemLimits) {
+        const variant = product.platform === platform ? product : product.platformPrices?.[platform];
+        const candKeys = [
+          product.id,
+          product.originalId,
+          product.productId,
+          product.id.replace(`${platform}-`, ''),
+          ...(variant ? [
+            variant.id,
+            variant.originalId,
+            variant.productId,
+            String(variant.id || '').replace(`${platform}-`, ''),
+          ] : [])
+        ].filter(Boolean) as string[];
+
+        for (const k of candKeys) {
+          if (c.platformItemLimits[k] !== undefined) {
+            limit = c.platformItemLimits[k];
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  return limit;
+}
+
+export function getProductOverallMax(
+  product: UnifiedProduct,
+  calculations?: CartCalculation[]
+): {
+  maxAllowed: number;
+  blinkitLimit?: number;
+  swiggyLimit?: number;
+  isAsymmetric: boolean;
+} {
+  const blinkitLimit = getProductPlatformLimit(product, 'blinkit', calculations);
+  const swiggyLimit = getProductPlatformLimit(product, 'swiggy', calculations);
+
+  const hasBlinkit = product.platform === 'blinkit' || !!product.platformPrices?.blinkit;
+  const hasSwiggy = product.platform === 'swiggy' || !!product.platformPrices?.swiggy;
+
+  let maxAllowed = 99;
+  if (hasBlinkit && hasSwiggy) {
+    const bCap = blinkitLimit ?? 99;
+    const sCap = swiggyLimit ?? 99;
+    maxAllowed = Math.max(bCap, sCap);
+  } else if (hasBlinkit) {
+    maxAllowed = blinkitLimit ?? 99;
+  } else if (hasSwiggy) {
+    maxAllowed = swiggyLimit ?? 99;
+  }
+
+  if (maxAllowed < 1 && (blinkitLimit !== undefined || swiggyLimit !== undefined)) {
+    maxAllowed = Math.max(1, Math.max(blinkitLimit ?? 0, swiggyLimit ?? 0));
+  }
+
+  const isAsymmetric = (
+    blinkitLimit !== undefined &&
+    swiggyLimit !== undefined &&
+    blinkitLimit !== swiggyLimit
+  );
+
+  return { maxAllowed, blinkitLimit, swiggyLimit, isAsymmetric };
+}
+
+export interface AddressCacheEntry {
+  lat: number;
+  lng: number;
+  status: 'in_range' | 'too_far' | 'no_address';
+  address: any | null;
+  distanceKm?: number;
+  name?: string;
+  at: number;
+}
+
+let swiggyAddressSessionCache: AddressCacheEntry | null = null;
+let blinkitAddressSessionCache: AddressCacheEntry | null = null;
+
+export function invalidateAddressSessionCache() {
+  swiggyAddressSessionCache = null;
+  blinkitAddressSessionCache = null;
+}
 
 export const api = {
   fetchWithTimeout(url: string, options: RequestInit, timeout = 6000): Promise<Response> {
@@ -130,10 +263,7 @@ export const api = {
     }
   },
 
-  async getClosestBlinkitAddress(lat: number, lng: number): Promise<any | null> {
-    const addresses = await this.getBlinkitAddresses(lat, lng);
-    if (addresses.length === 0) return null;
-
+  async getClosestBlinkitAddress(lat: number, lng: number, force = false): Promise<any | null> {
     const distanceKm = (aLat: number, aLng: number, bLat: number, bLng: number): number => {
       const R = 6371;
       const dLat = (bLat - aLat) * Math.PI / 180;
@@ -143,6 +273,72 @@ export const api = {
         Math.cos(aLat * Math.PI / 180) * Math.cos(bLat * Math.PI / 180) * Math.sin(dLng / 2) ** 2
       ));
     };
+
+    // 1. Check in-memory session cache first (instant 0ms)
+    if (!force && blinkitAddressSessionCache) {
+      const d = distanceKm(lat, lng, blinkitAddressSessionCache.lat, blinkitAddressSessionCache.lng);
+      if (d < 1) {
+        if (blinkitAddressSessionCache.status === 'in_range') {
+          return blinkitAddressSessionCache.address;
+        }
+        return null;
+      }
+    }
+
+    // 2. Check persistent AsyncStorage cache
+    const CACHE_KEY = '@blinkit_address_cache';
+    if (!force) {
+      try {
+        const raw = await AsyncStorage.getItem(CACHE_KEY);
+        if (raw) {
+          const cached: AddressCacheEntry = JSON.parse(raw);
+          const fresh = typeof cached.at === 'number' && Date.now() - cached.at < 24 * 3600 * 1000;
+          const nearby = typeof cached.lat === 'number' && typeof cached.lng === 'number' && distanceKm(lat, lng, cached.lat, cached.lng) < 1;
+          if (fresh && nearby) {
+            blinkitAddressSessionCache = cached;
+            if (cached.status === 'in_range') {
+              console.log(`[Blinkit Address] -> Using CACHED in-range address: ID ${cached.address?.id} ("${cached.name || 'Unnamed'}")`);
+              await AsyncStorage.setItem('@blinkit_address_status', JSON.stringify({
+                status: 'in_range',
+                distanceKm: cached.distanceKm,
+                name: cached.name,
+                addressId: cached.address?.id
+              }));
+              return cached.address;
+            } else if (cached.status === 'too_far') {
+              console.log(`[Blinkit Address] -> Using CACHED too_far status: ${cached.distanceKm} km away`);
+              await AsyncStorage.setItem('@blinkit_address_status', JSON.stringify({
+                status: 'too_far',
+                distanceKm: cached.distanceKm,
+                name: cached.name || 'Unnamed'
+              }));
+              return null;
+            } else if (cached.status === 'no_address') {
+              console.log('[Blinkit Address] -> Using CACHED no_address status');
+              await AsyncStorage.setItem('@blinkit_address_status', JSON.stringify({ status: 'no_address' }));
+              return null;
+            }
+          }
+        }
+      } catch {}
+    }
+
+    // 3. Network fetch (only executed on initial app sync or when GPS location changed)
+    const addresses = await this.getBlinkitAddresses(lat, lng);
+    if (addresses.length === 0) {
+      console.log('[Blinkit Address] No saved addresses returned from Blinkit account.');
+      const entry: AddressCacheEntry = {
+        lat,
+        lng,
+        status: 'no_address',
+        address: null,
+        at: Date.now()
+      };
+      blinkitAddressSessionCache = entry;
+      await AsyncStorage.setItem(CACHE_KEY, JSON.stringify(entry));
+      await AsyncStorage.setItem('@blinkit_address_status', JSON.stringify({ status: 'no_address' }));
+      return null;
+    }
 
     let closest: any = null;
     let minDistance = Infinity;
@@ -159,9 +355,71 @@ export const api = {
       }
     }
 
+    console.log(`[Blinkit Address] Evaluated ${addresses.length} saved address(es) for GPS (${lat.toFixed(4)}, ${lng.toFixed(4)}):`,
+      addresses.map((a: any) => {
+        const aLat = parseFloat(a.latitude || a.lat);
+        const aLng = parseFloat(a.longitude || a.lon || a.lng);
+        const d = (!isNaN(aLat) && !isNaN(aLng)) ? distanceKm(lat, lng, aLat, aLng).toFixed(2) + ' km' : 'unknown';
+        const name = a.name || a.display_address || a.address_string || a.address || a.line1 || a.text || 'Unnamed';
+        return `ID ${a.id}: "${name}" [${d}]`;
+      })
+    );
+
     // Only return the address if it is within 35km of the user's current/manual location
     if (closest && minDistance <= 35) {
+      const closestName = closest.display_address || closest.address_string || closest.address || closest.line1 || closest.text || 'Unnamed';
+      console.log(`[Blinkit Address] -> MATCHED within 35km: ID ${closest.id} ("${closestName}") at ${minDistance.toFixed(2)} km`);
+      const entry: AddressCacheEntry = {
+        lat,
+        lng,
+        status: 'in_range',
+        address: closest,
+        distanceKm: Number(minDistance.toFixed(2)),
+        name: closestName,
+        at: Date.now()
+      };
+      blinkitAddressSessionCache = entry;
+      await AsyncStorage.setItem(CACHE_KEY, JSON.stringify(entry));
+      await AsyncStorage.setItem('@blinkit_address_status', JSON.stringify({
+        status: 'in_range',
+        distanceKm: Number(minDistance.toFixed(2)),
+        name: closestName,
+        addressId: closest.id
+      }));
       return closest;
+    }
+    if (closest) {
+      const closestName = closest.name || closest.display_address || 'Unnamed';
+      console.log(`[Blinkit Address] -> Closest address is ${minDistance.toFixed(2)} km away (> 35km threshold), cached as too_far.`);
+      const entry: AddressCacheEntry = {
+        lat,
+        lng,
+        status: 'too_far',
+        address: null,
+        distanceKm: Number(minDistance.toFixed(2)),
+        name: closestName,
+        at: Date.now()
+      };
+      blinkitAddressSessionCache = entry;
+      await AsyncStorage.setItem(CACHE_KEY, JSON.stringify(entry));
+      await AsyncStorage.setItem('@blinkit_address_status', JSON.stringify({
+        status: 'too_far',
+        distanceKm: Number(minDistance.toFixed(2)),
+        name: closestName
+      }));
+    } else {
+      const entry: AddressCacheEntry = {
+        lat,
+        lng,
+        status: 'no_address',
+        address: null,
+        at: Date.now()
+      };
+      blinkitAddressSessionCache = entry;
+      await AsyncStorage.setItem(CACHE_KEY, JSON.stringify(entry));
+      await AsyncStorage.setItem('@blinkit_address_status', JSON.stringify({
+        status: 'no_address'
+      }));
     }
     return null;
   },
@@ -524,26 +782,63 @@ export const api = {
       ));
     };
 
-    let cached: any = null;
-    try {
-      const raw = await AsyncStorage.getItem(KEY);
-      cached = raw ? JSON.parse(raw) : null;
-    } catch {}
-
-    if (!force && cached?.id && typeof cached.lat === 'number' && typeof cached.lng === 'number') {
-      const fresh = typeof cached.at === 'number' && Date.now() - cached.at < 24 * 3600 * 1000;
-      const nearby = distanceKm(lat, lng, cached.lat, cached.lng) < 6;
-      const cachedLocNearby = !cached.location || distanceKm(lat, lng, cached.location.latitude, cached.location.longitude) <= 35;
-      if (fresh && nearby && cachedLocNearby) {
-        return {
-          id: String(cached.id),
-          name: cached.name || null,
-          location: cached.location ? { latitude: cached.location.latitude, longitude: cached.location.longitude } : null,
-          distanceKm: typeof cached.distanceKm === 'number' ? cached.distanceKm : undefined
-        };
+    // 1. Check in-memory session cache first (instant 0ms)
+    if (!force && swiggyAddressSessionCache) {
+      const d = distanceKm(lat, lng, swiggyAddressSessionCache.lat, swiggyAddressSessionCache.lng);
+      if (d < 1) {
+        if (swiggyAddressSessionCache.status === 'in_range') {
+          return swiggyAddressSessionCache.address;
+        }
+        return null;
       }
     }
 
+    // 2. Check persistent storage cache
+    if (!force) {
+      try {
+        const raw = await AsyncStorage.getItem(KEY);
+        if (raw) {
+          const cached = JSON.parse(raw);
+          const fresh = typeof cached.at === 'number' && Date.now() - cached.at < 24 * 3600 * 1000;
+          const nearby = typeof cached.lat === 'number' && typeof cached.lng === 'number' && distanceKm(lat, lng, cached.lat, cached.lng) < 1;
+          if (fresh && nearby) {
+            swiggyAddressSessionCache = cached;
+            if (cached.status === 'too_far') {
+              console.log(`[Swiggy Address] -> Using CACHED status: TOO FAR (${cached.distanceKm} km away from "${cached.name || 'Unnamed'}")`);
+              await AsyncStorage.setItem('@swiggy_address_status', JSON.stringify({
+                status: 'too_far',
+                distanceKm: cached.distanceKm,
+                name: cached.name || 'Unnamed'
+              }));
+              return null;
+            }
+            if (cached.status === 'no_address') {
+              console.log('[Swiggy Address] -> Using CACHED status: NO ADDRESS');
+              await AsyncStorage.setItem('@swiggy_address_status', JSON.stringify({ status: 'no_address' }));
+              return null;
+            }
+            if (cached.id && (cached.status === 'in_range' || !cached.status)) {
+              console.log(`[Swiggy Address] -> Using CACHED nearby address: ID ${cached.id} ("${cached.name || 'Unnamed'}")`);
+              const addr = cached.address || {
+                id: String(cached.id),
+                name: cached.name || null,
+                location: cached.location ? { latitude: cached.location.latitude, longitude: cached.location.longitude } : null,
+                distanceKm: typeof cached.distanceKm === 'number' ? cached.distanceKm : undefined
+              };
+              await AsyncStorage.setItem('@swiggy_address_status', JSON.stringify({
+                status: 'in_range',
+                distanceKm: cached.distanceKm,
+                name: cached.name,
+                addressId: cached.id
+              }));
+              return addr;
+            }
+          }
+        }
+      } catch {}
+    }
+
+    // 3. Network fetch (only executed on initial app sync or when GPS location changed)
     try {
       const addresses = await this.getSwiggyAddresses(lat, lng);
 
@@ -565,8 +860,27 @@ export const api = {
         return x.d - y.d;
       });
 
+      console.log(`[Swiggy Address] Evaluated ${addresses.length} saved address(es) for GPS (${lat.toFixed(4)}, ${lng.toFixed(4)}):`,
+        scored.map((a: any) => {
+          const dStr = a.distanceKm >= 0 ? `${a.distanceKm} km` : 'unknown';
+          return `ID ${a.id}: "${a.name || 'Unnamed'}" [${dStr}]`;
+        })
+      );
+
       if (scored.length === 0) {
-        await AsyncStorage.removeItem(KEY);
+        console.log('[Swiggy Address] No saved addresses returned from Swiggy account.');
+        const entry: AddressCacheEntry = {
+          lat,
+          lng,
+          status: 'no_address',
+          address: null,
+          at: Date.now()
+        };
+        swiggyAddressSessionCache = entry;
+        await AsyncStorage.setItem(KEY, JSON.stringify(entry));
+        await AsyncStorage.setItem('@swiggy_address_status', JSON.stringify({
+          status: 'no_address'
+        }));
         await AsyncStorage.removeItem('@swiggy_address_id');
         await AsyncStorage.removeItem('@swiggy_address_name');
         await AsyncStorage.removeItem('@swiggy_lat');
@@ -576,8 +890,23 @@ export const api = {
 
       const best = scored[0];
       if (!best || best.distanceKm > 35 || best.distanceKm < 0) {
-        // No saved address within 35km of current location
-        await AsyncStorage.removeItem(KEY);
+        console.log(`[Swiggy Address] -> Closest address is ${best?.distanceKm} km away (> 35km threshold), cached as too_far.`);
+        const entry: AddressCacheEntry = {
+          lat,
+          lng,
+          status: 'too_far',
+          distanceKm: best?.distanceKm,
+          name: best?.name || 'Unnamed',
+          address: null,
+          at: Date.now()
+        };
+        swiggyAddressSessionCache = entry;
+        await AsyncStorage.setItem(KEY, JSON.stringify(entry));
+        await AsyncStorage.setItem('@swiggy_address_status', JSON.stringify({
+          status: 'too_far',
+          distanceKm: best?.distanceKm,
+          name: best?.name || 'Unnamed'
+        }));
         await AsyncStorage.removeItem('@swiggy_address_id');
         await AsyncStorage.removeItem('@swiggy_address_name');
         await AsyncStorage.removeItem('@swiggy_lat');
@@ -585,11 +914,38 @@ export const api = {
         return null;
       }
 
+      console.log(`[Swiggy Address] -> MATCHED within 35km: ID ${best.id} ("${best.name || 'Unnamed'}") at ${best.distanceKm} km`);
+      const resolvedAddr = {
+        id: String(best.id),
+        name: best.name,
+        location: best.location,
+        distanceKm: best.distanceKm
+      };
+      const entry: AddressCacheEntry = {
+        lat,
+        lng,
+        status: 'in_range',
+        address: resolvedAddr,
+        distanceKm: best.distanceKm,
+        name: best.name,
+        at: Date.now()
+      };
+      swiggyAddressSessionCache = entry;
+
+      await AsyncStorage.setItem('@swiggy_address_status', JSON.stringify({
+        status: 'in_range',
+        distanceKm: best.distanceKm,
+        name: best.name,
+        addressId: best.id
+      }));
+
       await AsyncStorage.setItem(KEY, JSON.stringify({
         id: best.id,
         name: best.name,
         location: best.location,
         distanceKm: best.distanceKm,
+        status: 'in_range',
+        address: resolvedAddr,
         lat,
         lng,
         at: Date.now()
@@ -600,12 +956,7 @@ export const api = {
         await AsyncStorage.setItem('@swiggy_lat', String(best.location.latitude));
         await AsyncStorage.setItem('@swiggy_lng', String(best.location.longitude));
       }
-      return {
-        id: best.id,
-        name: best.name,
-        location: best.location,
-        distanceKm: best.distanceKm
-      };
+      return resolvedAddr;
     } catch (e) {
       return null;
     }
@@ -613,9 +964,9 @@ export const api = {
 
   async swiggyApiFetch(url: string, method: string = 'GET', body?: string): Promise<Response | { ok: boolean; status: number; json(): Promise<any>; text(): Promise<string> }> {
     const bridged = await requestViaSwiggyBridge(url, method, body);
-    if (bridged) {
+    if (bridged && bridged.status >= 200 && bridged.status < 300) {
       return {
-        ok: bridged.status >= 200 && bridged.status < 300,
+        ok: true,
         status: bridged.status,
         json: async () => JSON.parse(bridged.text),
         text: async () => bridged.text
@@ -636,22 +987,31 @@ export const api = {
     }, 8000);
   },
 
-  async search(query: string, onPlatformResults?: (platform: Platform, results: UnifiedProduct[]) => void): Promise<UnifiedProduct[]> {
+  async search(query: string, onPlatformResults?: (platform: Platform, results: UnifiedProduct[], error?: string) => void): Promise<UnifiedProduct[]> {
     const platforms: Platform[] = ['blinkit', 'swiggy'];
     const searchPromises = platforms.map(async (platform) => {
       const token = await storage.getToken(platform);
       const location = await storage.getLocation();
 
       let results: UnifiedProduct[] = [];
+      let platformError: string | undefined;
       if (token) {
         try {
           results = await this.fetchDirectAPI(platform, query, token, location);
-        } catch (error) {
+          console.log(`[Search] ${platform} returned ${results.length} result(s) for "${query}"`);
+        } catch (error: any) {
+          const msg = error?.message || String(error);
+          if (msg.includes('_TOO_FAR') || msg.includes('_NO_ADDRESS') || msg.includes('_UNAVAILABLE')) {
+            console.log(`[Search - ${platform} skipped]: ${msg}`);
+          } else {
+            console.warn(`[Search Warning - ${platform} for "${query}"]: ${msg}`);
+          }
           results = [];
+          platformError = error?.message;
         }
       }
 
-      onPlatformResults?.(platform, results);
+      onPlatformResults?.(platform, results, platformError);
       return results;
     });
 
@@ -686,6 +1046,21 @@ export const api = {
           bLng = Number(savedBLng);
         }
       } catch {}
+      // Check if Blinkit closest address is too far (>35km) or no address found
+      let bStatusRaw = await AsyncStorage.getItem('@blinkit_address_status');
+      if (!bStatusRaw) {
+        await this.getClosestBlinkitAddress(lat, lng);
+        bStatusRaw = await AsyncStorage.getItem('@blinkit_address_status');
+      }
+      const bStatus = bStatusRaw ? JSON.parse(bStatusRaw) : null;
+      if (bStatus?.status === 'too_far') {
+        console.log('[Blinkit Search] Blinkit out of range (>35km). Skipping results.');
+        throw new Error('BLINKIT_UNAVAILABLE: Cannot search Blinkit on your current location.');
+      }
+      if (bStatus?.status === 'no_address') {
+        console.log('[Blinkit Search] No saved address found on Blinkit account. Skipping results.');
+        throw new Error('BLINKIT_UNAVAILABLE: Cannot search Blinkit on your current location.');
+      }
 
       const q = encodeURIComponent(query);
       const url = `https://blinkit.com/v1/layout/search?offset=0&limit=60&actual_query=${q}&q=${q}&search_type=type_to_search`;
@@ -723,36 +1098,98 @@ export const api = {
         originalId: item.productId,
         productId: item.productId,
         spinId: item.spinId,
-        storeId: item.storeId
+        storeId: item.storeId,
+        availableStock: item.availableStock,
+        maxQuantity: item.maxQuantity,
       }));
     }
 
     if (platform === 'swiggy') {
       const delivery = await this.resolveSwiggyDeliveryAddress(lat, lng);
+      const sStatusRaw = await AsyncStorage.getItem('@swiggy_address_status');
+      const sStatus = sStatusRaw ? JSON.parse(sStatusRaw) : null;
+
+      // If user is out of range (>35km) or has no address, do not return results
+      if (!delivery || !delivery.id || sStatus?.status === 'too_far' || sStatus?.status === 'no_address') {
+        if (sStatus?.status === 'no_address') {
+          console.log('[Swiggy Search] No saved address found on Swiggy account. Skipping results.');
+          throw new Error('SWIGGY_UNAVAILABLE: Cannot search Instamart on your current location.');
+        }
+        console.log('[Swiggy Search] Swiggy out of range (>35km). Skipping results.');
+        throw new Error('SWIGGY_UNAVAILABLE: Cannot search Instamart on your current location.');
+      }
+
       const searchLat = delivery?.location?.latitude ?? lat;
       const searchLng = delivery?.location?.longitude ?? lng;
 
-      const homeUrl = `https://www.swiggy.com/api/instamart/home/v2?offset=0&storeId=&primaryStoreId=&secondaryStoreId=&clientId=INSTAMART-APP&lat=${searchLat.toFixed(6)}&lng=${searchLng.toFixed(6)}&overrideLocation=true`;
-      let homeResponse = await this.swiggyApiFetch(homeUrl);
-      if (!homeResponse.ok) {
-        homeResponse = await this.fetchWithTimeout(homeUrl, {
-          method: 'GET',
-          headers: {
-            'Accept': 'application/json, text/plain, */*',
-            'Cookie': token,
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1'
+      // 1. Check cached store info for this location first
+      const locKey = `${searchLat.toFixed(3)},${searchLng.toFixed(3)}`;
+      let store: SwiggyStoreInfo | null = null;
+      try {
+        const rawCache = await AsyncStorage.getItem('@swiggy_store_cache');
+        const parsedCache = rawCache ? JSON.parse(rawCache) : null;
+        if (parsedCache && parsedCache.locKey === locKey && parsedCache.storeInfo?.storeId && Date.now() - parsedCache.at < 24 * 3600 * 1000) {
+          store = parsedCache.storeInfo;
+        }
+      } catch {}
+
+      // 2. Discover store from home/v2 if not cached
+      if (!store || !store.storeId) {
+        const homeUrl = `https://www.swiggy.com/api/instamart/home/v2?offset=0&storeId=&primaryStoreId=&secondaryStoreId=&clientId=INSTAMART-APP&lat=${searchLat.toFixed(6)}&lng=${searchLng.toFixed(6)}&overrideLocation=true`;
+        let homeResponse = await this.swiggyApiFetch(homeUrl);
+        if (!homeResponse.ok) {
+          homeResponse = await this.fetchWithTimeout(homeUrl, {
+            method: 'GET',
+            headers: {
+              'Accept': 'application/json, text/plain, */*',
+              'Cookie': token,
+              'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1'
+            }
+          });
+        }
+
+        if (homeResponse.ok) {
+          try {
+            const homeJson = await homeResponse.json();
+            if (homeJson) store = findStoreInfo(homeJson);
+          } catch {}
+        }
+      }
+
+      // 3. Fallback: check session cart for active store
+      if (!store || !store.storeId) {
+        try {
+          const getCartRes = await this.swiggyApiFetch('https://www.swiggy.com/api/instamart/checkout/v2/cart?pageType=INSTAMART_CART');
+          if (getCartRes && getCartRes.ok) {
+            const cartJson = await getCartRes.json().catch(() => null);
+            const sessionItems = cartJson?.data?.data?.items || [];
+            const sId = sessionItems[0]?.storeId;
+            if (sId) {
+              store = { storeId: String(sId), primaryStoreId: String(sId), secondaryStoreId: '', layoutId: '' };
+            }
           }
-        });
+        } catch {}
       }
 
-      if (!homeResponse.ok) {
-        throw new Error(`Swiggy home/v2 discovery error: ${homeResponse.status}`);
+      // 4. Fallback: any previously cached store
+      if (!store || !store.storeId) {
+        try {
+          const rawCache = await AsyncStorage.getItem('@swiggy_store_cache');
+          const parsedCache = rawCache ? JSON.parse(rawCache) : null;
+          if (parsedCache?.storeInfo?.storeId) {
+            store = parsedCache.storeInfo;
+          }
+        } catch {}
       }
 
-      const homeJson = await homeResponse.json();
-      const store = findStoreInfo(homeJson);
+      // Save to cache if found
+      if (store && store.storeId) {
+        try {
+          await AsyncStorage.setItem('@swiggy_store_cache', JSON.stringify({ locKey, at: Date.now(), storeInfo: store }));
+        } catch {}
+      }
 
-      if (!store.storeId) {
+      if (!store || !store.storeId) {
         throw new Error('No active Swiggy store ID discovered from your location');
       }
 
@@ -790,8 +1227,38 @@ export const api = {
         throw new Error(`Swiggy search/v2 API error: ${searchResponse.status}`);
       }
 
-      const searchJson = await searchResponse.json();
+      let searchJson: any = null;
+      try {
+        searchJson = await searchResponse.json();
+      } catch {
+        const text = await searchResponse.text();
+        searchJson = JSON.parse(text);
+      }
+
+      console.log(`[Swiggy Search Debug] ========================================`);
+      console.log(`[Swiggy Search Debug] URL: ${searchUrl}`);
+      console.log(`[Swiggy Search Debug] Query: "${query}", HTTP status: ${searchResponse.status}`);
+      console.log(`[Swiggy Search Debug] Top-level keys:`, Object.keys(searchJson || {}));
+      if (searchJson?.data) {
+        console.log(`[Swiggy Search Debug] data keys:`, Object.keys(searchJson.data));
+      }
+      const scannedMatches = debugScanSwiggyStock(searchJson, query);
+      console.log(`[Swiggy Search Debug] Scanned stock/inventory paths in raw response (${scannedMatches.length}):\n` + (scannedMatches.length ? scannedMatches.join('\n') : 'No stock-related strings/numbers found'));
+
       const parsed = extractSwiggySearchProducts(searchJson, query);
+      console.log(`[Swiggy Search Debug] Parsed items count: ${parsed.length}`);
+      if (parsed.length > 0) {
+        console.log(`[Swiggy Search Debug] Sample parsed items (up to 5):`, JSON.stringify(parsed.slice(0, 5).map(p => ({
+          name: p.name,
+          unit: p.unit,
+          price: p.price,
+          itemId: p.itemId,
+          availableStock: p.availableStock,
+          maxQuantity: p.maxQuantity,
+          rawInventory: p._rawVariation?.inventory,
+        })), null, 2));
+      }
+      console.log(`[Swiggy Search Debug] ========================================`);
 
       return parsed.map((item: any) => ({
         id: `swiggy-${item.itemId || Math.random()}`,
@@ -803,9 +1270,11 @@ export const api = {
         imageUrl: item.image || 'https://images.unsplash.com/photo-1542838132-92c53300491e?auto=format&fit=crop&w=200&q=80',
         platform: 'swiggy' as Platform,
         originalId: item.itemId,
-        productId: item.productId,
+        productId: item.productId || item.itemId,
         spinId: item.spinId,
-        storeId: item.storeId
+        storeId: item.storeId,
+        availableStock: item.availableStock,
+        maxQuantity: item.maxQuantity,
       }));
     }
 
@@ -819,9 +1288,10 @@ export const api = {
    */
   async calculateCart(
     items: { product: UnifiedProduct; quantity: number }[],
-    onPlatformResult?: (calc: CartCalculation) => void
+    onPlatformResult?: (calc: CartCalculation) => void,
+    targetPlatform?: Platform
   ): Promise<CartCalculation[]> {
-    const platforms: Platform[] = ['blinkit', 'swiggy'];
+    const platforms: Platform[] = targetPlatform ? [targetPlatform] : ['blinkit', 'swiggy'];
 
     const simulateNoAddress = (await AsyncStorage.getItem('@blinkit_simulate_no_address')) === '1';
 
@@ -836,16 +1306,27 @@ export const api = {
     const gpsCoords = typeof gpsLat === 'number' && typeof gpsLng === 'number';
 
     const promises = platforms.map(async (platform) => {
+      const platformItemLimits: Record<string, number> = {};
+      const platformItemQuantities: Record<string, number> = {};
+
       // Filter and use only the items that exist on this platform — either
       // via an auto-matched variant (platformPrices) or by originating here.
       const platformItems = items
         .map((cartItem) => resolvePlatformProduct(cartItem, platform))
         .filter((ci): ci is { product: UnifiedProduct; quantity: number } => ci !== null);
 
-      // The item subtotal starts from the search-API prices and gets
-      // overwritten by the live bill's itemTotal when the cart API responds.
-      let subtotal = platformItems.reduce((sum, item) => sum + (item.product.price * item.quantity), 0);
-      const originalSubtotal = platformItems.reduce((sum, item) => sum + ((item.product.originalPrice || item.product.price) * item.quantity), 0);
+      // The item subtotal starts from the search-API prices, capped by known item limits,
+      // and gets overwritten by the live bill's itemTotal when the cart API responds.
+      let subtotal = platformItems.reduce((sum, item) => {
+        const lim = getItemPlatformLimit(item.product);
+        const q = (typeof lim === 'number' && lim > 0) ? Math.min(item.quantity, lim) : item.quantity;
+        return sum + (item.product.price * q);
+      }, 0);
+      const originalSubtotal = platformItems.reduce((sum, item) => {
+        const lim = getItemPlatformLimit(item.product);
+        const q = (typeof lim === 'number' && lim > 0) ? Math.min(item.quantity, lim) : item.quantity;
+        return sum + ((item.product.originalPrice || item.product.price) * q);
+      }, 0);
 
       // No charge is ever estimated locally — every fee/tax below comes from
       // the platform's own cart/bill API. Until an API responds we only know
@@ -858,14 +1339,20 @@ export const api = {
       let tax = 0;
       let total = subtotal;
       let liveBill = false;
+      const outOfStockProductIds: string[] = [];
+      const inStockProductIds: string[] = [];
 
       if (subtotal > 0) {
         try {
           if (platform === 'blinkit' && blinkitToken && gpsCoords) {
-            const slimItems = platformItems.map((ci) => ({
-              product_id: String(ci.product.originalId || ci.product.id.replace('blinkit-', '')),
-              quantity: ci.quantity
-            }));
+            const slimItems = platformItems.map((ci) => {
+              const lim = getItemPlatformLimit(ci.product);
+              const q = (typeof lim === 'number' && lim > 0) ? Math.min(ci.quantity, lim) : ci.quantity;
+              return {
+                product_id: String(ci.product.originalId || ci.product.id.replace('blinkit-', '')),
+                quantity: q
+              };
+            });
 
             // /v5/carts lives on blinkit.com and the gateway validates
             // AppVersion + DeviceID as required (case-sensitive whitelist),
@@ -919,6 +1406,11 @@ export const api = {
                 if (addrRaw) addrNum = Number(addrRaw);
               }
             }
+
+            console.log(`[Pricing Location - Blinkit] Location used to fetch pricing:
+  - User GPS Location: (${gpsLat}, ${gpsLng})
+  - Coordinates used for Blinkit layout/store query: (${blLat}, ${blLng})
+  - Address ID attached in cart body: ${isFinite(addrNum) && addrNum && !simulateNoAddress ? addrNum : 'none (GPS coordinates only)'}`);
 
             const cartsBody = JSON.stringify({
               items: slimItems,
@@ -1101,14 +1593,166 @@ export const api = {
 
             if (resJson) {
               const fees = parseBlinkitBill(resJson);
+              if (fees.subtotal !== null) subtotal = fees.subtotal;
+              if (fees.deliveryFee !== null) deliveryFee = fees.deliveryFee;
+              if (fees.handlingFee !== null) handlingFee = fees.handlingFee;
+              if (fees.smallCartFee !== null) smallCartFee = fees.smallCartFee;
+              if (fees.surgeFee) surgeFee = fees.surgeFee;
+              if (fees.surgeLabel) surgeLabel = fees.surgeLabel;
+              if (fees.tax !== null) tax = fees.tax;
               if (fees.total !== null) {
-                deliveryFee = fees.deliveryFee ?? 0;
-                handlingFee = fees.handlingFee ?? 0;
-                smallCartFee = fees.smallCartFee ?? 0;
-                surgeFee = fees.surgeFee ?? 0;
-                tax = fees.tax ?? 0;
                 total = fees.total;
                 liveBill = true;
+                if (fees.subtotal === null) {
+                  const otherCharges = (fees.deliveryFee ?? 0) + (fees.handlingFee ?? 0) + (fees.smallCartFee ?? 0) + (fees.surgeFee ?? 0) + (fees.tax ?? 0);
+                  if (fees.total >= otherCharges) {
+                    subtotal = fees.total - otherCharges;
+                  }
+                }
+              }
+
+              // Extract Blinkit stock statuses
+              const returnedActiveBlinkitPids = new Set<string>();
+              const returnedOosBlinkitPids = new Set<string>();
+
+              const extractBlinkitItemsList = (json: any): any[] => {
+                const list: any[] = [];
+                const cd = json?.cart_data || json?.data || json;
+                if (Array.isArray(cd?.items)) list.push(...cd.items);
+                if (Array.isArray(cd?.cart_items)) list.push(...cd.cart_items);
+                if (Array.isArray(json?.items)) list.push(...json.items);
+                if (Array.isArray(cd?.shipments)) {
+                  for (const s of cd.shipments) {
+                    if (Array.isArray(s?.items)) list.push(...s.items);
+                    if (Array.isArray(s?.cart_items)) list.push(...s.cart_items);
+                    if (Array.isArray(s?.products)) list.push(...s.products);
+                  }
+                }
+                return list;
+              };
+
+              const getBlinkitPids = (item: any): string[] => {
+                const ids: string[] = [];
+                if (item?.product_id) ids.push(String(item.product_id));
+                if (item?.id) ids.push(String(item.id));
+                if (item?.merchant_product_id) ids.push(String(item.merchant_product_id));
+                if (item?.product?.id) ids.push(String(item.product.id));
+                if (item?.product?.product_id) ids.push(String(item.product.product_id));
+                if (item?.item_id) ids.push(String(item.item_id));
+                return ids;
+              };
+
+              const allBlinkitItems = extractBlinkitItemsList(resJson);
+              for (const it of allBlinkitItems) {
+                const pids = getBlinkitPids(it);
+                const isOos = it.in_stock === false ||
+                              it.is_available === false ||
+                              it.available === false ||
+                              it.out_of_stock === true ||
+                              it.is_oos === true ||
+                              it.status === 'OUT_OF_STOCK' ||
+                              it.status === 'OOS' ||
+                              (typeof it.inventory?.stock === 'number' && it.inventory.stock <= 0) ||
+                              (typeof it.stock === 'number' && it.stock <= 0) ||
+                              (typeof it.quantity === 'number' && it.quantity <= 0);
+
+                let billedQty: number | undefined = undefined;
+                if (typeof it.quantity === 'number' && it.quantity > 0) billedQty = it.quantity;
+
+                let stockNum: number | undefined = undefined;
+                if (typeof it.inventory === 'number' && it.inventory >= 0) stockNum = it.inventory;
+                else if (typeof it.inventory?.stock === 'number' && it.inventory.stock >= 0) stockNum = it.inventory.stock;
+                else if (typeof it.stock === 'number' && it.stock >= 0) stockNum = it.stock;
+                else if (typeof it.available_units === 'number' && it.available_units >= 0) stockNum = it.available_units;
+                else if (typeof it.available_quantity === 'number' && it.available_quantity >= 0) stockNum = it.available_quantity;
+
+                let maxQ: number | undefined = undefined;
+                if (typeof it.max_quantity === 'number' && it.max_quantity > 0) maxQ = it.max_quantity;
+                else if (typeof it.purchase_limit === 'number' && it.purchase_limit > 0) maxQ = it.purchase_limit;
+
+                const reqItem = items.find(ci => {
+                  const resolved = resolvePlatformProduct(ci, 'blinkit');
+                  if (!resolved) return false;
+                  const pid = String(resolved.product.originalId || resolved.product.productId || resolved.product.id.replace('blinkit-', ''));
+                  return pids.includes(pid) || pids.includes(String(resolved.product.id));
+                });
+                const reqQty = reqItem?.quantity;
+
+                let effLimit: number | undefined = undefined;
+                if (stockNum !== undefined && maxQ !== undefined) {
+                  effLimit = Math.min(stockNum, maxQ);
+                } else if (stockNum !== undefined) {
+                  effLimit = stockNum;
+                } else if (maxQ !== undefined) {
+                  effLimit = maxQ;
+                } else if (billedQty !== undefined && reqQty !== undefined && billedQty < reqQty) {
+                  effLimit = billedQty;
+                }
+
+                for (const pid of pids) {
+                  if (isOos) {
+                    returnedOosBlinkitPids.add(pid);
+                    platformItemLimits[pid] = 0;
+                  } else {
+                    returnedActiveBlinkitPids.add(pid);
+                    if (billedQty !== undefined) platformItemQuantities[pid] = billedQty;
+                    if (effLimit !== undefined) platformItemLimits[pid] = effLimit;
+                  }
+                }
+              }
+
+              const cd = resJson?.cart_data || resJson?.data || resJson;
+              const oosArrays = [
+                cd?.unavailable_items,
+                cd?.out_of_stock_items,
+                cd?.unserviceable_items,
+                cd?.oos_items,
+                resJson?.unavailable_items,
+                resJson?.out_of_stock_items,
+              ];
+              for (const arr of oosArrays) {
+                if (Array.isArray(arr)) {
+                  for (const it of arr) {
+                    for (const pid of getBlinkitPids(it)) {
+                      returnedOosBlinkitPids.add(pid);
+                      platformItemLimits[pid] = 0;
+                    }
+                  }
+                }
+              }
+
+              for (const cartItem of items) {
+                const resolved = resolvePlatformProduct(cartItem, 'blinkit');
+                if (!resolved) {
+                  outOfStockProductIds.push(cartItem.product.id);
+                  platformItemLimits[cartItem.product.id] = 0;
+                  continue;
+                }
+                const pid = String(resolved.product.originalId || resolved.product.productId || resolved.product.id.replace('blinkit-', ''));
+                const rawId = String(resolved.product.id);
+
+                if (returnedOosBlinkitPids.has(pid) || returnedOosBlinkitPids.has(rawId)) {
+                  outOfStockProductIds.push(cartItem.product.id);
+                  platformItemLimits[cartItem.product.id] = 0;
+                } else if (returnedActiveBlinkitPids.has(pid) || returnedActiveBlinkitPids.has(rawId)) {
+                  inStockProductIds.push(cartItem.product.id);
+                  const lim = platformItemLimits[pid] ?? platformItemLimits[rawId] ?? getItemPlatformLimit(resolved.product);
+                  if (lim !== undefined) platformItemLimits[cartItem.product.id] = lim;
+                  const qty = platformItemQuantities[pid] ?? platformItemQuantities[rawId];
+                  if (qty !== undefined) platformItemQuantities[cartItem.product.id] = qty;
+                } else if (liveBill && allBlinkitItems.length > 0 && returnedActiveBlinkitPids.size > 0 && !returnedActiveBlinkitPids.has(pid)) {
+                  // Dropped by Blinkit because unavailable
+                  outOfStockProductIds.push(cartItem.product.id);
+                  platformItemLimits[cartItem.product.id] = 0;
+                } else if (resolved.product.inStock === false) {
+                  outOfStockProductIds.push(cartItem.product.id);
+                  platformItemLimits[cartItem.product.id] = 0;
+                } else {
+                  // Valid bill received without OOS flag = in stock!
+                  inStockProductIds.push(cartItem.product.id);
+                  const lim = getItemPlatformLimit(resolved.product);
+                  if (lim !== undefined) platformItemLimits[cartItem.product.id] = lim;
+                }
               }
             }
           } else if (platform === 'swiggy' && swiggyToken && gpsCoords) {
@@ -1122,6 +1766,14 @@ export const api = {
             const delivery = await this.resolveSwiggyDeliveryAddress(gpsLat, gpsLng);
             const targetLat = delivery?.location?.latitude ?? gpsLat;
             const targetLng = delivery?.location?.longitude ?? gpsLng;
+
+            console.log(`[Pricing Location - Swiggy] Location used to fetch pricing:
+  - User GPS Location: (${gpsLat}, ${gpsLng})
+  - Target Coordinates used for Swiggy store discovery & cart API: (${targetLat.toFixed(6)}, ${targetLng.toFixed(6)})
+  - Resolved Delivery Address ID: ${delivery?.id || 'none (GPS coordinates only)'}
+  - Resolved Delivery Address Name: "${delivery?.name || 'none'}"
+  - Delivery Address Distance: ${delivery?.distanceKm !== undefined ? `${delivery.distanceKm} km` : 'N/A'}`);
+
             const HOME_URL = `https://www.swiggy.com/api/instamart/home/v2?offset=0&storeId=&primaryStoreId=&secondaryStoreId=&clientId=INSTAMART-APP&lat=${targetLat.toFixed(6)}&lng=${targetLng.toFixed(6)}&overrideLocation=true`;
 
             let shipmentIdV2 = '';
@@ -1207,86 +1859,124 @@ export const api = {
                 '&secondaryStoreId=' + encodeURIComponent(storeInfo?.secondaryStoreId || resolvedStoreId);
 
               const buildBody = (productId: any, itemId: any, spinId: any, qty: number) => ({
-                productId,
+                productId: productId || itemId,
                 quantity: Math.max(1, Math.round(Number(qty) || 1)),
                 tradeFreebie: false,
                 spin: spinId || '',
-                itemId,
-                // meta.storeId is always the session store (the extension's
-                // exact behavior — per-item store ids get baskets rejected)
+                itemId: itemId || productId,
                 meta: { type: 'structure', storeId: resolvedStoreId, freebie: false, isGiftBag: false },
                 serviceLine: 'INSTAMART',
                 ...(shipmentIdV2 ? { shipmentIdV2 } : {})
               });
 
               // FAST PATH: reuse the catalog IDs captured during auto-match
-              // (or from a source-Swiggy listing) — skips N catalog searches.
               let usedFastPath = platformItems.length > 0;
               let bodies: any[] = [];
               for (const ci of platformItems) {
                 const src: any = ci.product.platformPrices?.swiggy || (ci.product.platform === 'swiggy' ? ci.product : null);
-                if (!src || !src.productId || !src.originalId) { usedFastPath = false; break; }
-                bodies.push(buildBody(src.productId, src.originalId, src.spinId, ci.quantity));
+                const pid = src?.productId || src?.originalId || src?.itemId;
+                const iid = src?.originalId || src?.itemId || src?.productId;
+                if (!src || !pid || !iid) { usedFastPath = false; break; }
+                const lim = getItemPlatformLimit(src);
+                const q = (typeof lim === 'number' && lim > 0) ? Math.min(ci.quantity, lim) : ci.quantity;
+                bodies.push(buildBody(pid, iid, src.spinId, q));
               }
               if (!usedFastPath) bodies = [];
 
               // Fallback builder: fresh search/v2 per item (concurrent pool).
-              const freshSearchBodies = async (): Promise<{ bodies: any[]; unmappedName: string | null }> => {
-              const searchItem = async (title: string, quantity: string): Promise<any> => {
-                try {
-                  const searchRes = await this.swiggyApiFetch(`https://www.swiggy.com/api/instamart/search/v2?${storeParams}`, 'POST', JSON.stringify({
-                    facets: [],
-                    sortAttribute: '',
-                    query: title,
-                    search_results_offset: '0',
-                    page_type: 'INSTAMART_PRE_SEARCH_PAGE',
-                    is_pre_search_tag: false
-                  }));
-                  if (searchRes.ok) {
-                    const candidates = extractSwiggySearchProducts(await searchRes.json(), title);
-                    return pickInstamartCandidate(candidates, title, quantity);
+              const freshSearchBodies = async (): Promise<{ bodies: any[]; oosItemIds: string[]; candidateMap: Map<string, any> }> => {
+                const searchItem = async (title: string, quantity: string, price?: number): Promise<any> => {
+                  try {
+                    const queriesToTry = [title];
+                    const stripped = stripSizeToken(title);
+                    if (stripped && stripped !== title) {
+                      queriesToTry.push(stripped);
+                    }
+                    const cleanParens = title.replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim();
+                    if (cleanParens && !queriesToTry.includes(cleanParens)) {
+                      queriesToTry.push(cleanParens);
+                    }
+                    const words = title.split(/[^a-zA-Z0-9]+/).filter(w => w.length > 2);
+                    if (words.length > 3) {
+                      const shortQuery = words.slice(0, 3).join(' ');
+                      if (!queriesToTry.includes(shortQuery)) queriesToTry.push(shortQuery);
+                    }
+
+                    for (const q of queriesToTry) {
+                      const candidates = await this.searchSingle('swiggy', q);
+                      if (Array.isArray(candidates) && candidates.length > 0) {
+                        const matched = pickInstamartCandidate(candidates, title, quantity, price);
+                        if (matched) {
+                          const pid = matched.productId || matched.originalId || matched.itemId;
+                          const iid = matched.originalId || matched.itemId || matched.productId;
+                          if (pid && iid) {
+                            return {
+                              productId: String(pid),
+                              itemId: String(iid),
+                              spinId: matched.spinId || '',
+                              price: matched.price,
+                              unit: matched.quantity || matched.unit,
+                              availableStock: matched.availableStock,
+                              maxQuantity: matched.maxQuantity,
+                            };
+                          }
+                        }
+                      }
+                    }
+                  } catch (e) {
+                    console.warn(`[Swiggy API Checkout] search error for "${title}":`, e);
                   }
-                  console.warn(`[Swiggy API Checkout] search failed (${searchRes.status}) for "${title}"`);
-                } catch (e) {
-                  console.warn(`[Swiggy API Checkout] search error for "${title}":`, e);
+                  return null;
+                };
+
+                const SEARCH_POOL = 5;
+                const searchResults: any[] = new Array(items.length).fill(null);
+                for (let start = 0; start < items.length; start += SEARCH_POOL) {
+                  const slice = items.slice(start, start + SEARCH_POOL);
+                  const settled = await Promise.all(slice.map(cartItem => {
+                    const resolved = resolvePlatformProduct(cartItem, 'swiggy');
+                    if (!resolved) return Promise.resolve(null);
+                    return searchItem(resolved.product.title, resolved.product.quantity, resolved.product.price);
+                  }));
+                  settled.forEach((r, i) => { searchResults[start + i] = r; });
                 }
-                return null;
-              };
-              const SEARCH_POOL = 5;
-              const searchResults: any[] = new Array(platformItems.length).fill(null);
-              for (let start = 0; start < platformItems.length; start += SEARCH_POOL) {
-                const slice = platformItems.slice(start, start + SEARCH_POOL);
-                const settled = await Promise.all(slice.map(ci => searchItem(ci.product.title, ci.product.quantity)));
-                settled.forEach((r, i) => { searchResults[start + i] = r; });
-              }
 
                 const outBodies: any[] = [];
-                let unmappedInner: string | null = null;
-                platformItems.forEach((ci, i) => {
-                  const cand = searchResults[i];
-                  if (!cand || !cand.productId || !cand.itemId) {
-                    if (!unmappedInner) unmappedInner = ci.product.title;
+                const oosItemIds: string[] = [];
+                const candidateMap = new Map<string, any>();
+
+                items.forEach((cartItem, i) => {
+                  const resolved = resolvePlatformProduct(cartItem, 'swiggy');
+                  if (!resolved) {
+                    oosItemIds.push(cartItem.product.id);
                     return;
                   }
-                  outBodies.push(buildBody(cand.productId, cand.itemId, cand.spinId, ci.quantity));
+                  const cand = searchResults[i];
+                  const pid = cand?.productId || cand?.itemId;
+                  const iid = cand?.itemId || cand?.productId;
+                  if (!cand || !pid || !iid) {
+                    oosItemIds.push(cartItem.product.id);
+                    return;
+                  }
+                  candidateMap.set(cartItem.product.id, cand);
+                  const lim = getItemPlatformLimit(cand) ?? getItemPlatformLimit(resolved.product);
+                  const q = (typeof lim === 'number' && lim > 0) ? Math.min(cartItem.quantity, lim) : cartItem.quantity;
+                  outBodies.push(buildBody(pid, iid, cand.spinId, q));
                 });
-                return { bodies: outBodies, unmappedName: unmappedInner };
+
+                return { bodies: outBodies, oosItemIds, candidateMap };
               };
 
-              let unmappedName: string | null = null;
+              let freshOosItemIds: string[] = [];
+              let freshCandidateMap = new Map<string, any>();
               if (bodies.length === 0 && platformItems.length > 0) {
                 const fresh = await freshSearchBodies();
-                unmappedName = fresh.unmappedName;
+                freshOosItemIds = fresh.oosItemIds;
+                freshCandidateMap = fresh.candidateMap;
                 bodies = fresh.bodies;
               }
 
-              if (unmappedName) {
-                console.warn(`[Swiggy API Checkout] no catalog match for "${unmappedName}" — bill not priced`);
-              } else if (bodies.length > 0) {
-                // Bind the delivery address (closest saved address to GPS) so
-                // the cart is priced for AND opened at the right location —
-                // Swiggy resolves "select delivery address" from server cart
-                // state, not the local store.
+              if (bodies.length > 0) {
                 const delivery = await this.resolveSwiggyDeliveryAddress(gpsLat, gpsLng);
                 const postBasket = async (storeIds: string[], deliveryFor?: { id: string | null; location?: { latitude: number; longitude: number } | null } | null) => this.swiggyApiFetch(CART_URL, 'POST', JSON.stringify({
                   data: {
@@ -1305,47 +1995,141 @@ export const api = {
                       storeIds
                     },
                     cartType: 'INSTAMART',
-                    // The SPA binds an address the same way on change
-                    // (updateCartAddressWithResetSlot): preferredAddressId +
-                    // top-level addressId + location.
                     ...(deliveryFor?.id ? { addressId: deliveryFor.id } : {}),
                     ...(deliveryFor?.location ? { location: deliveryFor.location } : {})
                   },
                   source: 'userInitiated'
                 }));
 
-                  let postCartRes = await postBasket([resolvedStoreId], delivery);
+                const extractSwiggyCartItems = (root: any): any[] => {
+                  if (!root) return [];
+                  const cd = root?.data?.data || root?.data || root;
+                  if (Array.isArray(cd.items)) return cd.items;
+                  if (Array.isArray(cd.cart_items)) return cd.cart_items;
+                  if (Array.isArray(cd.cartItems)) return cd.cartItems;
+                  if (Array.isArray(cd.cart?.items)) return cd.cart.items;
+                  if (Array.isArray(cd.sellerCarts)) {
+                    const all = cd.sellerCarts.flatMap((sc: any) => sc?.items || []);
+                    if (all.length > 0) return all;
+                  }
+                  if (Array.isArray(cd.storeCarts)) {
+                    const all = cd.storeCarts.flatMap((sc: any) => sc?.items || []);
+                    if (all.length > 0) return all;
+                  }
+                  if (Array.isArray(root?.items)) return root.items;
+                  return [];
+                };
+
+                console.log(`[Swiggy API Checkout] Posting ${bodies.length} item(s) to checkout/v2/cart:`, JSON.stringify(bodies));
+                let postCartRes = await postBasket([resolvedStoreId], delivery);
                 if (!postCartRes.ok) {
-                  const rejText = (await postCartRes.text().catch(() => '')).slice(0, 300);
+                  const rejText = (await postCartRes.text().catch(() => '')).slice(0, 800);
                   console.warn(`[Swiggy API Checkout] POST rejected (${postCartRes.status}): ${rejText}`);
-                  // Rejected baskets are retried with the SPA's paired
-                  // [primaryStoreId, secondaryStoreId] shape before giving up.
-                  postCartRes = await postBasket([resolvedStoreId, resolvedStoreId], delivery);
-                }
-                if (!postCartRes.ok && usedFastPath) {
-                  // Stale/wrong stored IDs are what Swiggy answers with
-                  // "no valid items in cart" — rebuild via fresh search.
-                  console.warn('[Swiggy API Checkout] cached IDs rejected — rebuilding basket via fresh search');
-                  const freshRetry = await freshSearchBodies();
-                  if (freshRetry.unmappedName) {
-                    console.warn(`[Swiggy API Checkout] no catalog match for "${freshRetry.unmappedName}" — bill not priced`);
+
+                  let rejJson: any = null;
+                  try { rejJson = JSON.parse(rejText); } catch {}
+
+                  const stockInRej = extractStockCount(rejJson?.statusMessage) ??
+                    extractStockCount(rejJson?.message) ??
+                    extractStockCount(rejJson?.data?.message) ??
+                    extractStockCount(rejJson?.data?.statusMessage) ??
+                    extractStockCount(rejJson?.error) ??
+                    extractStockCount(rejText);
+
+                  if (stockInRej !== undefined && stockInRej > 0) {
+                    console.log(`[Swiggy API Checkout] Detected stock limit of ${stockInRej} from rejection! Auto-clamping bodies.`);
+                    for (const b of bodies) {
+                      b.quantity = Math.min(b.quantity, stockInRej);
+                      if (b.itemId) platformItemLimits[String(b.itemId)] = stockInRej;
+                      if (b.productId) platformItemLimits[String(b.productId)] = stockInRej;
+                    }
+                    postCartRes = await postBasket([resolvedStoreId], delivery);
                   } else {
-                    usedFastPath = false;
-                    bodies = freshRetry.bodies;
+                    postCartRes = await postBasket([resolvedStoreId, resolvedStoreId], delivery);
+                  }
+                }
+
+                let postCartJson = postCartRes && postCartRes.ok ? await postCartRes.json().catch(() => null) : null;
+                let bill = findSwiggyBillNode(postCartJson);
+                let cartData = postCartJson?.data?.data || postCartJson?.data;
+                let sItems = extractSwiggyCartItems(postCartJson);
+
+                if ((!bill || sItems.length === 0) && postCartRes && postCartRes.ok) {
+                  try {
+                    const refetchRes = await this.swiggyApiFetch(`${CART_URL}?pageType=INSTAMART_CART`);
+                    if (refetchRes.ok) {
+                      const refetchJson = await refetchRes.json().catch(() => null);
+                      if (!bill) bill = findSwiggyBillNode(refetchJson);
+                      cartData = refetchJson?.data?.data || refetchJson?.data || cartData;
+                      sItems = extractSwiggyCartItems(refetchJson);
+                    }
+                  } catch (e) {
+                    console.warn('[Swiggy API Checkout] cart refetch failed:', e);
+                  }
+                }
+
+                const sentPids = new Set<string>();
+                for (const b of bodies) {
+                  if (b.productId) sentPids.add(String(b.productId));
+                  if (b.itemId) sentPids.add(String(b.itemId));
+                }
+
+                const sOosArraysInitial = [
+                  cartData?.unavailableItems,
+                  cartData?.outOfStockItems,
+                  cartData?.unserviceableItems,
+                  cartData?.itemsUnavailable,
+                  postCartJson?.unavailableItems,
+                  postCartJson?.outOfStockItems,
+                  postCartJson?.data?.unavailableItems,
+                  postCartJson?.data?.data?.unavailableItems
+                ];
+                const ourItemUnavailable = sOosArraysInitial.some(arr =>
+                  Array.isArray(arr) && arr.some(it => {
+                    const itPids = [it?.productId, it?.itemId, it?.skuId, it?.id, it?.item_id, it?.product_id].filter(Boolean).map(String);
+                    return itPids.some(p => sentPids.has(p));
+                  })
+                );
+
+                const fastPathNeedsRetry = usedFastPath && (
+                  !postCartRes?.ok ||
+                  !bill ||
+                  ourItemUnavailable
+                );
+
+                if (fastPathNeedsRetry) {
+                  console.warn('[Swiggy API Checkout] cached IDs rejected or dropped items — rebuilding basket via fresh search');
+                  const freshRetry = await freshSearchBodies();
+                  freshOosItemIds = freshRetry.oosItemIds;
+                  freshCandidateMap = freshRetry.candidateMap;
+                  bodies = freshRetry.bodies;
+                  usedFastPath = false;
+                  if (bodies.length > 0) {
                     postCartRes = await postBasket([resolvedStoreId], delivery);
                     if (!postCartRes.ok) {
-                      const rejText2 = (await postCartRes.text().catch(() => '')).slice(0, 300);
-                      console.warn(`[Swiggy API Checkout] POST rejected (${postCartRes.status}): ${rejText2}`);
                       postCartRes = await postBasket([resolvedStoreId, resolvedStoreId], delivery);
+                    }
+                    if (postCartRes && postCartRes.ok) {
+                      postCartJson = await postCartRes.json().catch(() => null);
+                      bill = findSwiggyBillNode(postCartJson);
+                      cartData = postCartJson?.data?.data || postCartJson?.data;
+                      sItems = extractSwiggyCartItems(postCartJson);
+                      if (!bill || sItems.length === 0) {
+                        try {
+                          const refetchRes = await this.swiggyApiFetch(`${CART_URL}?pageType=INSTAMART_CART`);
+                          if (refetchRes.ok) {
+                            const refetchJson = await refetchRes.json().catch(() => null);
+                            if (!bill) bill = findSwiggyBillNode(refetchJson);
+                            cartData = refetchJson?.data?.data || refetchJson?.data || cartData;
+                            sItems = extractSwiggyCartItems(refetchJson);
+                          }
+                        } catch {}
+                      }
                     }
                   }
                 }
 
-                if (postCartRes.ok) {
-                  const postCartJson = await postCartRes.json();
-
-                  // Diagnose address intermittency: compare the address the
-                  // bill was actually priced for vs the one we sent.
+                if (postCartRes && postCartRes.ok) {
                   const billedAddrId = postCartJson?.data?.data?.addressId
                     ?? postCartJson?.data?.data?.address?.id
                     ?? postCartJson?.data?.data?.shippingAddressId
@@ -1354,9 +2138,6 @@ export const api = {
                     console.warn(`[Swiggy Address] MISMATCH: bill priced for address "${billedAddrId}" but we sent "${delivery.id}"`);
                   }
 
-                  // The POST often only acknowledges the write — the bill then
-                  // shows up on a fresh GET cart (exactly how the SPA renders
-                  // its cart page), so look in both.
                   const applySwiggyFees = (b: any) => {
                     const fees = parseSwiggyBill(b);
                     if (fees.subtotal !== null) subtotal = fees.subtotal;
@@ -1366,29 +2147,237 @@ export const api = {
                     if (fees.surgeFee) surgeFee = fees.surgeFee;
                     if (fees.surgeLabel) surgeLabel = fees.surgeLabel;
                     if (fees.tax !== null) tax = fees.tax;
-                    if (fees.total !== null) { total = fees.total; liveBill = true; }
-                  };
-
-                  let bill = findSwiggyBillNode(postCartJson);
-                  if (!bill) {
-                    try {
-                      const refetchRes = await this.swiggyApiFetch(`${CART_URL}?pageType=INSTAMART_CART`);
-                      if (refetchRes.ok) {
-                        bill = findSwiggyBillNode(await refetchRes.json());
+                    if (fees.total !== null) {
+                      total = fees.total;
+                      liveBill = true;
+                      if (fees.subtotal === null) {
+                        const otherCharges = (fees.deliveryFee ?? 0) + (fees.handlingFee ?? 0) + (fees.smallCartFee ?? 0) + (fees.surgeFee ?? 0) + (fees.tax ?? 0);
+                        if (fees.total >= otherCharges) {
+                          subtotal = fees.total - otherCharges;
+                        }
                       }
-                    } catch (e) {
-                      console.warn('[Swiggy API Checkout] bill refetch failed:', e);
                     }
-                  }
+                  };
 
                   if (bill) {
                     applySwiggyFees(bill);
-                  } else {
-                    // The POST ack's "User Addresses not found" message is
-                    // normal for sessions without preferredAddressId; no bill
-                    // anywhere means the session genuinely has no resolvable
-                    // delivery address (user must select one in setup).
-                    console.warn('[Swiggy API Checkout] no bill — session has no resolvable delivery address');
+                  }
+
+                  if (liveBill && (!subtotal || subtotal === 0)) {
+                    const numFn = (v: any) => {
+                      const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN;
+                      return isFinite(n) ? Math.round(n) : null;
+                    };
+                    const cdSub = numFn(cartData?.itemTotal) ?? numFn(cartData?.itemsTotal) ?? numFn(cartData?.subTotal) ?? numFn(cartData?.cartSubTotal) ?? numFn(cartData?.cartTotal);
+                    if (cdSub !== null && cdSub > 0) {
+                      subtotal = cdSub;
+                    } else if (Array.isArray(sItems) && sItems.length > 0) {
+                      let itemSum = 0;
+                      for (const it of sItems) {
+                        const p = Number(it.finalPrice ?? it.price ?? 0);
+                        const q = Number(it.quantity ?? 1);
+                        if (p > 0 && q > 0) itemSum += p * q;
+                      }
+                      if (itemSum > 0) subtotal = Math.round(itemSum);
+                    }
+                  }
+
+                  // Extract Swiggy in-stock and out-of-stock items
+                  const returnedActiveSwiggyPids = new Set<string>();
+                  const returnedActiveSwiggyNames = new Set<string>();
+                  const returnedOosSwiggyPids = new Set<string>();
+                  const returnedOosSwiggyNames = new Set<string>();
+
+                  const getSwiggyPids = (it: any): string[] => {
+                    const ids: string[] = [];
+                    if (it?.productId) ids.push(String(it.productId));
+                    if (it?.itemId) ids.push(String(it.itemId));
+                    if (it?.skuId) ids.push(String(it.skuId));
+                    if (it?.id) ids.push(String(it.id));
+                    if (it?.item_id) ids.push(String(it.item_id));
+                    if (it?.product_id) ids.push(String(it.product_id));
+                    if (it?.spinId) ids.push(String(it.spinId));
+                    if (it?.spin) ids.push(String(it.spin));
+                    if (it?.item?.productId) ids.push(String(it.item.productId));
+                    if (it?.item?.itemId) ids.push(String(it.item.itemId));
+                    if (it?.item?.id) ids.push(String(it.item.id));
+                    if (it?.item?.skuId) ids.push(String(it.item.skuId));
+                    if (it?.product?.id) ids.push(String(it.product.id));
+                    if (it?.product?.productId) ids.push(String(it.product.productId));
+                    return ids.filter(Boolean);
+                  };
+
+                  const getSwiggyNormName = (it: any): string => {
+                    const name = it?.name || it?.displayName || it?.title || it?.item?.name || it?.item?.displayName || '';
+                    return instamartNormKey(name);
+                  };
+
+                  if (Array.isArray(sItems)) {
+                    for (const it of sItems) {
+                      const isOos = it.inStock === false ||
+                                    it.isAvailable === false ||
+                                    it.outOfStock === true ||
+                                    it.isOOS === true ||
+                                    it.status === 'OUT_OF_STOCK' ||
+                                    it.status === 'OOS' ||
+                                    (typeof it.quantity === 'number' && it.quantity <= 0) ||
+                                    (it.inventory?.inStock === false) ||
+                                    (typeof it.inventory?.totalStock === 'number' && it.inventory.totalStock <= 0) ||
+                                    (typeof it.inventory?.total_stock === 'number' && it.inventory.total_stock <= 0) ||
+                                    (typeof it.inventory?.remaining_stock === 'number' && it.inventory.remaining_stock <= 0) ||
+                                    (typeof it.inventory?.available_stock === 'number' && it.inventory.available_stock <= 0) ||
+                                    (typeof it.inventory?.available_quantity === 'number' && it.inventory.available_quantity <= 0);
+                      const pids = getSwiggyPids(it);
+                      const normName = getSwiggyNormName(it);
+
+                      let billedQty: number | undefined = undefined;
+                      if (typeof it.quantity === 'number' && it.quantity > 0) billedQty = it.quantity;
+
+                      const { availableStock: stockNum, maxQuantity: maxQ } = extractSwiggyStockAndLimit(it);
+
+                      const matchingBody = bodies.find(b => pids.includes(String(b.itemId)) || pids.includes(String(b.productId)));
+                      const reqQty = matchingBody?.quantity;
+
+                      let effLimit: number | undefined = undefined;
+                      if (stockNum !== undefined && maxQ !== undefined) {
+                        effLimit = Math.min(stockNum, maxQ);
+                      } else if (stockNum !== undefined) {
+                        effLimit = stockNum;
+                      } else if (maxQ !== undefined) {
+                        effLimit = maxQ;
+                      } else if (billedQty !== undefined && reqQty !== undefined && billedQty < reqQty) {
+                        effLimit = billedQty;
+                      }
+
+                      if (isOos) {
+                        pids.forEach(p => {
+                          returnedOosSwiggyPids.add(p);
+                          platformItemLimits[p] = 0;
+                        });
+                        if (normName) returnedOosSwiggyNames.add(normName);
+                      } else {
+                        pids.forEach(p => {
+                          returnedActiveSwiggyPids.add(p);
+                          if (billedQty !== undefined) platformItemQuantities[p] = billedQty;
+                          if (effLimit !== undefined) platformItemLimits[p] = effLimit;
+                        });
+                        if (normName) returnedActiveSwiggyNames.add(normName);
+                      }
+                    }
+                  }
+
+                  // Also inspect cart messages / warnings / notifications for stock limit text
+                  const allMessages = [
+                    ...(Array.isArray(cartData?.warnings) ? cartData.warnings : []),
+                    ...(Array.isArray(cartData?.messages) ? cartData.messages : []),
+                    ...(Array.isArray(cartData?.cartMessages) ? cartData.cartMessages : []),
+                    ...(Array.isArray(cartData?.itemMessages) ? cartData.itemMessages : []),
+                    ...(Array.isArray(postCartJson?.warnings) ? postCartJson.warnings : []),
+                    ...(Array.isArray(postCartJson?.messages) ? postCartJson.messages : []),
+                    ...(Array.isArray(postCartJson?.data?.warnings) ? postCartJson.data.warnings : []),
+                    ...(Array.isArray(postCartJson?.data?.messages) ? postCartJson.data.messages : []),
+                  ];
+                  for (const m of allMessages) {
+                    const stockInMsg = extractStockCount(m);
+                    if (stockInMsg !== undefined && stockInMsg > 0) {
+                      const msgPids = getSwiggyPids(m);
+                      if (msgPids.length > 0) {
+                        msgPids.forEach(p => { platformItemLimits[p] = stockInMsg; });
+                      } else if (items.length === 1) {
+                        platformItemLimits[items[0].product.id] = stockInMsg;
+                      }
+                    }
+                  }
+
+                  const sOosArrays = [
+                    cartData?.unavailableItems,
+                    cartData?.outOfStockItems,
+                    cartData?.unserviceableItems,
+                    cartData?.itemsUnavailable,
+                    postCartJson?.unavailableItems,
+                    postCartJson?.outOfStockItems,
+                    postCartJson?.data?.unavailableItems,
+                    postCartJson?.data?.data?.unavailableItems
+                  ];
+                  for (const arr of sOosArrays) {
+                    if (Array.isArray(arr)) {
+                      for (const it of arr) {
+                        getSwiggyPids(it).forEach(p => {
+                          returnedOosSwiggyPids.add(p);
+                          platformItemLimits[p] = 0;
+                        });
+                        const normName = getSwiggyNormName(it);
+                        if (normName) returnedOosSwiggyNames.add(normName);
+                      }
+                    }
+                  }
+
+                  for (const cartItem of items) {
+                    const resolved = resolvePlatformProduct(cartItem, 'swiggy');
+                    if (!resolved || freshOosItemIds.includes(cartItem.product.id)) {
+                      outOfStockProductIds.push(cartItem.product.id);
+                      platformItemLimits[cartItem.product.id] = 0;
+                      continue;
+                    }
+                    const src: any = resolved.product;
+                    const freshCand = freshCandidateMap.get(cartItem.product.id);
+                    const pidsToCheck = [
+                      String(src.productId || ''),
+                      String(src.originalId || ''),
+                      String(src.id || '').replace(/^swiggy-/, ''),
+                      String(src.spinId || ''),
+                      ...(freshCand ? [String(freshCand.productId || ''), String(freshCand.itemId || ''), String(freshCand.spinId || '')] : [])
+                    ].filter(Boolean);
+
+                    const itemNormTitle = instamartNormKey(src.title || cartItem.product.title);
+
+                    const isExplicitActive = pidsToCheck.some(id => returnedActiveSwiggyPids.has(id)) ||
+                      (itemNormTitle && (
+                        returnedActiveSwiggyNames.has(itemNormTitle) ||
+                        Array.from(returnedActiveSwiggyNames).some(an => an.includes(itemNormTitle) || itemNormTitle.includes(an))
+                      ));
+
+                    const isExplicitOos = pidsToCheck.some(id => returnedOosSwiggyPids.has(id)) ||
+                      (!isExplicitActive && itemNormTitle && returnedOosSwiggyNames.has(itemNormTitle));
+
+                    let foundLimit: number | undefined = undefined;
+                    let foundQty: number | undefined = undefined;
+                    for (const p of pidsToCheck) {
+                      if (platformItemLimits[p] !== undefined) { foundLimit = platformItemLimits[p]; break; }
+                    }
+                    for (const p of pidsToCheck) {
+                      if (platformItemQuantities[p] !== undefined) { foundQty = platformItemQuantities[p]; break; }
+                    }
+
+                    if (isExplicitActive) {
+                      inStockProductIds.push(cartItem.product.id);
+                      const lim = foundLimit ?? getItemPlatformLimit(resolved.product);
+                      if (lim !== undefined) platformItemLimits[cartItem.product.id] = lim;
+                      if (foundQty !== undefined) platformItemQuantities[cartItem.product.id] = foundQty;
+                    } else if (isExplicitOos) {
+                      outOfStockProductIds.push(cartItem.product.id);
+                      platformItemLimits[cartItem.product.id] = 0;
+                    } else if (liveBill && subtotal > 0 && items.length === 1) {
+                      // Single item in basket and live bill has subtotal > 0 -> definitely in stock!
+                      inStockProductIds.push(cartItem.product.id);
+                      const lim = getItemPlatformLimit(resolved.product);
+                      if (lim !== undefined) platformItemLimits[cartItem.product.id] = lim;
+                    } else if (liveBill && sItems.length > 0 && returnedOosSwiggyPids.size > 0 && !isExplicitActive) {
+                      // Explicit OOS items reported by Swiggy, and this item was not found active
+                      outOfStockProductIds.push(cartItem.product.id);
+                      platformItemLimits[cartItem.product.id] = 0;
+                    } else if (resolved.product.inStock === false) {
+                      outOfStockProductIds.push(cartItem.product.id);
+                      platformItemLimits[cartItem.product.id] = 0;
+                    } else if (liveBill && subtotal > 0) {
+                      // Cart is live and bill priced with no explicit OOS indication
+                      inStockProductIds.push(cartItem.product.id);
+                      const lim = getItemPlatformLimit(resolved.product);
+                      if (lim !== undefined) platformItemLimits[cartItem.product.id] = lim;
+                    } else {
+                      outOfStockProductIds.push(cartItem.product.id);
+                      platformItemLimits[cartItem.product.id] = 0;
+                    }
                   }
                 }
               }
@@ -1401,11 +2390,47 @@ export const api = {
         }
       }
 
-      const savings = originalSubtotal - subtotal;
+      // Ensure every basket item is classified as in-stock or out-of-stock
+      for (const cartItem of items) {
+        if (!inStockProductIds.includes(cartItem.product.id) && !outOfStockProductIds.includes(cartItem.product.id)) {
+          const resolved = resolvePlatformProduct(cartItem, platform);
+          if (!resolved || resolved.product.inStock === false) {
+            outOfStockProductIds.push(cartItem.product.id);
+          } else {
+            inStockProductIds.push(cartItem.product.id);
+          }
+        }
+      }
+
+      // Map in-stock items from the user's cart to this platform's resolved products
+      const inStockPlatformItems: { product: UnifiedProduct; quantity: number }[] = [];
+      for (const cartItem of items) {
+        const resolved = resolvePlatformProduct(cartItem, platform);
+        if (resolved && inStockProductIds.includes(cartItem.product.id)) {
+          inStockPlatformItems.push(resolved);
+        }
+      }
+
+      // Fallback: if inStockPlatformItems is empty but platformItems has items and they aren't explicitly marked OOS
+      if (inStockPlatformItems.length === 0 && platformItems.length > 0) {
+        for (const cartItem of items) {
+          const resolved = resolvePlatformProduct(cartItem, platform);
+          if (resolved && !outOfStockProductIds.includes(cartItem.product.id)) {
+            inStockPlatformItems.push(resolved);
+            if (!inStockProductIds.includes(cartItem.product.id)) {
+              inStockProductIds.push(cartItem.product.id);
+            }
+          }
+        }
+      }
+
+      const activeItemsForCalc = inStockPlatformItems.length > 0 ? inStockPlatformItems : platformItems;
+      const inStockOriginalSubtotal = activeItemsForCalc.reduce((sum, item) => sum + ((item.product.originalPrice || item.product.price) * item.quantity), 0);
+      const savings = inStockOriginalSubtotal - subtotal;
 
       const calc: CartCalculation = {
         platform,
-        items: platformItems,
+        items: inStockPlatformItems,
         subtotal,
         deliveryFee,
         handlingFee,
@@ -1415,7 +2440,11 @@ export const api = {
         tax,
         total,
         savings: savings > 0 ? savings : 0,
-        live: liveBill
+        live: liveBill,
+        outOfStockProductIds,
+        inStockProductIds,
+        platformItemLimits,
+        platformItemQuantities,
       };
 
       onPlatformResult?.(calc);
@@ -1588,33 +2617,60 @@ function isSwiggyInStock(product: any, v: any): boolean {
   if (v.outOfStock === true || v.out_of_stock === true || v.isOOS === true) return false;
   if (product && (product.outOfStock === true || product.out_of_stock === true || product.isOOS === true)) return false;
 
+  // Cart allowed quantity <= 0 means item cannot be ordered
+  if (typeof v.cartAllowedQuantity?.allowedQuantity === 'number' && v.cartAllowedQuantity.allowedQuantity <= 0) return false;
+  if (typeof v.cart_allowed_quantity?.allowed_quantity === 'number' && v.cart_allowed_quantity.allowed_quantity <= 0) return false;
+  if (product && typeof product.cartAllowedQuantity?.allowedQuantity === 'number' && product.cartAllowedQuantity.allowedQuantity <= 0) return false;
+  if (product && typeof product.cart_allowed_quantity?.allowed_quantity === 'number' && product.cart_allowed_quantity.allowed_quantity <= 0) return false;
+
   // 2. Inventory object on variation
   if (v.inventory && typeof v.inventory === 'object') {
     if (v.inventory.inStock === false || v.inventory.in_stock === false || v.inventory.isAvailable === false) return false;
     if (typeof v.inventory.totalStock === 'number' && v.inventory.totalStock <= 0) return false;
     if (typeof v.inventory.quantity === 'number' && v.inventory.quantity <= 0) return false;
     if (typeof v.inventory.remainingStock === 'number' && v.inventory.remainingStock <= 0) return false;
+    if (typeof v.inventory.remaining_stock === 'number' && v.inventory.remaining_stock <= 0) return false;
+    if (typeof v.inventory.total_stock === 'number' && v.inventory.total_stock <= 0) return false;
+    if (typeof v.inventory.available_stock === 'number' && v.inventory.available_stock <= 0) return false;
+    if (typeof v.inventory.available_quantity === 'number' && v.inventory.available_quantity <= 0) return false;
     if (typeof v.inventory.stock === 'number' && v.inventory.stock <= 0) return false;
     const invStatus = String(v.inventory.status || '').toUpperCase();
     if (invStatus === 'OUT_OF_STOCK' || invStatus === 'OOS' || invStatus === 'SOLD_OUT') return false;
   }
+  if (typeof v.inventory === 'number' && v.inventory <= 0) return false;
 
   // 3. Inventory object on parent product
   if (product && product.inventory && typeof product.inventory === 'object') {
     if (product.inventory.inStock === false || product.inventory.in_stock === false || product.inventory.isAvailable === false) return false;
     if (typeof product.inventory.totalStock === 'number' && product.inventory.totalStock <= 0) return false;
+    if (typeof product.inventory.total_stock === 'number' && product.inventory.total_stock <= 0) return false;
     if (typeof product.inventory.quantity === 'number' && product.inventory.quantity <= 0) return false;
     if (typeof product.inventory.remainingStock === 'number' && product.inventory.remainingStock <= 0) return false;
+    if (typeof product.inventory.remaining_stock === 'number' && product.inventory.remaining_stock <= 0) return false;
+    if (typeof product.inventory.available_stock === 'number' && product.inventory.available_stock <= 0) return false;
+    if (typeof product.inventory.available_quantity === 'number' && product.inventory.available_quantity <= 0) return false;
     const pInvStatus = String(product.inventory.status || '').toUpperCase();
     if (pInvStatus === 'OUT_OF_STOCK' || pInvStatus === 'OOS' || pInvStatus === 'SOLD_OUT') return false;
   }
+  if (product && typeof product.inventory === 'number' && product.inventory <= 0) return false;
 
   // 4. Stock quantities
   if (typeof v.skuQuantity === 'number' && v.skuQuantity <= 0) return false;
+  if (typeof v.sku_quantity === 'number' && v.sku_quantity <= 0) return false;
   if (typeof v.totalStock === 'number' && v.totalStock <= 0) return false;
+  if (typeof v.total_stock === 'number' && v.total_stock <= 0) return false;
   if (typeof v.remainingStock === 'number' && v.remainingStock <= 0) return false;
+  if (typeof v.remaining_stock === 'number' && v.remaining_stock <= 0) return false;
   if (typeof v.availableStock === 'number' && v.availableStock <= 0) return false;
+  if (typeof v.available_stock === 'number' && v.available_stock <= 0) return false;
   if (typeof v.availableQuantity === 'number' && v.availableQuantity <= 0) return false;
+  if (typeof v.available_quantity === 'number' && v.available_quantity <= 0) return false;
+  if (product) {
+    if (typeof product.remainingStock === 'number' && product.remainingStock <= 0) return false;
+    if (typeof product.remaining_stock === 'number' && product.remaining_stock <= 0) return false;
+    if (typeof product.availableStock === 'number' && product.availableStock <= 0) return false;
+    if (typeof product.available_stock === 'number' && product.available_stock <= 0) return false;
+  }
 
   // 5. Status strings
   const skuStatus = String(v.skuStatus || (product && product.skuStatus) || v.status || '').toUpperCase();
@@ -1658,6 +2714,337 @@ function isSwiggyInStock(product: any, v: any): boolean {
   return true;
 }
 
+export function debugScanSwiggyStock(json: any, query?: string): string[] {
+  const matches: string[] = [];
+  function walk(node: any, path: string) {
+    if (!node || matches.length >= 60) return;
+    if (typeof node === 'string') {
+      if (/left|stock|available|only\s*\d+|units?|per\s*order|limit|quota|cap/i.test(node)) {
+        matches.push(`${path}: "${node.slice(0, 100)}"`);
+      }
+      return;
+    }
+    if (typeof node === 'number') {
+      if (/stock|quantity|remaining|limit|max|inventory|count|available|units/i.test(path)) {
+        matches.push(`${path}: ${node}`);
+      }
+      return;
+    }
+    if (Array.isArray(node)) {
+      for (let i = 0; i < node.length && matches.length < 60; i++) {
+        walk(node[i], `${path}[${i}]`);
+      }
+      return;
+    }
+    if (typeof node === 'object') {
+      for (const k of Object.keys(node)) {
+        if (matches.length >= 60) break;
+        walk(node[k], path ? `${path}.${k}` : k);
+      }
+    }
+  }
+  walk(json, '');
+  return matches;
+}
+
+export function extractStockCount(val: any): number | undefined {
+  if (typeof val === 'number' && isFinite(val) && val >= 0) {
+    return val;
+  }
+  if (typeof val === 'string') {
+    const s = val.trim();
+    if (/^\d+$/.test(s)) {
+      const n = parseInt(s, 10);
+      if (isFinite(n) && n >= 0 && n < 1000) return n;
+    }
+    // "Only 4 left", "4 left", "4 available", "Only 4 available", "4 left in stock", "Only 4 units", "4 in stock", "4 units left"
+    const m1 = s.match(/(?:only\s+)?(\d+)\s*(?:left|available|in\s*stock|units?\s*(?:left|available)?)/i);
+    if (m1 && m1[1]) {
+      const n = parseInt(m1[1], 10);
+      if (isFinite(n) && n >= 0 && n < 1000) return n;
+    }
+    // "Max 4 per order", "Limit 4 per customer", "Max 4 units", "Max 4"
+    const m2 = s.match(/(?:max|limit|maximum)\s*(?:of\s*)?(\d+)/i);
+    if (m2 && m2[1]) {
+      const n = parseInt(m2[1], 10);
+      if (isFinite(n) && n >= 0 && n < 1000) return n;
+    }
+  }
+  if (typeof val === 'object' && val !== null) {
+    if (typeof val.allowedQuantity === 'number' && isFinite(val.allowedQuantity) && val.allowedQuantity >= 0) {
+      return val.allowedQuantity;
+    }
+    if (typeof val.allowed_quantity === 'number' && isFinite(val.allowed_quantity) && val.allowed_quantity >= 0) {
+      return val.allowed_quantity;
+    }
+    if (typeof val.remaining_stock === 'number' && isFinite(val.remaining_stock) && val.remaining_stock >= 0) {
+      return val.remaining_stock;
+    }
+    if (typeof val.remainingStock === 'number' && isFinite(val.remainingStock) && val.remainingStock >= 0) {
+      return val.remainingStock;
+    }
+    if (typeof val.available_stock === 'number' && isFinite(val.available_stock) && val.available_stock >= 0) {
+      return val.available_stock;
+    }
+    if (typeof val.availableStock === 'number' && isFinite(val.availableStock) && val.availableStock >= 0) {
+      return val.availableStock;
+    }
+    if (typeof val.available_quantity === 'number' && isFinite(val.available_quantity) && val.available_quantity >= 0) {
+      return val.available_quantity;
+    }
+    if (typeof val.availableQuantity === 'number' && isFinite(val.availableQuantity) && val.availableQuantity >= 0) {
+      return val.availableQuantity;
+    }
+    if (typeof val.stock_quantity === 'number' && isFinite(val.stock_quantity) && val.stock_quantity >= 0) {
+      return val.stock_quantity;
+    }
+    if (typeof val.stockQuantity === 'number' && isFinite(val.stockQuantity) && val.stockQuantity >= 0) {
+      return val.stockQuantity;
+    }
+    if (typeof val.stock === 'number' && isFinite(val.stock) && val.stock >= 0) {
+      return val.stock;
+    }
+    if (typeof val.totalStock === 'number' && isFinite(val.totalStock) && val.totalStock >= 0) {
+      return val.totalStock;
+    }
+    if (typeof val.total_stock === 'number' && isFinite(val.total_stock) && val.total_stock >= 0) {
+      return val.total_stock;
+    }
+
+    return (
+      extractStockCount(val.allowedQuantity) ??
+      extractStockCount(val.allowed_quantity) ??
+      extractStockCount(val.quantityLimitBreachedMessage) ??
+      extractStockCount(val.quantity_limit_breached_message) ??
+      extractStockCount(val.text) ??
+      extractStockCount(val.title) ??
+      extractStockCount(val.message) ??
+      extractStockCount(val.displayMessage) ??
+      extractStockCount(val.display_message) ??
+      extractStockCount(val.subText) ??
+      extractStockCount(val.subtext) ??
+      extractStockCount(val.sub_text) ??
+      extractStockCount(val.label) ??
+      extractStockCount(val.name)
+    );
+  }
+  return undefined;
+}
+
+export function extractSwiggyStockAndLimit(v: any, product?: any): { availableStock?: number; maxQuantity?: number } {
+  if (!v && !product) return {};
+
+  let availableStock: number | undefined = undefined;
+  let maxQuantity: number | undefined = undefined;
+
+  // 1. Direct Swiggy cartAllowedQuantity structure
+  const caq = v?.cartAllowedQuantity || v?.cart_allowed_quantity || product?.cartAllowedQuantity || product?.cart_allowed_quantity;
+  if (caq && typeof caq === 'object') {
+    const qty = typeof caq.allowedQuantity === 'number' ? caq.allowedQuantity
+      : typeof caq.allowed_quantity === 'number' ? caq.allowed_quantity
+      : extractStockCount(caq.allowedQuantity ?? caq.allowed_quantity);
+    if (typeof qty === 'number' && isFinite(qty) && qty >= 0) {
+      const msg = String(caq.quantityLimitBreachedMessage || caq.quantity_limit_breached_message || caq.message || '').toLowerCase();
+      if (msg.includes('stock') || msg.includes('moment') || msg.includes('available')) {
+        availableStock = qty;
+      } else {
+        maxQuantity = qty;
+      }
+      if (availableStock === undefined) {
+        availableStock = qty;
+      }
+    }
+  }
+
+  const stockCandidates = [
+    // Swiggy cartAllowedQuantity
+    v?.cartAllowedQuantity?.allowedQuantity,
+    v?.cart_allowed_quantity?.allowed_quantity,
+    v?.cartAllowedQuantity,
+    v?.cart_allowed_quantity,
+    product?.cartAllowedQuantity?.allowedQuantity,
+    product?.cart_allowed_quantity?.allowed_quantity,
+    // Variation inventory object
+    v?.inventory?.remainingStock,
+    v?.inventory?.remaining_stock,
+    v?.inventory?.totalStock,
+    v?.inventory?.total_stock,
+    v?.inventory?.availableStock,
+    v?.inventory?.available_stock,
+    v?.inventory?.availableQuantity,
+    v?.inventory?.available_quantity,
+    v?.inventory?.stock,
+    v?.inventory?.available_units,
+    v?.inventory?.availableUnits,
+    v?.inventory?.stock_quantity,
+    v?.inventory?.stockQuantity,
+    v?.inventory?.remaining_quantity,
+    v?.inventory?.remainingQuantity,
+    typeof v?.inventory === 'number' ? v.inventory : undefined,
+    // Variation direct fields
+    v?.remainingStock,
+    v?.remaining_stock,
+    v?.availableStock,
+    v?.available_stock,
+    v?.availableQuantity,
+    v?.available_quantity,
+    v?.availableUnits,
+    v?.available_units,
+    v?.totalStock,
+    v?.total_stock,
+    v?.skuQuantity,
+    v?.sku_quantity,
+    v?.stockQuantity,
+    v?.stock_quantity,
+    v?.stock,
+    // Variation actions / CTA
+    v?.cta?.available_quantity,
+    v?.cta?.availableQuantity,
+    v?.action?.available_quantity,
+    v?.action?.availableQuantity,
+    v?.atc_action?.available_quantity,
+    // Variation display messages / badges
+    v?.inventory?.displayMessage,
+    v?.inventory?.display_message,
+    v?.inventory?.message,
+    v?.inventory?.text,
+    v?.inventory?.subText,
+    v?.inventory?.subtext,
+    v?.inventory?.sub_text,
+    v?.inventoryBadge,
+    v?.stockBadge,
+    v?.badge,
+    v?.tag,
+    v?.subText,
+    v?.subtext,
+    v?.sub_text,
+    v?.banner,
+    v?.subtitle,
+    v?.sub_title,
+    // Product parent fields
+    product?.inventory?.remainingStock,
+    product?.inventory?.remaining_stock,
+    product?.inventory?.totalStock,
+    product?.inventory?.total_stock,
+    product?.inventory?.availableStock,
+    product?.inventory?.available_stock,
+    product?.inventory?.availableQuantity,
+    product?.inventory?.available_quantity,
+    product?.inventory?.stock,
+    typeof product?.inventory === 'number' ? product.inventory : undefined,
+    product?.remainingStock,
+    product?.remaining_stock,
+    product?.availableStock,
+    product?.available_stock,
+    product?.availableQuantity,
+    product?.available_quantity,
+    product?.totalStock,
+    product?.total_stock,
+    product?.stock,
+    product?.inventory?.displayMessage,
+    product?.inventory?.display_message,
+    product?.inventory?.message,
+    product?.inventory?.text,
+    product?.inventoryBadge,
+    product?.stockBadge,
+    product?.badge,
+    product?.subText,
+    product?.subtext,
+    product?.subtitle,
+    product?.sub_title,
+  ];
+
+  for (const c of stockCandidates) {
+    const val = extractStockCount(c);
+    if (typeof val === 'number') {
+      availableStock = val;
+      break;
+    }
+  }
+
+  const maxQCandidates = [
+    v?.cartAllowedQuantity?.allowedQuantity,
+    v?.cart_allowed_quantity?.allowed_quantity,
+    v?.cartAllowedQuantity,
+    v?.cart_allowed_quantity,
+    product?.cartAllowedQuantity?.allowedQuantity,
+    product?.cart_allowed_quantity?.allowed_quantity,
+    v?.maxAllowedQuantity,
+    v?.max_allowed_quantity,
+    v?.maxQuantity,
+    v?.max_quantity,
+    v?.max_order_quantity,
+    v?.maxOrderQuantity,
+    v?.order_limit,
+    v?.orderLimit,
+    v?.purchase_limit,
+    v?.purchaseLimit,
+    v?.cart_allowed_quantity,
+    v?.cartAllowedQuantity,
+    v?.inventory?.maxAllowedQuantity,
+    v?.inventory?.max_allowed_quantity,
+    v?.inventory?.maxQuantity,
+    v?.inventory?.max_quantity,
+    v?.inventory?.max_order_quantity,
+    v?.inventory?.maxOrderQuantity,
+    v?.inventory?.order_limit,
+    v?.inventory?.orderLimit,
+    v?.inventory?.purchase_limit,
+    v?.inventory?.purchaseLimit,
+    v?.cta?.max_quantity,
+    v?.cta?.maxQuantity,
+    v?.cta?.max,
+    v?.action?.max_quantity,
+    v?.action?.maxQuantity,
+    v?.action?.max,
+    v?.atc_action?.max_quantity,
+    v?.atc_action?.maxQuantity,
+    v?.stepper?.max,
+    v?.stepper?.max_quantity,
+    v?.stepper?.maxQuantity,
+    v?.stepper?.max_allowed_quantity,
+    product?.maxAllowedQuantity,
+    product?.max_allowed_quantity,
+    product?.maxQuantity,
+    product?.max_quantity,
+    product?.order_limit,
+    product?.orderLimit,
+    product?.purchase_limit,
+    product?.purchaseLimit,
+    product?.inventory?.maxAllowedQuantity,
+    product?.inventory?.max_allowed_quantity,
+    product?.inventory?.maxQuantity,
+    product?.inventory?.max_quantity,
+  ];
+
+  for (const c of maxQCandidates) {
+    const val = extractStockCount(c);
+    if (typeof val === 'number' && val > 0) {
+      maxQuantity = val;
+      break;
+    }
+  }
+
+  // Also check badge/tag arrays
+  if (availableStock === undefined) {
+    const badges = [
+      ...(Array.isArray(v?.badges) ? v.badges : []),
+      ...(Array.isArray(product?.badges) ? product.badges : []),
+      ...(Array.isArray(v?.tags) ? v.tags : []),
+      ...(Array.isArray(product?.tags) ? product.tags : []),
+    ];
+    for (const b of badges) {
+      const val = extractStockCount(b);
+      if (typeof val === 'number') {
+        availableStock = val;
+        break;
+      }
+    }
+  }
+
+  return { availableStock, maxQuantity };
+}
+
 function extractVariation(product: any, v: any, productId: string): any {
   if (!v || typeof v !== 'object') return null;
   if (!isSwiggyInStock(product, v)) return null;
@@ -1677,12 +3064,32 @@ function extractVariation(product: any, v: any, productId: string): any {
   // spaces: itemId MUST be the variation's skuId (not v.id — see the
   // optimizer's background.js comment on treating these interchangeably),
   // spin comes from spinId ?? spin, never another id field.
-  const itemIdVal = (typeof v.skuId === 'string' && v.skuId) ? v.skuId : '';
+  const itemIdVal = (typeof v.skuId === 'string' && v.skuId) ? v.skuId
+    : (typeof v.itemId === 'string' && v.itemId) ? v.itemId
+    : (typeof v.id === 'string' && v.id) ? v.id : '';
   const spinId = ((typeof v.spinId === 'string' && v.spinId) ? v.spinId
     : (typeof v.spin === 'string' && v.spin) ? v.spin : '');
   // Swiggy storeId: prefer v.storeId, fallback to v.podId
   const storeIdVal = (typeof v.storeId === 'string' || typeof v.storeId === 'number') ? String(v.storeId)
     : (typeof v.podId === 'string' || typeof v.podId === 'number') ? String(v.podId) : '';
+
+  const prodIdVal = (typeof v.productId === 'string' && v.productId) ? v.productId
+    : (typeof v.product_id === 'string' && v.product_id) ? v.product_id
+    : (typeof productId === 'string' && productId) ? productId
+    : (typeof product?.productId === 'string' && product.productId) ? product.productId
+    : (typeof product?.product_id === 'string' && product.product_id) ? product.product_id
+    : (typeof product?.id === 'string' && product.id) ? product.id
+    : itemIdVal;
+
+  const { availableStock, maxQuantity } = extractSwiggyStockAndLimit(v, product);
+
+  const interestingKeys = Object.keys(v).filter(k => /inventory|stock|limit|max|stepper|cta|badge|quantity|available|count/i.test(k));
+  if (interestingKeys.length > 0 || availableStock !== undefined || maxQuantity !== undefined) {
+    const detail: Record<string, any> = {};
+    for (const k of interestingKeys) detail[k] = v[k];
+    console.log(`[Swiggy Search Debug] Variation "${name}" (${unit}) itemId=${itemIdVal} -> availableStock=${availableStock}, maxQuantity=${maxQuantity}`, JSON.stringify(detail));
+  }
+
   return {
     name: name,
     price: price,
@@ -1690,11 +3097,13 @@ function extractVariation(product: any, v: any, productId: string): any {
     unit: unit,
     image: variationImage(product, v),
     type: 'product',
-    productId: productId,
+    productId: prodIdVal,
     itemId: itemIdVal,
     spinId: spinId,
     storeId: storeIdVal,
     inStock: true,
+    availableStock,
+    maxQuantity,
     _rawVariation: v  // kept temporarily for debugging
   };
 }
@@ -1711,7 +3120,9 @@ export function extractSwiggySearchProducts(json: any, query?: string): any[] {
       for (let i = 0; i < node.length && out.length < 120; i++) walk(node[i]);
       return;
     }
-    if (Array.isArray(node.variations) && node.variations.length && typeof node.displayName === 'string') {
+    const hasVariations = Array.isArray(node.variations) && node.variations.length > 0;
+    const hasName = typeof node.displayName === 'string' || typeof node.name === 'string' || typeof node.variations?.[0]?.displayName === 'string';
+    if (hasVariations && hasName) {
       const productId = (typeof node.productId === 'string') ? node.productId : '';
       for (let v = 0; v < node.variations.length && out.length < 120; v++) {
         const p = extractVariation(node, node.variations[v], productId);
@@ -1787,15 +3198,22 @@ function formatBlinkitImageUrl(url: string | null): string {
   if (!url || typeof url !== 'string') return '';
   url = url.trim();
   if (!url) return '';
-  if (url.startsWith('http://') || url.startsWith('https://')) return url;
-  if (url.startsWith('//')) return 'https:' + url;
-  if (url.startsWith('/')) return 'https://cdn.grofers.com' + url;
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(url)) {
     return 'https://cdn.grofers.com/da/cms-assets/cms/product/' + url + '.png';
   }
-  if (url.indexOf('cdn-cgi') !== -1 || url.indexOf('grofers') !== -1 || url.indexOf('cms-assets') !== -1) {
-    return 'https://cdn.grofers.com/' + url.replace(/^https?:\/\/cdn\.grofers\.com\//, '');
+  if (url.startsWith('//')) url = 'https:' + url;
+  else if (url.startsWith('/')) url = 'https://cdn.grofers.com' + url;
+
+  // If already scaled via cdn-cgi, keep it
+  if (url.includes('cdn-cgi/image/')) return url;
+
+  // Scale down full-size grofers images to thumbnails (w=270, q=70) for 90%+ RAM & bandwidth reduction
+  if (url.includes('cdn.grofers.com/app/images/')) {
+    return url.replace('https://cdn.grofers.com/', 'https://cdn.grofers.com/cdn-cgi/image/f=auto,fit=scale-down,q=70,metadata=none,w=270/');
   }
+
+  if (url.startsWith('http://') || url.startsWith('https://')) return url;
+
   return 'https://cdn.grofers.com/cdn-cgi/image/f=auto,fit=scale-down,q=70,metadata=none,w=270/' + url;
 }
 
@@ -1890,10 +3308,10 @@ export function parseBlinkitProducts(json: any): any[] {
   if (!json || typeof json !== 'object') return out;
   const visited = new Set<any>();
   function walk(node: any) {
-    if (!node || typeof node !== 'object' || visited.has(node)) return;
+    if (out.length >= 80 || !node || typeof node !== 'object' || visited.has(node)) return;
     visited.add(node);
     if (Array.isArray(node)) {
-      for (let i = 0; i < node.length; i++) walk(node[i]);
+      for (let i = 0; i < node.length && out.length < 80; i++) walk(node[i]);
       return;
     }
 
@@ -1936,14 +3354,13 @@ export function parseBlinkitProducts(json: any): any[] {
     if (!unit && node.pack_size) unit = typeof node.pack_size === 'object' ? node.pack_size.text : node.pack_size;
     if (!unit && node.weight) unit = typeof node.weight === 'object' ? node.weight.text : node.weight;
 
-    const rawImg = findBlinkitImageUrl(node, 0);
-    image = formatBlinkitImageUrl(rawImg);
-
     if (name && typeof name === 'string' && price != null) {
       const numPrice = typeof price === 'number' ? price : Number((String(price).match(/\d[\d,]*/) || [])[0] || 0);
       const numMrp = typeof mrp === 'number' ? mrp : Number((String(mrp || price).match(/\d[\d,]*/) || [])[0] || 0);
       if (numPrice > 0 && name.length >= 3 && name.length <= 150) {
         if (isBlinkitInStock(node)) {
+          const rawImg = findBlinkitImageUrl(node, 0);
+          image = formatBlinkitImageUrl(rawImg);
           const cleanName = String(name).trim();
           let cleanUnit = (unit && typeof unit === 'string') ? unit.trim() : '';
           let cartItem: any = null;
@@ -1952,6 +3369,44 @@ export function parseBlinkitProducts(json: any): any[] {
           if (!cleanUnit && cartItem && (cartItem.unit || cartItem.variant)) {
             cleanUnit = String(cartItem.unit || cartItem.variant).trim();
           }
+
+          let availableStock: number | undefined = undefined;
+          for (const val of [
+            cartItem?.inventory,
+            cartItem?.available_units,
+            cartItem?.available_quantity,
+            cartItem?.stock,
+            typeof node.inventory === 'number' ? node.inventory : undefined,
+            node.inventory?.quantity,
+            node.inventory?.stock,
+            node.inventory?.total,
+            node.available_units,
+            node.available_quantity,
+            node.inventory_level,
+            node.stock_level,
+            node.stock,
+          ]) {
+            if (typeof val === 'number' && isFinite(val) && val >= 0) {
+              availableStock = val;
+              break;
+            }
+          }
+
+          let maxQuantity: number | undefined = undefined;
+          for (const val of [
+            cartItem?.max_quantity,
+            cartItem?.purchase_limit,
+            node.max_quantity,
+            node.purchase_limit,
+            node.order_limit,
+            node.max_allowed_quantity,
+          ]) {
+            if (typeof val === 'number' && isFinite(val) && val > 0) {
+              maxQuantity = val;
+              break;
+            }
+          }
+
           out.push({
             name: cleanName,
             price: numPrice,
@@ -1962,14 +3417,16 @@ export function parseBlinkitProducts(json: any): any[] {
             productId: String((cartItem && (cartItem.product_id || cartItem.type_id)) || node.id || node.product_id || ''),
             itemId: String((cartItem && cartItem.sku_id) || ''),
             spinId: String((cartItem && (cartItem.spin_id || cartItem.spin)) || ''),
-            storeId: String((cartItem && (cartItem.pod_id || cartItem.store_id)) || '')
+            storeId: String((cartItem && (cartItem.pod_id || cartItem.store_id)) || ''),
+            availableStock,
+            maxQuantity,
           });
         }
       }
     }
 
     const keys = Object.keys(node);
-    for (let k = 0; k < keys.length; k++) {
+    for (let k = 0; k < keys.length && out.length < 80; k++) {
       if (keys[k] !== 'parent' && keys[k] !== 'owner' && typeof node[keys[k]] === 'object') {
         walk(node[keys[k]]);
       }
@@ -2026,12 +3483,20 @@ interface BillFees {
 }
 
 function parseBlinkitBill(json: any): BillFees {
-  const cd = json?.cart_data || json?.data || json;
-  let bill = cd?.bill_details || cd?.billDetails || cd?.bill || null;
+  const cd = json?.cart_data || json?.data?.cart_data || json?.data || json;
+  let bill = cd?.bill_details || cd?.billDetails || cd?.bill || json?.bill_details || json?.billDetails || json?.bill || null;
   if (!bill && cd?.shipments?.[0]) {
     bill = cd.shipments[0].bill_details || cd.shipments[0].billDetails || null;
   }
-  if (!bill) return { subtotal: null, deliveryFee: null, handlingFee: null, smallCartFee: null, surgeFee: 0, tax: null, total: null };
+  if (!bill && Array.isArray(cd?.shipments)) {
+    for (const s of cd.shipments) {
+      if (s?.bill_details || s?.billDetails) {
+        bill = s.bill_details || s.billDetails;
+        break;
+      }
+    }
+  }
+  if (!bill && !cd) return { subtotal: null, deliveryFee: null, handlingFee: null, smallCartFee: null, surgeFee: 0, tax: null, total: null };
 
   const num = (v: any) => {
     if (typeof v === 'number') return v;
@@ -2042,10 +3507,11 @@ function parseBlinkitBill(json: any): BillFees {
     return null;
   };
 
-  const getVal = (keys: string[]) => {
+  const getVal = (keys: string[], targetObj: any = bill) => {
+    if (!targetObj || typeof targetObj !== 'object') return null;
     for (const key of keys) {
-      if (bill[key] !== undefined && bill[key] !== null) {
-        const n = num(bill[key]);
+      if (targetObj[key] !== undefined && targetObj[key] !== null) {
+        const n = num(targetObj[key]);
         if (n !== null) return n;
       }
     }
@@ -2084,18 +3550,84 @@ function parseBlinkitBill(json: any): BillFees {
   // Rain/slot/late-night surge rides in slot_charge AND/OR
   // surge_charge_v2.surge_amount (both part of payable_amount). They are
   // independent lines — one being present-but-₹0 must not mask the other.
-  const slotSurge = bill.slot_charge != null ? num(bill.slot_charge) : null;
-  const v2Surge = bill.surge_charge_v2?.surge_amount != null ? num(bill.surge_charge_v2.surge_amount) : null;
+  const slotSurge = bill && bill.slot_charge != null ? num(bill.slot_charge) : null;
+  const v2Surge = bill?.surge_charge_v2?.surge_amount != null ? num(bill.surge_charge_v2.surge_amount) : null;
+
+  const subtotalKeys = [
+    'total_cost', 'totalCost',
+    'item_total', 'itemTotal',
+    'items_total', 'itemsTotal',
+    'item_price_total', 'itemPriceTotal',
+    'total_item_cost', 'totalItemCost',
+    'subtotal', 'sub_total', 'subTotal',
+    'cart_value', 'cartValue',
+    'cart_total', 'cartTotal',
+    'product_total', 'productTotal',
+    'items_cost', 'itemsCost'
+  ];
+
+  let parsedSubtotal = getVal(subtotalKeys);
+
+  // If bill is an array of line items (e.g. [{ display_text: "Item Total", value: 120 }])
+  if (parsedSubtotal === null && Array.isArray(bill)) {
+    for (const item of bill) {
+      const label = String(item?.display_text || item?.name || item?.title || item?.type || item?.key || '').toLowerCase();
+      const val = num(item?.amount ?? item?.value ?? item?.cost ?? item?.price);
+      if (val !== null && /item|subtotal|cart.?value|products/i.test(label) && !/tax|fee|charge|delivery/i.test(label)) {
+        parsedSubtotal = val;
+        break;
+      }
+    }
+  }
+
+  // If subtotal is at the cart_data level directly
+  if (parsedSubtotal === null && cd) {
+    parsedSubtotal = getVal(subtotalKeys, cd);
+  }
+
+  // If subtotal is in cart_data.items or cart_items (live items from API)
+  if (parsedSubtotal === null && cd) {
+    const rawItems = Array.isArray(cd.items) ? cd.items : Array.isArray(cd.cart_items) ? cd.cart_items : null;
+    if (rawItems && rawItems.length > 0) {
+      let sum = 0;
+      let hasValid = false;
+      for (const it of rawItems) {
+        const itemP = num(it.item_total ?? it.total_price ?? it.final_price)
+          ?? (num(it.price) !== null && num(it.quantity) !== null ? num(it.price)! * num(it.quantity)! : null);
+        if (itemP !== null && itemP > 0) {
+          sum += itemP;
+          hasValid = true;
+        }
+      }
+      if (hasValid && sum > 0) {
+        parsedSubtotal = sum;
+      }
+    }
+  }
+
+  const totalVal = getVal(['payable_amount', 'payableAmount', 'bill_total', 'billTotal', 'to_pay', 'toPay', 'grand_total', 'grandTotal']);
+  const deliveryVal = getVal(['delivery_charge', 'deliveryCharge', 'delivery_charges', 'deliveryCharges', 'delivery_fee']);
+  const handlingVal = handlingCharge !== null ? handlingCharge : getVal(['additional_charge', 'additionalCharge', 'platform_fee', 'convenience_fee']);
+  const smallCartVal = smallCartCharge !== null ? smallCartCharge : 0;
+  const surgeVal = Math.max(slotSurge ?? 0, v2Surge ?? 0, acSurge ?? 0);
+  const taxVal = getVal(['total_tax_on_charges', 'totalTaxOnCharges', 'tax', 'gst']);
+
+  if (parsedSubtotal === null && totalVal !== null) {
+    const otherFees = (deliveryVal ?? 0) + (handlingVal ?? 0) + (smallCartVal ?? 0) + (surgeVal ?? 0) + (taxVal ?? 0);
+    if (totalVal >= otherFees) {
+      parsedSubtotal = totalVal - otherFees;
+    }
+  }
 
   return {
-    subtotal: getVal(['total_cost', 'totalCost', 'item_total', 'items_total', 'subtotal', 'sub_total']),
-    deliveryFee: getVal(['delivery_charge', 'deliveryCharge', 'delivery_charges', 'deliveryCharges', 'delivery_fee']),
-    handlingFee: handlingCharge !== null ? handlingCharge : getVal(['additional_charge', 'additionalCharge', 'platform_fee', 'convenience_fee']),
-    smallCartFee: smallCartCharge !== null ? smallCartCharge : 0,
-    surgeFee: Math.max(slotSurge ?? 0, v2Surge ?? 0, acSurge ?? 0),
+    subtotal: parsedSubtotal,
+    deliveryFee: deliveryVal,
+    handlingFee: handlingVal,
+    smallCartFee: smallCartVal,
+    surgeFee: surgeVal,
     surgeLabel: acSurgeLabel || undefined,
-    tax: getVal(['total_tax_on_charges', 'totalTaxOnCharges', 'tax', 'gst']),
-    total: getVal(['payable_amount', 'payableAmount', 'bill_total', 'billTotal', 'to_pay', 'toPay', 'grand_total', 'grandTotal'])
+    tax: taxVal,
+    total: totalVal
   };
 }
 
@@ -2104,27 +3636,64 @@ export function instamartNormKey(s: any): string {
 }
 
 // Pick the search-v2 variation that best matches a basket item (name first,
-// pack size to break ties) — mirrors matchInstamartCandidate in the desktop
-// grocery-order-optimizer extension. Requires some name overlap so a wrong
-// product never gets priced in place of the real one.
-export function pickInstamartCandidate(candidates: any[], name: string, unit: string): any | null {
+// Pick the search-v2 variation that best matches a basket item (name first,
+// pack size to break ties) — utilizes pickBestMatch from matcher.ts for
+// token Jaccard similarity, pack-size stripping, and price sanity, with
+// word token overlap & normalized key heuristics as fallback.
+export function pickInstamartCandidate(candidates: any[], name: string, unit: string, price?: number): any | null {
+  if (!Array.isArray(candidates) || candidates.length === 0) return null;
+
+  // 1. Try pickBestMatch from matcher.ts (comprehensive token Jaccard + pack size + price sanity)
+  const bestMatch = pickBestMatch({ name, title: name, unit, quantity: unit, price }, candidates);
+  if (bestMatch && bestMatch.candidate) {
+    return bestMatch.candidate;
+  }
+
+  // 2. Token overlap & substring fallback
   const nn = instamartNormKey(name);
   const nu = instamartNormKey(unit);
+  const nameTokens = new Set(String(name || '').toLowerCase().split(/[^a-z0-9]+/).filter(t => t.length > 1));
+
   let best: any = null;
   let bestScore = 0;
   for (const c of candidates) {
-    const cn = instamartNormKey(c.name);
-    const cu = instamartNormKey(c.unit);
+    const cTitle = c.name || c.title || '';
+    const cUnit = c.unit || c.quantity || '';
+    const cn = instamartNormKey(cTitle);
+    const cu = instamartNormKey(cUnit);
     let score = 0;
-    if (cn === nn) score += 20;
-    else if (cn.indexOf(nn) === 0) score += 10;
-    else if (nn.indexOf(cn) === 0) score += 8;
-    else if (cn.indexOf(nn) !== -1 || nn.indexOf(cn) !== -1) score += 5;
+    if (cn === nn) score += 30;
+    else if (cn.indexOf(nn) === 0) score += 15;
+    else if (nn.indexOf(cn) === 0) score += 12;
+    else if (cn.indexOf(nn) !== -1 || nn.indexOf(cn) !== -1) score += 10;
+    else {
+      // Check word token overlap
+      const cTokens = new Set(String(cTitle).toLowerCase().split(/[^a-z0-9]+/).filter(t => t.length > 1));
+      let shared = 0;
+      nameTokens.forEach(t => { if (cTokens.has(t)) shared++; });
+      const overlap = nameTokens.size > 0 ? shared / nameTokens.size : 0;
+      if (overlap >= 0.4) {
+        score += Math.round(overlap * 20);
+      }
+    }
     if (nu && cu === nu) score += 12;
     else if (nu && (cu.indexOf(nu) === 0 || nu.indexOf(cu) === 0)) score += 6;
     if (score > bestScore) { bestScore = score; best = c; }
   }
-  return bestScore >= 5 ? best : null;
+  if (bestScore >= 5) return best;
+
+  // 3. Fallback: if candidates were returned from a targeted search, pick the first candidate that shares tokens
+  if (candidates.length > 0) {
+    for (const c of candidates) {
+      const cTitle = c.name || c.title || '';
+      const cTokens = new Set(String(cTitle).toLowerCase().split(/[^a-z0-9]+/).filter(t => t.length > 1));
+      let hasShared = false;
+      nameTokens.forEach(t => { if (cTokens.has(t)) hasShared = true; });
+      if (hasShared) return c;
+    }
+  }
+
+  return null;
 }
 
 // Locates the bill node in a checkout/v2/cart response. The documented spot
@@ -2235,17 +3804,42 @@ function parseSwiggyBill(bill: any): BillFees {
     surge = num(bill.surgeFee) ?? num(bill.rainFee) ?? num(bill.surgeCharge) ?? 0;
   }
 
+  const subtotalKeys = ['itemTotal', 'itemsTotal', 'subTotal', 'subtotal', 'item_total', 'cartSubTotal', 'cartSubtotal', 'totalCost', 'total_cost'];
+  let swiggySubtotal: number | null = null;
+  for (const k of subtotalKeys) {
+    if (bill[k] != null) {
+      const n = num(bill[k]);
+      if (n !== null) { swiggySubtotal = n; break; }
+    }
+  }
+  if (swiggySubtotal === null && Array.isArray(bill.charges)) {
+    const itemCharge = bill.charges.find((c: any) => /item|subtotal/i.test(`${c?.type || ''} ${c?.name || ''}`));
+    if (itemCharge) swiggySubtotal = num(itemCharge.value);
+  }
+  const toPayVal = num(bill.toPay);
+  const deliveryVal = chargeNet('deliveryCharge', 'deliveryFee')
+    ?? num(bill.deliveryFeeAfterDiscount != null ? bill.deliveryFeeAfterDiscount : bill.deliveryCharges);
+  const handlingVal = (packaging !== null || convenience !== null)
+    ? (packaging ?? 0) + (convenience ?? 0)
+    : null;
+  const smallCartVal = chargeGross('smallCartCharges') ?? num(bill.smallCartCharges);
+  const taxVal = num(bill.gst);
+
+  if (swiggySubtotal === null && toPayVal !== null) {
+    const other = (deliveryVal ?? 0) + (handlingVal ?? 0) + (smallCartVal ?? 0) + (surge ?? 0) + (taxVal ?? 0);
+    if (toPayVal >= other) {
+      swiggySubtotal = toPayVal - other;
+    }
+  }
+
   return {
-    subtotal: num(bill.itemTotal),
-    deliveryFee: chargeNet('deliveryCharge', 'deliveryFee')
-      ?? num(bill.deliveryFeeAfterDiscount != null ? bill.deliveryFeeAfterDiscount : bill.deliveryCharges),
-    handlingFee: (packaging !== null || convenience !== null)
-      ? (packaging ?? 0) + (convenience ?? 0)
-      : null,
-    smallCartFee: chargeGross('smallCartCharges') ?? num(bill.smallCartCharges),
+    subtotal: swiggySubtotal,
+    deliveryFee: deliveryVal,
+    handlingFee: handlingVal,
+    smallCartFee: smallCartVal,
     surgeFee: surge,
     surgeLabel,
-    tax: num(bill.gst),
-    total: num(bill.toPay)
+    tax: taxVal,
+    total: toPayVal
   };
 }

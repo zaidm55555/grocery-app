@@ -1,11 +1,12 @@
 import React, { useState, useCallback, useRef } from 'react';
 import { StyleSheet, View, Text, ScrollView, TouchableOpacity, Image, Alert, ActivityIndicator, Linking } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { Plus, Minus, Trophy, ShieldCheck, Layers, RefreshCw, Trash2, Send } from 'lucide-react-native';
+import { Plus, Minus, Trophy, ShieldCheck, Layers, RefreshCw, Trash2, Send, AlertTriangle, MapPinOff } from 'lucide-react-native';
 import { storage, Platform } from '../../services/storage';
-import { api, UnifiedProduct, CartCalculation, resolvePlatformProduct } from '../../services/api';
+import { api, UnifiedProduct, CartCalculation, resolvePlatformProduct, getProductOverallMax } from '../../services/api';
 import { createBlinkitShareLink } from '../../services/blinkitExport';
 import { exportCartToSwiggy } from '../../services/swiggyExport';
 import { colors, fonts, platformThemes, PLATFORM_ORDER } from '../../constants/theme';
@@ -25,30 +26,41 @@ function LogoTile({ platform, size = 26 }: { platform: Platform; size?: number }
   );
 }
 
+interface VariantRowItem {
+  platform: Platform;
+  product: UnifiedProduct;
+  isOos: boolean;
+  platformLimit?: number;
+  billedQty?: number;
+  isCapped: boolean;
+}
+
 export default function CartScreen() {
   const router = useRouter();
   const [cartItems, setCartItems] = useState<{ product: UnifiedProduct; quantity: number }[]>([]);
   const [calculations, setCalculations] = useState<CartCalculation[]>([]);
   const [winnerPlatform, setWinnerPlatform] = useState<Platform | null>(null);
   const [mostCompleteKeys, setMostCompleteKeys] = useState<Platform[]>([]);
-  const [isRefreshing, setIsRefreshing] = useState(false);
   // Platforms whose live bill is still being fetched — rendered as skeleton
   // cards so an already-arrived platform shows up immediately.
   const [pendingPlatforms, setPendingPlatforms] = useState<Platform[]>([]);
   const [exporting, setExporting] = useState<Platform | 'blinkit' | 'swiggy' | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [locationMismatch, setLocationMismatch] = useState(false);
+  const [cartLocationName, setCartLocationName] = useState<string | null>(null);
   const calcRunIdRef = useRef(0);
 
   // Ported from the Grocery Order Optimizer's optimizer.js badge logic:
-  // verdicts use REAL bills only, prefer full basket coverage, and stay
+  // verdicts use REAL bills only, prefer full basket in-stock coverage, and stay
   // silent on ties/noise.
   const computeVerdict = (calcs: CartCalculation[], totalLines: number) => {
-    const real = calcs.filter(c => c.live && c.items.length > 0);
+    const real = calcs.filter(c => c.live && (c.inStockProductIds ? c.inStockProductIds.length > 0 : c.items.length > 0));
     let winnerKey: Platform | null = null;
     let lowestTotal = Infinity;
-    // First pass: cheapest platform that stocks every item (real bills only).
+    // First pass: cheapest platform that stocks every item in the basket (real bills only).
     for (const c of real) {
-      if (c.items.length === totalLines && c.total < lowestTotal) {
+      const inStockCount = c.inStockProductIds ? c.inStockProductIds.length : c.items.length;
+      if (inStockCount === totalLines && c.total < lowestTotal) {
         lowestTotal = c.total;
         winnerKey = c.platform;
       }
@@ -59,8 +71,10 @@ export default function CartScreen() {
     if (!winnerKey) {
       let bestScore = -Infinity;
       for (const c of real) {
-        const coverage = totalLines > 0 ? c.items.length / totalLines : 0;
-        const missingItems = totalLines - c.items.length;
+        const inStockCount = c.inStockProductIds ? c.inStockProductIds.length : c.items.length;
+        if (inStockCount === 0) continue;
+        const coverage = totalLines > 0 ? inStockCount / totalLines : 0;
+        const missingItems = totalLines - inStockCount;
         const perItemPenalty = totalLines > 0 ? c.total / totalLines : 0;
         const score = (coverage * 1000) - (missingItems * perItemPenalty) - (c.total * 0.001);
         if (score > bestScore || (score === bestScore && c.total < lowestTotal)) {
@@ -71,23 +85,63 @@ export default function CartScreen() {
       }
     }
     // Most Items: only meaningful when at least one platform is actually
-    // missing items — and every platform tied at the max gets the badge.
+    // missing items — and every platform tied at the max in-stock count gets the badge.
     let maxStock = -1;
     let minStock = Infinity;
     for (const c of real) {
-      if (c.items.length > maxStock) maxStock = c.items.length;
-      if (c.items.length < minStock) minStock = c.items.length;
+      const inStockCount = c.inStockProductIds ? c.inStockProductIds.length : c.items.length;
+      if (inStockCount > maxStock) maxStock = inStockCount;
+      if (inStockCount < minStock) minStock = inStockCount;
     }
-    const mostComplete = maxStock > minStock
-      ? real.filter(c => c.items.length === maxStock).map(c => c.platform)
+    const mostComplete = (maxStock > minStock && maxStock > 0)
+      ? real.filter(c => {
+          const inStockCount = c.inStockProductIds ? c.inStockProductIds.length : c.items.length;
+          return inStockCount === maxStock;
+        }).map(c => c.platform)
       : [];
     return { winnerKey, mostCompleteKeys: mostComplete };
   };
 
   const loadCartData = async () => {
-    const cart = await storage.getCart();
+    const [cart, currentLoc, cartLoc, mismatchFlag] = await Promise.all([
+      storage.getCart(),
+      storage.getLocation(),
+      storage.getCartLocation(),
+      AsyncStorage.getItem('@cart_location_mismatch'),
+    ]);
     setLoaded(true);
     setCartItems(cart);
+
+    let isMismatch = mismatchFlag === 'true';
+
+    if (cart.length > 0 && currentLoc && cartLoc) {
+      const dist = Math.sqrt(
+        Math.pow(currentLoc.latitude - cartLoc.latitude, 2) +
+        Math.pow(currentLoc.longitude - cartLoc.longitude, 2)
+      );
+      if (dist > 0.005) {
+        isMismatch = true;
+      }
+      setCartLocationName(cartLoc.address || null);
+    } else if (cart.length > 0 && mismatchFlag === 'true') {
+      setCartLocationName('previous location');
+    } else {
+      setCartLocationName(null);
+    }
+
+    setLocationMismatch(isMismatch);
+
+    // If location has changed, do NOT fetch prices for the new location!
+    if (isMismatch) {
+      console.log('[Cart] Location mismatch detected. Pausing live pricing calculations.');
+      calcRunIdRef.current++;
+      setCalculations([]);
+      setWinnerPlatform(null);
+      setMostCompleteKeys([]);
+      setPendingPlatforms([]);
+      return;
+    }
+
     await runCalculations(cart);
   };
 
@@ -130,7 +184,11 @@ export default function CartScreen() {
       await api.calculateCart(items, (calc) => {
         if (isStale()) return;
         arrivedCalcs.push(calc);
-        setCalculations(prev => [...prev.filter(c => c.platform !== calc.platform), calc]);
+        setCalculations(prev => {
+          const map = new Map(prev.map(c => [c.platform, c]));
+          map.set(calc.platform, calc);
+          return PLATFORM_ORDER.map(p => map.get(p)).filter((c): c is CartCalculation => !!c);
+        });
         setPendingPlatforms(prev => prev.filter(p => p !== calc.platform));
 
         // Finalize the winner badge only once every priced platform is in,
@@ -153,6 +211,15 @@ export default function CartScreen() {
     const index = updatedCart.findIndex(item => item.product.id === productId);
     if (index === -1) return;
 
+    if (delta > 0) {
+      const overall = getProductOverallMax(updatedCart[index].product, calculations);
+      console.log(`[Cart Qty Debug] item: "${updatedCart[index].product.title}", qty: ${updatedCart[index].quantity}, overallMax: ${overall.maxAllowed}, blinkitLimit: ${overall.blinkitLimit}, swiggyLimit: ${overall.swiggyLimit}`);
+      if (updatedCart[index].quantity >= overall.maxAllowed) {
+        Alert.alert('Stock Limit Reached', `Maximum available stock of ${overall.maxAllowed} unit${overall.maxAllowed === 1 ? '' : 's'} reached across stores.`);
+        return;
+      }
+    }
+
     updatedCart[index].quantity += delta;
     if (updatedCart[index].quantity <= 0) {
       updatedCart.splice(index, 1);
@@ -160,7 +227,9 @@ export default function CartScreen() {
 
     setCartItems(updatedCart);
     await storage.saveCart(updatedCart);
-    await runCalculations(updatedCart);
+    if (!locationMismatch) {
+      await runCalculations(updatedCart);
+    }
   };
 
   const handleClearCart = async () => {
@@ -172,19 +241,46 @@ export default function CartScreen() {
         onPress: async () => {
           setCartItems([]);
           await storage.saveCart([]);
+          await AsyncStorage.removeItem('@cart_location');
+          await AsyncStorage.removeItem('@cart_location_mismatch');
           await runCalculations([]);
+          setLocationMismatch(false);
         }
       }
     ]);
   };
 
-  const handleRefreshPrices = async () => {
-    if (isRefreshing || cartItems.length === 0) return;
-    setIsRefreshing(true);
+  const handleClearAndSearchAgain = async () => {
+    setCartItems([]);
+    await storage.saveCart([]);
+    await AsyncStorage.removeItem('@cart_location');
+    await AsyncStorage.removeItem('@cart_location_mismatch');
+    setCalculations([]);
+    setWinnerPlatform(null);
+    setMostCompleteKeys([]);
+    setLocationMismatch(false);
+    router.push('/(tabs)');
+  };
+
+  const handleRefreshPlatform = async (platform: Platform) => {
+    if (pendingPlatforms.includes(platform) || cartItems.length === 0) return;
+    setPendingPlatforms(prev => [...prev, platform]);
     try {
-      await runCalculations(cartItems);
-    } finally {
-      setIsRefreshing(false);
+      await api.calculateCart(cartItems, (calc) => {
+        setCalculations(prev => {
+          const map = new Map(prev.map(c => [c.platform, c]));
+          map.set(calc.platform, calc);
+          const next = PLATFORM_ORDER.map(p => map.get(p)).filter((c): c is CartCalculation => !!c);
+          const verdict = computeVerdict(next, cartItems.length);
+          setWinnerPlatform(verdict.winnerKey);
+          setMostCompleteKeys(verdict.mostCompleteKeys);
+          return next;
+        });
+        setPendingPlatforms(prev => prev.filter(p => p !== calc.platform));
+      }, platform);
+    } catch (err) {
+      console.error(err);
+      setPendingPlatforms(prev => prev.filter(p => p !== platform));
     }
   };
 
@@ -210,11 +306,28 @@ export default function CartScreen() {
     setExporting(platform);
     try {
       if (platform === 'blinkit') {
-        const share = await createBlinkitShareLink(cartItems);
+        const share = await createBlinkitShareLink(cartItems, calculations);
         if (!share) {
-          Alert.alert('Could not create a share link', 'None of the basket items could be resolved to Blinkit products. Try removing unmatched items.', [
+          Alert.alert('Blinkit not linked', 'Link your Blinkit account in the Accounts tab first, then export your basket.', [
             { text: 'OK' }
           ]);
+          return;
+        }
+        if (share.items.length === 0) {
+          const parts: string[] = [];
+          if (share.outOfStock.length > 0) {
+            parts.push(`Out of Stock on Blinkit:\n${share.outOfStock.map((o) => `• ${o.name}`).join('\n')}`);
+          }
+          if (share.missing.length > 0) {
+            parts.push(`Not found on Blinkit:\n${share.missing.map((m) => `• ${m.name}`).join('\n')}`);
+          }
+          Alert.alert(
+            'Cannot export to Blinkit',
+            parts.length > 0
+              ? `No items could be exported:\n\n${parts.join('\n\n')}`
+              : 'None of the basket items could be resolved to available Blinkit products.',
+            [{ text: 'OK' }]
+          );
           return;
         }
         if (!share.url) {
@@ -227,57 +340,145 @@ export default function CartScreen() {
         try {
           await Clipboard.setStringAsync(share.url);
         } catch {}
-        if (share.missing.length > 0) {
-          Alert.alert(
-            `${share.missing.length} item${share.missing.length === 1 ? '' : 's'} skipped`,
-            `${share.missing.map((m) => m.name).join(', ')} could not be matched on Blinkit and was left out of the share link.`,
-            [{ text: 'OK' }]
-          );
+
+        const proceedToOpen = async () => {
+          try {
+            await Linking.openURL(share.url);
+          } catch (e) {
+            console.warn('[BlinkitShare] open failed', e);
+            Alert.alert('Could not open the link', 'Copy the basket link and open it in Blinkit manually.', [
+              { text: 'OK' }
+            ]);
+          }
+        };
+
+        const notices: string[] = [];
+        if (share.outOfStock.length > 0) {
+          notices.push(`Skipped (Out of Stock on Blinkit):\n${share.outOfStock.map((o) => `• ${o.name}`).join('\n')}`);
         }
-        try {
-          await Linking.openURL(share.url);
-        } catch (e) {
-          console.warn('[BlinkitShare] open failed', e);
-          Alert.alert('Could not open the link', 'Copy the basket link and open it in Blinkit manually.', [
-            { text: 'OK' }
-          ]);
+        if (share.clamped.length > 0) {
+          notices.push(`Quantity adjusted to available stock:\n${share.clamped.map((c) => `• ${c.name} (${c.requestedQty} → ${c.exportedQty})`).join('\n')}`);
+        }
+        if (share.missing.length > 0) {
+          notices.push(`Skipped (Not found on Blinkit):\n${share.missing.map((m) => `• ${m.name}`).join('\n')}`);
+        }
+
+        if (notices.length > 0) {
+          Alert.alert(
+            'Exporting to Blinkit',
+            `${notices.join('\n\n')}\n\nOpening Blinkit with ${share.items.length} in-stock item${share.items.length === 1 ? '' : 's'}...`,
+            [{ text: 'Continue', onPress: proceedToOpen }]
+          );
+        } else {
+          await proceedToOpen();
         }
         return;
       }
 
       // Swiggy
-      const swiggyResult = await exportCartToSwiggy(cartItems);
+      const activeLoc = await storage.getLocation();
+      console.log(`[Cart] User clicked export for Swiggy. Active location: (${activeLoc?.latitude}, ${activeLoc?.longitude}) - "${activeLoc?.address || 'Unknown'}"`);
+      const swiggyResult = await exportCartToSwiggy(cartItems, calculations);
       if (!swiggyResult) {
         Alert.alert('Swiggy not linked', 'Link your Swiggy account in the Accounts tab first, then export your basket.', [
           { text: 'OK' }
         ]);
         return;
       }
-      const swiggyCartB64 = swiggyResult.writePayload ? btoaUnicode(JSON.stringify(swiggyResult.writePayload)) : '';
-      router.push({
-        pathname: '/webview',
-        params: { platform: 'swiggy', mode: 'export', url: swiggyResult.cartUrl, cartId: swiggyResult.cartId || '', oldCartId: swiggyResult.oldCartId || '', cart: swiggyCartB64 }
-      });
-    } catch (err) {
+      if (swiggyResult.items.length === 0) {
+        const parts: string[] = [];
+        if (swiggyResult.outOfStock.length > 0) {
+          parts.push(`Out of Stock on Swiggy:\n${swiggyResult.outOfStock.map((o) => `• ${o.name}`).join('\n')}`);
+        }
+        if (swiggyResult.missing.length > 0) {
+          parts.push(`Not found on Swiggy:\n${swiggyResult.missing.map((m) => `• ${m.name}`).join('\n')}`);
+        }
+        Alert.alert(
+          'Cannot export to Swiggy',
+          parts.length > 0
+            ? `No items could be exported:\n\n${parts.join('\n\n')}`
+            : 'None of the basket items could be resolved to available Swiggy products.',
+          [{ text: 'OK' }]
+        );
+        return;
+      }
+
+      const proceedToWebview = () => {
+        const swiggyCartB64 = swiggyResult.writePayload ? btoaUnicode(JSON.stringify(swiggyResult.writePayload)) : '';
+        router.push({
+          pathname: '/webview',
+          params: { platform: 'swiggy', mode: 'export', url: swiggyResult.cartUrl, cartId: swiggyResult.cartId || '', oldCartId: swiggyResult.oldCartId || '', cart: swiggyCartB64 }
+        });
+      };
+
+      const notices: string[] = [];
+      if (swiggyResult.outOfStock.length > 0) {
+        notices.push(`Skipped (Out of Stock on Swiggy):\n${swiggyResult.outOfStock.map((o) => `• ${o.name}`).join('\n')}`);
+      }
+      if (swiggyResult.clamped.length > 0) {
+        notices.push(`Quantity adjusted to available stock:\n${swiggyResult.clamped.map((c) => `• ${c.name} (${c.requestedQty} → ${c.exportedQty})`).join('\n')}`);
+      }
+      if (swiggyResult.missing.length > 0) {
+        notices.push(`Skipped (Not found on Swiggy):\n${swiggyResult.missing.map((m) => `• ${m.name}`).join('\n')}`);
+      }
+
+      if (notices.length > 0) {
+        Alert.alert(
+          'Exporting to Swiggy',
+          `${notices.join('\n\n')}\n\nProceeding to Swiggy cart with ${swiggyResult.items.length} in-stock item${swiggyResult.items.length === 1 ? '' : 's'}...`,
+          [{ text: 'Continue', onPress: proceedToWebview }]
+        );
+      } else {
+        proceedToWebview();
+      }
+    } catch (err: any) {
       console.error(err);
-      Alert.alert('Export failed', `Could not place the basket in ${display} right now. Please try again.`, [{ text: 'OK' }]);
+      Alert.alert('Export failed', err?.message || `Could not place the basket in ${display} right now. Please try again.`, [{ text: 'OK' }]);
     } finally {
       setExporting(null);
     }
   };
 
-  // Per-line variant rows (one sub-row per app pricing this item)
+  // Per-line variant rows (one sub-row per app pricing this item, Blinkit always on top)
   const basketLines = cartItems.map(line => {
-    const variants = PLATFORM_ORDER
-      .map(p => resolvePlatformProduct(line, p))
-      .filter((v): v is { product: UnifiedProduct; quantity: number } => v !== null)
-      .map(v => ({ platform: v.product.platform as Platform, product: v.product }));
-    // Reference rule: trophy only when the cheapest price is strictly unique.
-    const prices = variants.map(v => Number(v.product.price) || Infinity);
-    const cheapestPrice = Math.min(...prices);
-    const uniqueCheapest = variants.length > 1 && prices.filter(pr => pr === cheapestPrice).length === 1;
-    const cheapestVariantId = uniqueCheapest ? variants[prices.indexOf(cheapestPrice)].product.id : null;
-    return { id: line.product.id, line, variants, cheapestVariantId };
+    const overall = getProductOverallMax(line.product, calculations);
+    const variants: VariantRowItem[] = PLATFORM_ORDER
+      .map(p => {
+        const resolved = resolvePlatformProduct(line, p);
+        if (!resolved) return null;
+        const calc = calculations.find(c => c.platform === p);
+        const isOos = calc ? (calc.outOfStockProductIds?.includes(line.product.id) ?? false) : (resolved.product.inStock === false);
+        const platformLimit = p === 'blinkit' ? overall.blinkitLimit : overall.swiggyLimit;
+        const billedQty = calc?.platformItemQuantities?.[line.product.id];
+        const isCapped = !isOos && platformLimit !== undefined && line.quantity > platformLimit;
+        const item: VariantRowItem = {
+          platform: p,
+          product: { ...resolved.product, platform: p },
+          isOos,
+          platformLimit,
+          billedQty,
+          isCapped
+        };
+        return item;
+      })
+      .filter((v): v is VariantRowItem => v !== null)
+      .sort((a, b) => (a.platform === 'blinkit' ? -1 : 1));
+
+    // Reference rule: trophy only on in-stock variants, strictly unique cheapest.
+    const inStockVariants = variants.filter(v => !v.isOos);
+    const inStockPrices = inStockVariants.map(v => Number(v.product.price) || Infinity);
+    const cheapestPrice = inStockPrices.length > 0 ? Math.min(...inStockPrices) : Infinity;
+    const uniqueCheapest = inStockVariants.length > 1 && inStockPrices.filter(pr => pr === cheapestPrice).length === 1;
+    const cheapestVariantId = uniqueCheapest ? inStockVariants[inStockPrices.indexOf(cheapestPrice)].product.id : null;
+
+    // Check single-variant line OOS
+    const singleCalc = calculations.find(c => c.platform === line.product.platform);
+    const isSingleOos = singleCalc ? (singleCalc.outOfStockProductIds?.includes(line.product.id) ?? false) : (line.product.inStock === false);
+    const singleLimit = line.product.platform === 'blinkit' ? overall.blinkitLimit : overall.swiggyLimit;
+    const isSingleCapped = !isSingleOos && singleLimit !== undefined && line.quantity > singleLimit;
+    const isAtOverallMax = line.quantity >= overall.maxAllowed;
+
+    return { id: line.product.id, line, variants, cheapestVariantId, isSingleOos, overall, isSingleCapped, singleLimit, isAtOverallMax };
   });
 
   return (
@@ -292,40 +493,16 @@ export default function CartScreen() {
             <Text style={styles.title}>Optimized Basket Comparison</Text>
             <Text style={styles.subtitle}>{cartItems.length} item{cartItems.length === 1 ? '' : 's'} · live checkout bills</Text>
           </View>
-        </View>
-        {cartItems.length > 0 && (
-          <View style={styles.headerActions}>
+          {cartItems.length > 0 && (
             <TouchableOpacity
-              onPress={() => handleExport('blinkit')}
-              disabled={exporting !== null}
-              style={[styles.exportBtn, exporting !== null && { opacity: 0.6 }]}
+              onPress={handleClearCart}
+              style={styles.clearBtn}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
-              {exporting === 'blinkit'
-                ? <ActivityIndicator size={12} color="#F8CB46" />
-                : <Send size={12} color="#F8CB46" />}
-              <Text style={styles.exportBtnText}>{exporting === 'blinkit' ? 'Exporting…' : 'Export Blinkit'}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={() => handleExport('swiggy')}
-              disabled={exporting !== null}
-              style={[styles.swiggyBtn, exporting !== null && { opacity: 0.6 }]}
-            >
-              {exporting === 'swiggy'
-                ? <ActivityIndicator size={12} color="#FC8019" />
-                : <Send size={12} color="#FC8019" />}
-              <Text style={styles.swiggyBtnText}>{exporting === 'swiggy' ? 'Exporting…' : 'Export Swiggy'}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={handleRefreshPrices} disabled={isRefreshing} style={styles.fetchBtn}>
-              {isRefreshing
-                ? <ActivityIndicator size={12} color="#60A5FA" />
-                : <RefreshCw size={12} color="#60A5FA" />}
-              <Text style={styles.fetchBtnText}>{isRefreshing ? 'Fetching…' : 'Fetch Real Charges'}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={handleClearCart} style={styles.clearBtn}>
               <Trash2 size={16} color={colors.rose} />
             </TouchableOpacity>
-          </View>
-        )}
+          )}
+        </View>
       </View>
 
       {loaded && cartItems.length === 0 ? (
@@ -339,7 +516,7 @@ export default function CartScreen() {
           {/* Items in Basket */}
           <Text style={styles.sectionTitle}>Items in Basket ({cartItems.length})</Text>
           <View style={styles.panelCard}>
-            {basketLines.map(({ id, line, variants, cheapestVariantId }) => (
+            {basketLines.map(({ id, line, variants, cheapestVariantId, isSingleOos, overall, isSingleCapped, singleLimit, isAtOverallMax }) => (
               <View key={id} style={styles.lineCard}>
                 {variants.length > 1 ? (
                   <>
@@ -349,24 +526,45 @@ export default function CartScreen() {
                       const t = platformThemes[v.platform];
                       const isCheapest = v.product.id === cheapestVariantId;
                       return (
-                        <View key={v.platform} style={[styles.variantRow, isCheapest && styles.variantCheapest]}>
-                          <Image source={{ uri: v.product.imageUrl }} style={styles.variantImage} />
+                        <View key={v.platform} style={[styles.variantRow, isCheapest && styles.variantCheapest, v.isOos && styles.variantOos]}>
+                          <Image source={{ uri: v.product.imageUrl }} style={[styles.variantImage, v.isOos && { opacity: 0.45 }]} />
                           <View style={{ flex: 1 }}>
                             <View style={s_row.nameRow}>
-                              <Text style={[styles.variantApp, { color: t.color }]}>{t.name}</Text>
-                              {isCheapest && (
+                              <Text style={[styles.variantApp, { color: v.isOos ? colors.textMuted : t.color }]}>{t.name}</Text>
+                              {v.isOos ? (
+                                <View style={styles.oosBadge}>
+                                  <Text style={styles.oosBadgeText}>OUT OF STOCK</Text>
+                                </View>
+                              ) : v.isCapped ? (
+                                <View style={styles.limitBadge}>
+                                  <AlertTriangle size={8} color={colors.amber} style={{ marginRight: 3 }} />
+                                  <Text style={styles.limitBadgeText}>Max {v.platformLimit} in stock</Text>
+                                </View>
+                              ) : isCheapest ? (
                                 <View style={styles.trophyBadge}>
                                   <Trophy size={8} color="#000" />
                                   <Text style={styles.trophyText}>CHEAPEST</Text>
                                 </View>
-                              )}
+                              ) : null}
                             </View>
-                            <Text style={styles.lineTitle} numberOfLines={2}>{v.product.title}</Text>
+                            <Text style={[styles.lineTitle, v.isOos && styles.lineTitleOos]} numberOfLines={2}>{v.product.title}</Text>
                             <Text style={styles.lineUnit}>{v.product.quantity}</Text>
                           </View>
                           <View style={{ alignItems: 'flex-end' }}>
-                            <Text style={[styles.variantPrice, isCheapest && { color: colors.emerald }]}>₹{v.product.price}</Text>
-                            {isCheapest && <Text style={styles.cheapestCaption}>cheapest</Text>}
+                            <Text style={[
+                              styles.variantPrice,
+                              isCheapest && { color: colors.emerald },
+                              v.isOos && styles.variantPriceOos
+                            ]}>
+                              ₹{v.product.price}
+                            </Text>
+                            {v.isOos ? (
+                              <Text style={styles.oosSubtext}>unavailable</Text>
+                            ) : v.isCapped ? (
+                              <Text style={styles.cappedSubtext}>prices {v.billedQty ?? v.platformLimit} units</Text>
+                            ) : isCheapest ? (
+                              <Text style={styles.cheapestCaption}>cheapest</Text>
+                            ) : null}
                           </View>
                         </View>
                       );
@@ -378,27 +576,67 @@ export default function CartScreen() {
                           <Minus size={13} color="#FFF" />
                         </TouchableOpacity>
                         <Text style={styles.qtyText}>{line.quantity}</Text>
-                        <TouchableOpacity style={styles.qtyBtn} onPress={() => handleUpdateQuantity(id, 1)}>
+                        <TouchableOpacity
+                          style={[styles.qtyBtn, isAtOverallMax && styles.qtyBtnDisabled]}
+                          activeOpacity={isAtOverallMax ? 1 : 0.7}
+                          onPress={() => {
+                            if (isAtOverallMax) {
+                              Alert.alert('Stock Limit Reached', `Maximum available stock of ${overall.maxAllowed} unit${overall.maxAllowed === 1 ? '' : 's'} reached across stores.`);
+                              return;
+                            }
+                            handleUpdateQuantity(id, 1);
+                          }}
+                        >
                           <Plus size={13} color="#FFF" />
                         </TouchableOpacity>
                       </View>
+                      {isAtOverallMax && overall.maxAllowed < 99 && (
+                        <Text style={styles.maxReachedText}>Max stock reached ({overall.maxAllowed})</Text>
+                      )}
                     </View>
                   </>
                 ) : (
-                  <View style={styles.lineMainRow}>
-                    <Image source={{ uri: line.product.imageUrl }} style={styles.lineImage} />
+                  <View style={[styles.lineMainRow, isSingleOos && styles.variantOos]}>
+                    <Image source={{ uri: line.product.imageUrl }} style={[styles.lineImage, isSingleOos && { opacity: 0.45 }]} />
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.lineTitle} numberOfLines={2}>{line.product.title}</Text>
-                      <Text style={styles.lineUnit}>{line.product.quantity}</Text>
+                      <Text style={[styles.lineTitle, isSingleOos && styles.lineTitleOos]} numberOfLines={2}>{line.product.title}</Text>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 }}>
+                        <Text style={styles.lineUnit}>{line.product.quantity}</Text>
+                        {isSingleOos ? (
+                          <View style={styles.oosBadge}>
+                            <Text style={styles.oosBadgeText}>OUT OF STOCK</Text>
+                          </View>
+                        ) : isSingleCapped ? (
+                          <View style={styles.limitBadge}>
+                            <AlertTriangle size={8} color={colors.amber} style={{ marginRight: 3 }} />
+                            <Text style={styles.limitBadgeText}>Max {singleLimit} in stock</Text>
+                          </View>
+                        ) : null}
+                      </View>
                     </View>
-                    <View style={styles.qtyContainer}>
-                      <TouchableOpacity style={styles.qtyBtn} onPress={() => handleUpdateQuantity(id, -1)}>
-                        <Minus size={13} color="#FFF" />
-                      </TouchableOpacity>
-                      <Text style={styles.qtyText}>{line.quantity}</Text>
-                      <TouchableOpacity style={styles.qtyBtn} onPress={() => handleUpdateQuantity(id, 1)}>
-                        <Plus size={13} color="#FFF" />
-                      </TouchableOpacity>
+                    <View style={{ alignItems: 'flex-end', gap: 4 }}>
+                      <View style={styles.qtyContainer}>
+                        <TouchableOpacity style={styles.qtyBtn} onPress={() => handleUpdateQuantity(id, -1)}>
+                          <Minus size={13} color="#FFF" />
+                        </TouchableOpacity>
+                        <Text style={styles.qtyText}>{line.quantity}</Text>
+                        <TouchableOpacity
+                          style={[styles.qtyBtn, isAtOverallMax && styles.qtyBtnDisabled]}
+                          activeOpacity={isAtOverallMax ? 1 : 0.7}
+                          onPress={() => {
+                            if (isAtOverallMax) {
+                              Alert.alert('Stock Limit Reached', `Maximum available stock of ${overall.maxAllowed} unit${overall.maxAllowed === 1 ? '' : 's'} reached across stores.`);
+                              return;
+                            }
+                            handleUpdateQuantity(id, 1);
+                          }}
+                        >
+                          <Plus size={13} color="#FFF" />
+                        </TouchableOpacity>
+                      </View>
+                      {isAtOverallMax && overall.maxAllowed < 99 && (
+                        <Text style={styles.maxReachedText}>Max {overall.maxAllowed}</Text>
+                      )}
                     </View>
                   </View>
                 )}
@@ -406,125 +644,268 @@ export default function CartScreen() {
             ))}
           </View>
 
-          {/* Full Cost Breakdown by App */}
+          {/* Full Cost Breakdown by App (Blinkit always on top) */}
           <Text style={styles.sectionTitle}>Full Cost Breakdown by App</Text>
-          <View style={{ gap: 12 }}>
-            {calculations.map((calc) => {
-              const t = platformThemes[calc.platform];
-              const isWinner = !!winnerPlatform && calc.platform === winnerPlatform;
-              const isMostItems = mostCompleteKeys.includes(calc.platform);
-              const hasItems = calc.items.length > 0;
-              return (
-                <View key={calc.platform} style={[styles.breakdownCard, isWinner && styles.winnerCard]}>
-                  <View style={styles.breakdownHead}>
-                    <LogoTile platform={calc.platform} />
-                    <Text style={[styles.breakdownName, { color: t.color }]}>{t.name}</Text>
-                    {!calc.live && hasItems && !pendingPlatforms.includes(calc.platform) && (
-                      <View style={[styles.statusPill, { backgroundColor: 'rgba(244, 63, 94, 0.15)' }]}>
-                        <Text style={[styles.statusText, { color: colors.rose }]}>Not Fetched</Text>
+          {locationMismatch ? (
+            <View style={styles.mismatchNoticeCard}>
+              <View style={styles.mismatchIconWrap}>
+                <AlertTriangle size={24} color={colors.amber} />
+              </View>
+              <Text style={styles.mismatchNoticeTitle}>Live Pricing Paused</Text>
+              <Text style={styles.mismatchNoticeText}>
+                Pricing of the selected searched items is exhausted for live checkout.
+                {'\n\n'}Clear your basket to start fresh and search for items with updated pricing.
+              </Text>
+              <TouchableOpacity
+                style={styles.mismatchActionBtn}
+                onPress={handleClearAndSearchAgain}
+                activeOpacity={0.8}
+              >
+                <Trash2 size={15} color="#FFF" style={{ marginRight: 6 }} />
+                <Text style={styles.mismatchActionBtnText}>Clear Basket & Search Again</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <View style={{ gap: 12 }}>
+              {PLATFORM_ORDER.map(platform => {
+                const calc = calculations.find(c => c.platform === platform);
+                const isPending = pendingPlatforms.includes(platform);
+                const t = platformThemes[platform];
+
+                if (calc) {
+                  const isWinner = !!winnerPlatform && calc.platform === winnerPlatform;
+                  const isMostItems = mostCompleteKeys.includes(calc.platform);
+                  const inStockCount = calc.inStockProductIds ? calc.inStockProductIds.length : calc.items.length;
+                  const hasItems = inStockCount > 0 || calc.items.length > 0 || calc.total > 0;
+                  return (
+                    <View key={calc.platform} style={[styles.breakdownCard, isWinner && styles.winnerCard]}>
+                      <View style={styles.breakdownHead}>
+                        <LogoTile platform={calc.platform} />
+                        <Text style={[styles.breakdownName, { color: t.color }]}>{t.name}</Text>
+                        {!calc.live && hasItems && !isPending && (
+                          <View style={[styles.statusPill, { backgroundColor: 'rgba(245, 158, 11, 0.15)' }]}>
+                            <Text style={[styles.statusText, { color: colors.amber }]}>Unverified</Text>
+                          </View>
+                        )}
+                        {isPending && (
+                          <View style={[styles.statusPill, { backgroundColor: 'rgba(96, 165, 250, 0.15)' }]}>
+                            <ActivityIndicator size={9} color="#60A5FA" />
+                            <Text style={[styles.statusText, { color: '#60A5FA' }]}>Fetching…</Text>
+                          </View>
+                        )}
+                        <View style={{ flex: 1 }} />
+                        {isMostItems && (
+                          <View style={styles.mostItemsBadge}>
+                            <Layers size={9} color="#FFF" />
+                            <Text style={styles.mostItemsText}>MOST ITEMS</Text>
+                          </View>
+                        )}
+                        {isWinner && (
+                          <LinearGradient
+                            colors={[colors.emerald, colors.emeraldDark]}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 1 }}
+                            style={styles.bestValueBadge}
+                          >
+                            <Trophy size={9} color="#FFF" />
+                            <Text style={styles.bestValueText}>BEST VALUE</Text>
+                          </LinearGradient>
+                        )}
+                        <TouchableOpacity
+                          onPress={() => handleRefreshPlatform(calc.platform)}
+                          disabled={isPending || !hasItems}
+                          style={[
+                            styles.reloadIconBtn,
+                            (isPending || !hasItems) && { opacity: 0.5 }
+                          ]}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                          activeOpacity={0.7}
+                        >
+                          {isPending ? (
+                            <ActivityIndicator size={12} color={colors.textSecondary} />
+                          ) : (
+                            <RefreshCw size={13} color={colors.textSecondary} />
+                          )}
+                        </TouchableOpacity>
                       </View>
-                    )}
-                    {pendingPlatforms.includes(calc.platform) && (
-                      <View style={[styles.statusPill, { backgroundColor: 'rgba(96, 165, 250, 0.15)' }]}>
-                        <ActivityIndicator size={9} color="#60A5FA" />
-                        <Text style={[styles.statusText, { color: '#60A5FA' }]}>Fetching…</Text>
+
+                      {calc.outOfStockProductIds && calc.outOfStockProductIds.length > 0 && (
+                        <View style={styles.cardOosNotice}>
+                          <AlertTriangle size={12} color={colors.rose} />
+                          <Text style={styles.cardOosNoticeText}>
+                            {calc.outOfStockProductIds.length} item{calc.outOfStockProductIds.length === 1 ? '' : 's'} out of stock on {t.name}
+                          </Text>
+                        </View>
+                      )}
+
+                      {(() => {
+                        const cappedCount = cartItems.filter(ci => {
+                          const lim = calc.platformItemLimits?.[ci.product.id];
+                          return lim !== undefined && lim > 0 && ci.quantity > lim;
+                        }).length;
+                        if (cappedCount > 0) {
+                          return (
+                            <View style={[styles.cardOosNotice, { backgroundColor: 'rgba(245, 158, 11, 0.12)', borderColor: 'rgba(245, 158, 11, 0.25)', marginTop: 6 }]}>
+                              <AlertTriangle size={12} color={colors.amber} />
+                              <Text style={[styles.cardOosNoticeText, { color: colors.amber }]}>
+                                {cappedCount} item{cappedCount === 1 ? '' : 's'} capped to store stock limit
+                              </Text>
+                            </View>
+                          );
+                        }
+                        return null;
+                      })()}
+
+                      {!calc.live ? (
+                        <View style={{ marginTop: 2 }}>
+                          <View style={styles.unfetchedWarningBox}>
+                            <AlertTriangle size={15} color={colors.amber} style={{ marginTop: 1 }} />
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.unfetchedWarningTitle}>Pricing Unavailable</Text>
+                              <Text style={styles.unfetchedWarningText}>
+                                Live pricing of the selected items is exhausted and cannot be verified.
+                              </Text>
+                            </View>
+                          </View>
+                          <View style={styles.feeRow}>
+                            <Text style={styles.feeLabel}>Item subtotal (estimated)</Text>
+                            <Text style={styles.feeValue}>~₹{calc.subtotal}</Text>
+                          </View>
+                          <View style={styles.feeRow}>
+                            <Text style={styles.feeLabel}>Delivery & platform fees</Text>
+                            <Text style={styles.feeMuted}>Uncalculated</Text>
+                          </View>
+                          <View style={styles.totalDashed} />
+                          <View style={styles.totalRow}>
+                            <Text style={styles.totalLabel}>Total to pay</Text>
+                            <Text style={[styles.totalValue, { color: colors.textMuted, fontSize: 16 }]}>Unavailable</Text>
+                          </View>
+                          <Text style={styles.unfetchedNote}>
+                            Live checkout pricing could not be verified
+                          </Text>
+                        </View>
+                      ) : (
+                        <>
+                          <View style={styles.feeRow}>
+                            <Text style={styles.feeLabel}>Item subtotal</Text>
+                            <Text style={styles.feeValue}>₹{calc.subtotal}</Text>
+                          </View>
+                          <View style={styles.feeRow}>
+                            <Text style={styles.feeLabel}>Delivery fee</Text>
+                            {calc.deliveryFee === 0 ? (
+                              <View style={styles.freeTag}><Text style={styles.freeTagText}>FREE</Text></View>
+                            ) : (
+                              <Text style={styles.feeValue}>₹{calc.deliveryFee}</Text>
+                            )}
+                          </View>
+                          <View style={styles.feeRow}>
+                            <Text style={styles.feeLabel}>Handling / packaging</Text>
+                            <Text style={styles.feeValue}>₹{calc.handlingFee}</Text>
+                          </View>
+                          {calc.smallCartFee > 0 && (
+                            <View style={styles.feeRow}>
+                              <Text style={styles.feeWarnLabel}>Small-cart fee</Text>
+                              <Text style={styles.feeWarnValue}>₹{calc.smallCartFee}</Text>
+                            </View>
+                          )}
+                          {calc.surgeFee > 0 && (
+                            <View style={styles.feeRow}>
+                              <Text style={styles.feeWarnLabel}>{calc.surgeLabel || 'Surge fee'}</Text>
+                              <Text style={styles.feeWarnValue}>₹{calc.surgeFee}</Text>
+                            </View>
+                          )}
+                          {calc.tax > 0 && (
+                            <View style={styles.feeRow}>
+                              <Text style={styles.feeLabel}>GST</Text>
+                              <Text style={styles.feeValue}>₹{calc.tax}</Text>
+                            </View>
+                          )}
+
+                          <View style={styles.totalDashed} />
+                          <View style={styles.totalRow}>
+                            <Text style={styles.totalLabel}>To pay</Text>
+                            <Text style={[styles.totalValue, isWinner && { color: colors.emerald }]}>₹{calc.total}</Text>
+                          </View>
+                          {calc.savings > 0 && (
+                            <Text style={styles.savingsLine}>− ₹{calc.savings} saved off MRP on this basket</Text>
+                          )}
+                        </>
+                      )}
+
+                      {!calc.live ? (
+                        <TouchableOpacity
+                          disabled={true}
+                          style={[
+                            styles.cardExportBtn,
+                            { opacity: 0.6, backgroundColor: 'rgba(255, 255, 255, 0.04)', borderWidth: 1, borderColor: colors.border }
+                          ]}
+                        >
+                          <View style={styles.cardExportBtnGradient}>
+                            <MapPinOff size={13} color={colors.textMuted} />
+                            <Text style={[styles.cardExportBtnText, { color: colors.textMuted }]}>
+                              Unavailable at Current Location
+                            </Text>
+                          </View>
+                        </TouchableOpacity>
+                      ) : (
+                        <TouchableOpacity
+                          onPress={() => handleExport(calc.platform)}
+                          disabled={exporting !== null || !hasItems}
+                          style={[
+                            styles.cardExportBtn,
+                            (exporting !== null || !hasItems) && { opacity: 0.55 }
+                          ]}
+                          activeOpacity={0.8}
+                        >
+                          <LinearGradient
+                            colors={t.gradient}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 0 }}
+                            style={styles.cardExportBtnGradient}
+                          >
+                            {exporting === calc.platform ? (
+                              <ActivityIndicator size={13} color={t.textColor} />
+                            ) : (
+                              <Send size={13} color={t.textColor} />
+                            )}
+                            <Text style={[styles.cardExportBtnText, { color: t.textColor }]}>
+                              {exporting === calc.platform
+                                ? `Exporting to ${t.name}…`
+                                : !hasItems
+                                ? `No items available on ${t.name}`
+                                : `Export Basket to ${t.name}`}
+                            </Text>
+                          </LinearGradient>
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                  );
+                }
+
+                if (isPending) {
+                  return (
+                    <View key={`loading-${platform}`} style={styles.breakdownCard}>
+                      <View style={styles.breakdownHead}>
+                        <LogoTile platform={platform} />
+                        <Text style={[styles.breakdownName, { color: t.color }]}>{t.name}</Text>
+                        <View style={{ flex: 1 }} />
+                        <View style={[styles.statusPill, { backgroundColor: 'rgba(96, 165, 250, 0.15)' }]}>
+                          <ActivityIndicator size={9} color="#60A5FA" />
+                          <Text style={[styles.statusText, { color: '#60A5FA' }]}>Fetching…</Text>
+                        </View>
                       </View>
-                    )}
-                    <View style={{ flex: 1 }} />
-                    {isMostItems && (
-                      <View style={styles.mostItemsBadge}>
-                        <Layers size={9} color="#FFF" />
-                        <Text style={styles.mostItemsText}>MOST ITEMS</Text>
-                      </View>
-                    )}
-                    {isWinner && (
-                      <LinearGradient
-                        colors={[colors.emerald, colors.emeraldDark]}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 1 }}
-                        style={styles.bestValueBadge}
-                      >
-                        <Trophy size={9} color="#FFF" />
-                        <Text style={styles.bestValueText}>BEST VALUE</Text>
-                      </LinearGradient>
-                    )}
-                  </View>
-
-                  <View style={styles.feeRow}>
-                    <Text style={styles.feeLabel}>Item subtotal</Text>
-                    <Text style={styles.feeValue}>₹{calc.subtotal}</Text>
-                  </View>
-                  <View style={styles.feeRow}>
-                    <Text style={styles.feeLabel}>Delivery fee</Text>
-                    {calc.deliveryFee === 0 ? (
-                      <View style={styles.freeTag}><Text style={styles.freeTagText}>FREE</Text></View>
-                    ) : (
-                      <Text style={styles.feeValue}>₹{calc.deliveryFee}</Text>
-                    )}
-                  </View>
-                  <View style={styles.feeRow}>
-                    <Text style={styles.feeLabel}>Handling / packaging</Text>
-                    <Text style={styles.feeValue}>₹{calc.handlingFee}</Text>
-                  </View>
-                  {calc.smallCartFee > 0 && (
-                    <View style={styles.feeRow}>
-                      <Text style={styles.feeWarnLabel}>Small-cart fee</Text>
-                      <Text style={styles.feeWarnValue}>₹{calc.smallCartFee}</Text>
+                      {[64, 52, 70].map((_, i) => (
+                        <View key={i} style={[styles.skeletonBar, { width: `${100 - i * 18}%`, marginTop: 10 }]} />
+                      ))}
+                      <View style={[styles.skeletonBar, { width: '45%', height: 16, marginTop: 18 }]} />
                     </View>
-                  )}
-                  {calc.surgeFee > 0 && (
-                    <View style={styles.feeRow}>
-                      <Text style={styles.feeWarnLabel}>{calc.surgeLabel || 'Surge fee'}</Text>
-                      <Text style={styles.feeWarnValue}>₹{calc.surgeFee}</Text>
-                    </View>
-                  )}
-                  {calc.tax > 0 && (
-                    <View style={styles.feeRow}>
-                      <Text style={styles.feeLabel}>GST</Text>
-                      <Text style={styles.feeValue}>₹{calc.tax}</Text>
-                    </View>
-                  )}
+                  );
+                }
 
-                  <View style={styles.totalDashed} />
-                  <View style={styles.totalRow}>
-                    <Text style={styles.totalLabel}>To pay</Text>
-                    <Text style={[styles.totalValue, isWinner && { color: colors.emerald }]}>₹{calc.total}</Text>
-                  </View>
-                  {calc.savings > 0 && (
-                    <Text style={styles.savingsLine}>− ₹{calc.savings} saved off MRP on this basket</Text>
-                  )}
-                </View>
-              );
-            })}
-
-            {/* Skeleton while an app's live bill is being fetched */}
-            {pendingPlatforms.map(platform => {
-              const t = platformThemes[platform];
-              return (
-                <View key={`loading-${platform}`} style={styles.breakdownCard}>
-                  <View style={styles.breakdownHead}>
-                    <LogoTile platform={platform} />
-                    <Text style={[styles.breakdownName, { color: t.color }]}>{t.name}</Text>
-                    <View style={{ flex: 1 }} />
-                    <View style={[styles.statusPill, { backgroundColor: 'rgba(96, 165, 250, 0.15)' }]}>
-                      <ActivityIndicator size={9} color="#60A5FA" />
-                      <Text style={[styles.statusText, { color: '#60A5FA' }]}>Fetching…</Text>
-                    </View>
-                  </View>
-                  {[64, 52, 70].map((_, i) => (
-                    <View key={i} style={[styles.skeletonBar, { width: `${100 - i * 18}%`, marginTop: 10 }]} />
-                  ))}
-                  <View style={[styles.skeletonBar, { width: '45%', height: 16, marginTop: 18 }]} />
-                </View>
-              );
-            })}
-          </View>
-
-          <View style={styles.footerNote}>
-            <Text style={styles.noteText}>
-              Compare & optimize here — place the final order in the respective apps once you’ve picked the cheapest checkout.
-            </Text>
-          </View>
+                return null;
+              })}
+            </View>
+          )}
         </View>
       )}
     </ScrollView>
@@ -597,60 +978,34 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     marginTop: 1,
   },
-  headerActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginTop: 12,
+  cardExportBtn: {
+    marginTop: 14,
+    borderRadius: 12,
+    overflow: 'hidden',
   },
-  exportBtn: {
+  cardExportBtnGradient: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 11,
-    paddingVertical: 7,
-    borderRadius: 10,
+    justifyContent: 'center',
+    gap: 7,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+  },
+  cardExportBtnText: {
+    fontFamily: fonts.bodyBold,
+    fontSize: 12.5,
+    letterSpacing: 0.2,
+  },
+  reloadIconBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
     borderWidth: 1,
-    borderColor: 'rgba(248, 203, 70, 0.4)',
-    backgroundColor: 'rgba(248, 203, 70, 0.12)',
-  },
-  exportBtnText: {
-    fontFamily: fonts.bodySemiBold,
-    fontSize: 10.5,
-    color: '#F8CB46',
-  },
-  swiggyBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 11,
-    paddingVertical: 7,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: 'rgba(252, 128, 25, 0.4)',
-    backgroundColor: 'rgba(252, 128, 25, 0.12)',
-  },
-  swiggyBtnText: {
-    fontFamily: fonts.bodySemiBold,
-    fontSize: 10.5,
-    color: '#FC8019',
-  },
-  fetchBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 11,
-    paddingVertical: 7,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: 'rgba(96, 165, 250, 0.4)',
-    backgroundColor: 'rgba(96, 165, 250, 0.12)',
-  },
-  fetchBtnText: {
-    fontFamily: fonts.bodySemiBold,
-    fontSize: 10.5,
-    color: '#60A5FA',
+    borderColor: colors.border,
+    marginLeft: 6,
   },
   clearBtn: {
     width: 34,
@@ -791,6 +1146,55 @@ const styles = StyleSheet.create({
     fontFamily: fonts.body,
     fontSize: 8.5,
     color: colors.emerald,
+  },
+  oosBadge: {
+    backgroundColor: 'rgba(244, 63, 94, 0.15)',
+    paddingHorizontal: 5,
+    paddingVertical: 1.5,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(244, 63, 94, 0.35)',
+  },
+  oosBadgeText: {
+    fontFamily: fonts.bodyBold,
+    fontSize: 7.5,
+    color: colors.rose,
+    letterSpacing: 0.3,
+  },
+  variantOos: {
+    opacity: 0.65,
+    borderColor: 'rgba(244, 63, 94, 0.2)',
+  },
+  lineTitleOos: {
+    color: colors.textMuted,
+  },
+  variantPriceOos: {
+    color: colors.textMuted,
+    textDecorationLine: 'line-through',
+  },
+  oosSubtext: {
+    fontFamily: fonts.body,
+    fontSize: 8.5,
+    color: colors.rose,
+    marginTop: 1,
+  },
+  cardOosNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(244, 63, 94, 0.08)',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(244, 63, 94, 0.2)',
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    marginTop: 4,
+    marginBottom: 8,
+  },
+  cardOosNoticeText: {
+    fontFamily: fonts.bodyMedium,
+    fontSize: 11,
+    color: colors.rose,
   },
   breakdownCard: {
     backgroundColor: colors.bgCard,
@@ -954,15 +1358,115 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     paddingHorizontal: 30,
   },
-  footerNote: {
-    paddingHorizontal: 10,
-    marginTop: 22,
+  unfetchedWarningBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: 'rgba(245, 158, 11, 0.08)',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.2)',
+    padding: 10,
+    marginBottom: 12,
+    gap: 8,
   },
-  noteText: {
+  unfetchedWarningTitle: {
+    fontFamily: fonts.bodySemiBold,
+    fontSize: 11.5,
+    color: colors.amber,
+  },
+  unfetchedWarningText: {
+    fontFamily: fonts.body,
+    fontSize: 10.5,
+    color: colors.textSecondary,
+    lineHeight: 15,
+    marginTop: 2,
+  },
+  unfetchedNote: {
     fontFamily: fonts.body,
     fontSize: 10,
     color: colors.textMuted,
+    fontStyle: 'italic',
+    marginTop: 6,
     textAlign: 'center',
-    lineHeight: 15,
+  },
+  mismatchNoticeCard: {
+    backgroundColor: colors.bgCard,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.3)',
+    padding: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+  },
+  mismatchIconWrap: {
+    width: 52,
+    height: 52,
+    borderRadius: 16,
+    backgroundColor: 'rgba(245, 158, 11, 0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  mismatchNoticeTitle: {
+    fontFamily: fonts.heading,
+    fontSize: 16,
+    color: colors.textPrimary,
+    marginBottom: 6,
+    textAlign: 'center',
+  },
+  mismatchNoticeText: {
+    fontFamily: fonts.body,
+    fontSize: 12,
+    color: colors.textSecondary,
+    textAlign: 'center',
+    lineHeight: 18,
+    marginBottom: 16,
+    paddingHorizontal: 12,
+  },
+  mismatchActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(244, 63, 94, 0.9)',
+    paddingVertical: 11,
+    paddingHorizontal: 18,
+    borderRadius: 12,
+    gap: 6,
+  },
+  mismatchActionBtnText: {
+    fontFamily: fonts.bodySemiBold,
+    fontSize: 12.5,
+    color: '#FFF',
+  },
+  limitBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 5,
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.35)',
+  },
+  limitBadgeText: {
+    fontFamily: fonts.bodyBold,
+    fontSize: 9,
+    color: colors.amber,
+  },
+  cappedSubtext: {
+    fontFamily: fonts.bodyMedium,
+    fontSize: 9.5,
+    color: colors.amber,
+    marginTop: 2,
+  },
+  qtyBtnDisabled: {
+    opacity: 0.35,
+  },
+  maxReachedText: {
+    fontFamily: fonts.bodyMedium,
+    fontSize: 10,
+    color: colors.amber,
+    marginTop: 4,
   },
 });

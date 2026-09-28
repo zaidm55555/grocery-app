@@ -1,8 +1,8 @@
 import React from 'react';
-import { Modal, View, Text, Image, TouchableOpacity, ScrollView, StyleSheet } from 'react-native';
+import { Modal, View, Text, Image, TouchableOpacity, ScrollView, StyleSheet, Alert } from 'react-native';
 import { Plus, X } from 'lucide-react-native';
 import { Platform } from '../services/storage';
-import { UnifiedProduct } from '../services/api';
+import { UnifiedProduct, getItemPlatformLimit } from '../services/api';
 import { colors, fonts, platformThemes } from '../constants/theme';
 
 interface Props {
@@ -67,11 +67,31 @@ export default function VariantPickerModal({ visible, base, options, qtyFor, onP
                       ? Math.round(((opt.originalPrice - opt.price) / opt.originalPrice) * 100)
                       : 0;
                     const isBase = opt.id === base.id;
+                    const optLimit = getItemPlatformLimit(opt);
+                    const isOos = opt.inStock === false || (typeof optLimit === 'number' && optLimit <= 0);
+                    const isAtLimit = !isOos && typeof optLimit === 'number' && optLimit > 0 && qty >= optLimit;
+
+                    const handlePress = () => {
+                      if (isOos) {
+                        Alert.alert('Out of Stock', `This item is currently out of stock on ${tt.name}.`);
+                        return;
+                      }
+                      if (isAtLimit) {
+                        Alert.alert('Stock Limit Reached', `Only ${optLimit} unit${optLimit === 1 ? '' : 's'} available on ${tt.name}.`);
+                        return;
+                      }
+                      onPick(opt);
+                    };
+
                     return (
                       <TouchableOpacity
                         key={opt.id}
-                        style={[styles.optRow, isBase && styles.optRowBase]}
-                        onPress={() => onPick(opt)}
+                        style={[
+                          styles.optRow,
+                          isBase && styles.optRowBase,
+                          (isOos || isAtLimit) && { opacity: 0.65 }
+                        ]}
+                        onPress={handlePress}
                         activeOpacity={0.75}
                       >
                         <View>
@@ -85,7 +105,19 @@ export default function VariantPickerModal({ visible, base, options, qtyFor, onP
 
                         <View style={styles.optInfo}>
                           <Text style={styles.optName} numberOfLines={2}>{opt.title}</Text>
-                          <Text style={styles.optUnit} numberOfLines={1}>{opt.quantity}</Text>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3 }}>
+                            <Text style={styles.optUnit} numberOfLines={1}>{opt.quantity}</Text>
+                            {isOos && (
+                              <View style={styles.oosBadgeSmall}>
+                                <Text style={styles.oosBadgeSmallText}>OUT OF STOCK</Text>
+                              </View>
+                            )}
+                            {isAtLimit && (
+                              <View style={styles.limitBadgeSmall}>
+                                <Text style={styles.limitBadgeSmallText}>MAX IN STOCK ({optLimit})</Text>
+                              </View>
+                            )}
+                          </View>
                         </View>
 
                         <View style={styles.priceCol}>
@@ -100,10 +132,20 @@ export default function VariantPickerModal({ visible, base, options, qtyFor, onP
                           ) : (
                             <View style={styles.mrpSpacer} />
                           )}
-                          <View style={[styles.addChip, { backgroundColor: tt.bgLight, borderColor: tt.borderColor }]}>
-                            <Plus size={11} color={tt.color} strokeWidth={2.6} />
-                            <Text style={[styles.addChipText, { color: tt.color }]}>ADD</Text>
-                          </View>
+                          {isOos ? (
+                            <View style={[styles.addChip, { backgroundColor: 'rgba(239, 68, 68, 0.12)', borderColor: 'rgba(239, 68, 68, 0.3)' }]}>
+                              <Text style={[styles.addChipText, { color: colors.rose }]}>OOS</Text>
+                            </View>
+                          ) : isAtLimit ? (
+                            <View style={[styles.addChip, { backgroundColor: 'rgba(245, 158, 11, 0.12)', borderColor: 'rgba(245, 158, 11, 0.3)' }]}>
+                              <Text style={[styles.addChipText, { color: colors.amber }]}>MAX</Text>
+                            </View>
+                          ) : (
+                            <View style={[styles.addChip, { backgroundColor: tt.bgLight, borderColor: tt.borderColor }]}>
+                              <Plus size={11} color={tt.color} strokeWidth={2.6} />
+                              <Text style={[styles.addChipText, { color: tt.color }]}>ADD</Text>
+                            </View>
+                          )}
                         </View>
                       </TouchableOpacity>
                     );
@@ -313,5 +355,33 @@ const styles = StyleSheet.create({
     fontFamily: fonts.bodyBold,
     fontSize: 10,
     letterSpacing: 0.4,
+  },
+  oosBadgeSmall: {
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    paddingHorizontal: 5,
+    paddingVertical: 1.5,
+    borderRadius: 4,
+    borderWidth: 0.5,
+    borderColor: 'rgba(239, 68, 68, 0.3)',
+  },
+  oosBadgeSmallText: {
+    color: colors.rose,
+    fontFamily: fonts.bodyBold,
+    fontSize: 8.5,
+    letterSpacing: 0.3,
+  },
+  limitBadgeSmall: {
+    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+    paddingHorizontal: 5,
+    paddingVertical: 1.5,
+    borderRadius: 4,
+    borderWidth: 0.5,
+    borderColor: 'rgba(245, 158, 11, 0.3)',
+  },
+  limitBadgeSmallText: {
+    color: colors.amber,
+    fontFamily: fonts.bodyBold,
+    fontSize: 8.5,
+    letterSpacing: 0.3,
   },
 });

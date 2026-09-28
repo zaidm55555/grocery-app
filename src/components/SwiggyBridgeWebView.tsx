@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useSyncExternalStore } from 'react';
-import { StyleSheet, View, Text, TouchableOpacity, SafeAreaView } from 'react-native';
+import { StyleSheet, View, Text, TouchableOpacity } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 import { X } from 'lucide-react-native';
 import {
@@ -190,6 +191,20 @@ export default function SwiggyBridgeWebView() {
     try {
       msg = JSON.parse(String(event.nativeEvent.data || ''));
     } catch {
+      handleSwiggyBridgeMessage(String(event.nativeEvent.data || ''));
+      return;
+    }
+    if (msg?.type === 'GO_BRIDGE_READY') {
+      storage.getToken('swiggy').then((token) => {
+        if (token) {
+          webViewRef.current?.injectJavaScript(`
+            if (window.__goApplyCookies) {
+              window.__goApplyCookies(${JSON.stringify(token)});
+            }
+            true;
+          `);
+        }
+      });
       handleSwiggyBridgeMessage(String(event.nativeEvent.data || ''));
       return;
     }

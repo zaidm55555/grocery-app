@@ -19,7 +19,7 @@
 // Origin/Cookie/TLS context (HttpOnly cookies decide the session; the gateway
 // rejects worker-side requests otherwise).
 
-import { api, parseBlinkitProducts, UnifiedProduct, resolvePlatformProduct } from './api';
+import { api, parseBlinkitProducts, UnifiedProduct, resolvePlatformProduct, CartCalculation, getProductPlatformLimit } from './api';
 import { requestViaBlinkitBridge } from './blinkitBridge';
 import { storage } from './storage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -42,6 +42,8 @@ export interface BlinkitShareResult {
   items: BlinkitExportItem[];
   total: number;
   missing: { name: string; quantity: string }[];
+  outOfStock: { name: string; quantity: string }[];
+  clamped: { name: string; requestedQty: number; exportedQty: number }[];
 }
 
 /**
@@ -50,16 +52,34 @@ export interface BlinkitShareResult {
  * (originalId / productId from search or auto-match). When absent, runs the
  * exact search fallback chain from background.js — each endpoint tried in
  * order until one returns a usable product_id.
+ *
+ * Excludes out-of-stock items and clamps export quantity to available stock.
  */
 async function resolveProductId(
   line: { product: UnifiedProduct; quantity: number },
   lat: number,
   lng: number,
-  authKey: string
-): Promise<{ item: BlinkitExportItem | null; notFound: boolean }> {
+  authKey: string,
+  calculations?: CartCalculation[]
+): Promise<{ item: BlinkitExportItem | null; notFound: boolean; outOfStock: boolean; clampedFrom?: number }> {
   const v = resolvePlatformProduct(line, 'blinkit');
   const base = v?.product || null;
-  const qty = Math.max(1, Math.round(line.quantity) || 1);
+
+  // 1. Live calculation check: did Blinkit return this line as out of stock?
+  const calc = calculations?.find((c) => c.platform === 'blinkit');
+  const isCalcOos = calc?.outOfStockProductIds?.includes(line.product.id) ?? false;
+  const isBaseOos = base?.inStock === false;
+
+  // 2. Stock limit: check live checkout limits / inventory limits
+  const limit = getProductPlatformLimit(line.product, 'blinkit', calculations);
+
+  if (isCalcOos || isBaseOos || (limit !== undefined && limit <= 0)) {
+    return { item: null, notFound: false, outOfStock: true };
+  }
+
+  const requestedQty = Math.max(1, Math.round(line.quantity) || 1);
+  const qty = (typeof limit === 'number' && limit > 0) ? Math.min(requestedQty, limit) : requestedQty;
+  const clampedFrom = qty < requestedQty ? requestedQty : undefined;
 
   const name = base?.title || line.product.title;
   const unit = base?.quantity || line.product.quantity;
@@ -72,6 +92,8 @@ async function resolveProductId(
     return {
       item: { product_id: String(productId), quantity: qty, name, price, mrp, imageUrl, unit },
       notFound: false,
+      outOfStock: false,
+      clampedFrom,
     };
   }
 
@@ -79,13 +101,33 @@ async function resolveProductId(
   try {
     const found = await searchBlinkitProduct(name, unit, lat, lng, authKey);
     if (found) {
+      let effectiveLimit = limit;
+      if (effectiveLimit === undefined) {
+        if (typeof found.availableStock === 'number' && found.availableStock >= 0 && typeof found.maxQuantity === 'number' && found.maxQuantity > 0) {
+          effectiveLimit = Math.min(found.availableStock, found.maxQuantity);
+        } else if (typeof found.availableStock === 'number' && found.availableStock >= 0) {
+          effectiveLimit = found.availableStock;
+        } else if (typeof found.maxQuantity === 'number' && found.maxQuantity > 0) {
+          effectiveLimit = found.maxQuantity;
+        }
+      }
+
+      if (effectiveLimit !== undefined && effectiveLimit <= 0) {
+        return { item: null, notFound: false, outOfStock: true };
+      }
+
+      const finalQty = (typeof effectiveLimit === 'number' && effectiveLimit > 0) ? Math.min(requestedQty, effectiveLimit) : requestedQty;
+      const finalClamped = finalQty < requestedQty ? requestedQty : undefined;
+
       return {
-        item: { product_id: String(found.productId), quantity: qty, name, price, mrp, imageUrl, unit },
+        item: { product_id: String(found.productId), quantity: finalQty, name, price, mrp, imageUrl, unit },
         notFound: false,
+        outOfStock: false,
+        clampedFrom: finalClamped,
       };
     }
   } catch {}
-  return { item: null, notFound: true };
+  return { item: null, notFound: true, outOfStock: false };
 }
 
 async function searchBlinkitProduct(
@@ -94,7 +136,7 @@ async function searchBlinkitProduct(
   lat: number,
   lng: number,
   authKey: string
-): Promise<{ productId: string } | null> {
+): Promise<{ productId: string; availableStock?: number; maxQuantity?: number } | null> {
   const q = encodeURIComponent(name);
   const baseUrl = `https://blinkit.com/v1/layout/search?q=${q}&search_type=type_to_search&merchant_id=&offset=0&limit=60&actual_query=${q}`;
   const headers = {
@@ -113,11 +155,17 @@ async function searchBlinkitProduct(
     if (res.ok) {
       const json = await res.json();
       const parsed = parseBlinkitProducts(json);
-      const best = pickBestMatch<{ name: string; unit: string; productId: string }>(
+      const best = pickBestMatch<{ name: string; unit: string; productId: string; availableStock?: number; maxQuantity?: number }>(
         { name, unit },
-        parsed.map((p: any) => ({ name: p.name, unit: p.unit, productId: p.productId }))
+        parsed.map((p: any) => ({ name: p.name, unit: p.unit, productId: p.productId, availableStock: p.availableStock, maxQuantity: p.maxQuantity }))
       );
-      if (best?.candidate?.productId) return { productId: String(best.candidate.productId) };
+      if (best?.candidate?.productId) {
+        return {
+          productId: String(best.candidate.productId),
+          availableStock: best.candidate.availableStock,
+          maxQuantity: best.candidate.maxQuantity,
+        };
+      }
     }
   } catch {}
   return null;
@@ -166,7 +214,8 @@ async function buildBlinkitSessionHeaders(
  * Returns null if Blinkit isn't linked (no auth key) or nothing resolved.
  */
 export async function createBlinkitShareLink(
-  cart: { product: UnifiedProduct; quantity: number }[]
+  cart: { product: UnifiedProduct; quantity: number }[],
+  calculations?: CartCalculation[]
 ): Promise<BlinkitShareResult | null> {
   const authKey = await storage.getToken('blinkit');
   if (!authKey) return null;
@@ -177,15 +226,27 @@ export async function createBlinkitShareLink(
   const lng = location.longitude;
 
   const missing: { name: string; quantity: string }[] = [];
+  const outOfStock: { name: string; quantity: string }[] = [];
+  const clamped: { name: string; requestedQty: number; exportedQty: number }[] = [];
   const items: BlinkitExportItem[] = [];
 
   for (const line of cart) {
-    const { item, notFound } = await resolveProductId(line, lat, lng, authKey);
-    if (item) items.push(item);
-    else if (notFound) missing.push({ name: line.product.title, quantity: line.product.quantity });
+    const { item, notFound, outOfStock: isOos, clampedFrom } = await resolveProductId(line, lat, lng, authKey, calculations);
+    if (item) {
+      items.push(item);
+      if (clampedFrom && clampedFrom > item.quantity) {
+        clamped.push({ name: item.name, requestedQty: clampedFrom, exportedQty: item.quantity });
+      }
+    } else if (isOos) {
+      outOfStock.push({ name: line.product.title, quantity: line.product.quantity });
+    } else if (notFound) {
+      missing.push({ name: line.product.title, quantity: line.product.quantity });
+    }
   }
 
-  if (items.length === 0) return null;
+  if (items.length === 0) {
+    return { url: '', items: [], total: 0, missing, outOfStock, clamped };
+  }
 
   const total = items.reduce((s, i) => s + i.price * i.quantity, 0);
   const totalItems = items.reduce((s, i) => s + i.quantity, 0);
@@ -231,7 +292,7 @@ export async function createBlinkitShareLink(
     url = extractShareUrl(res.text);
   }
 
-  return { url, items, total, missing };
+  return { url, items, total, missing, outOfStock, clamped };
 }
 
 // The share-cart response nests the link differently across the web/app

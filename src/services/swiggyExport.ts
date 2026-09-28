@@ -28,7 +28,9 @@
 import {
   api,
   UnifiedProduct,
+  CartCalculation,
   resolvePlatformProduct,
+  getProductPlatformLimit,
   findStoreInfo,
   SwiggyStoreInfo,
   extractSwiggySearchProducts,
@@ -56,6 +58,8 @@ export interface SwiggyExportResult {
   verified: boolean;
   cartUrl: string;
   missing: { name: string; quantity: string }[];
+  outOfStock: { name: string; quantity: string }[];
+  clamped: { name: string; requestedQty: number; exportedQty: number }[];
   cartId?: string | null;
   oldCartId?: string | null;
   writePayload?: any;
@@ -75,12 +79,20 @@ async function fetchViaJson(res: any): Promise<any | null> {
 }
 
 // Resolve one cart line to Swiggy's {productId, itemId, spinId, quantity}.
+// Excludes out-of-stock items and clamps export quantity to available stock.
 function resolveSwiggyItem(
-  line: { product: UnifiedProduct; quantity: number }
-): { body: SwiggyExportItem | null; name: string; unit: string; notFound: boolean } {
+  line: { product: UnifiedProduct; quantity: number },
+  calculations?: CartCalculation[]
+): {
+  body: SwiggyExportItem | null;
+  name: string;
+  unit: string;
+  notFound: boolean;
+  outOfStock: boolean;
+  clampedFrom?: number;
+} {
   const v = resolvePlatformProduct(line, 'swiggy');
   const base = v?.product || null;
-  const qty = Math.max(1, Math.round(line.quantity) || 1);
 
   const name = base?.title || line.product.title;
   const unit = base?.quantity || line.product.quantity;
@@ -88,20 +100,48 @@ function resolveSwiggyItem(
   const mrp = base?.originalPrice || price;
   const imageUrl = base?.imageUrl || line.product.imageUrl;
 
-  const productId = base?.productId;
+  // 1. Live calculation check: did Swiggy return this line as out of stock?
+  const calc = calculations?.find((c) => c.platform === 'swiggy');
+  const isCalcOos = calc?.outOfStockProductIds?.includes(line.product.id) ?? false;
+  const isBaseOos = base?.inStock === false;
+
+  // 2. Stock limit: check live checkout limits / inventory limits
+  const limit = getProductPlatformLimit(line.product, 'swiggy', calculations);
+
+  if (isCalcOos || isBaseOos || (limit !== undefined && limit <= 0)) {
+    return { body: null, name, unit, notFound: false, outOfStock: true };
+  }
+
+  const requestedQty = Math.max(1, Math.round(line.quantity) || 1);
+  const qty = (typeof limit === 'number' && limit > 0) ? Math.min(requestedQty, limit) : requestedQty;
+  const clampedFrom = qty < requestedQty ? requestedQty : undefined;
+
+  const productId = base?.productId || base?.originalId;
   // itemId = the variation/product id pair from Swiggy's own catalog — the
   // auto-match stores it as originalId (mirrors buildBody in api.ts).
-  const itemId = base?.originalId;
+  const itemId = base?.originalId || base?.productId;
 
   if (productId && itemId) {
     return {
-      body: { productId: String(productId), itemId: String(itemId), spinId: base?.spinId || '', quantity: qty, name, price, mrp, imageUrl, unit },
+      body: {
+        productId: String(productId),
+        itemId: String(itemId),
+        spinId: base?.spinId || '',
+        quantity: qty,
+        name,
+        price,
+        mrp,
+        imageUrl,
+        unit,
+      },
       name,
       unit,
       notFound: false,
+      outOfStock: false,
+      clampedFrom,
     };
   }
-  return { body: null, name, unit, notFound: productId && itemId ? false : true };
+  return { body: null, name, unit, notFound: true, outOfStock: false };
 }
 
 // Store + session metadata discovery (mirrors api.ts's calculateCart step,
@@ -179,7 +219,7 @@ async function freshSearchItem(
   name: string,
   unit: string,
   storeInfo: SwiggyStoreInfo
-): Promise<{ productId: string; itemId: string; spinId: string } | null> {
+): Promise<{ productId: string; itemId: string; spinId: string; availableStock?: number; maxQuantity?: number } | null> {
   const resolvedStoreId = storeInfo.storeId || storeInfo.primaryStoreId || '';
   if (!resolvedStoreId) return null;
   const storeParams = 'offset=0&ageConsent=false' +
@@ -201,8 +241,16 @@ async function freshSearchItem(
     if (!json) return null;
     const candidates = extractSwiggySearchProducts(json, name);
     const best = pickInstamartCandidate(candidates, name, unit);
-    if (best && best.productId && best.itemId) {
-      return { productId: String(best.productId), itemId: String(best.itemId), spinId: best.spinId || '' };
+    if (best && (best.productId || best.itemId)) {
+      const pid = best.productId || best.itemId;
+      const iid = best.itemId || best.productId;
+      return {
+        productId: String(pid),
+        itemId: String(iid),
+        spinId: best.spinId || '',
+        availableStock: best.availableStock,
+        maxQuantity: best.maxQuantity,
+      };
     }
   } catch {}
   return null;
@@ -212,9 +260,12 @@ async function freshSearchItem(
  * Main export entry: commit the basket to the user's SAME Swiggy session via
  * the real Instamart checkout APIs (clear → write → verify) and return what's
  * needed to open the cart page. Returns null if Swiggy isn't linked.
+ *
+ * Excludes out-of-stock items and clamps export quantity to available stock.
  */
 export async function exportCartToSwiggy(
-  cart: { product: UnifiedProduct; quantity: number }[]
+  cart: { product: UnifiedProduct; quantity: number }[],
+  calculations?: CartCalculation[]
 ): Promise<SwiggyExportResult | null> {
   const token = await storage.getToken('swiggy');
   if (!token) return null;
@@ -226,20 +277,48 @@ export async function exportCartToSwiggy(
 
   // Resolve items: fast-path stored IDs first, then fresh search.
   const missing: { name: string; quantity: string }[] = [];
+  const outOfStock: { name: string; quantity: string }[] = [];
+  const clamped: { name: string; requestedQty: number; exportedQty: number }[] = [];
+
   const resolved: (SwiggyExportItem | null)[] = cart.map((line) => {
-    const r = resolveSwiggyItem(line);
-    if (r.body) return r.body;
+    const r = resolveSwiggyItem(line, calculations);
+    if (r.outOfStock) {
+      outOfStock.push({ name: r.name, quantity: r.unit });
+      return null;
+    }
+    if (r.body) {
+      if (r.clampedFrom && r.clampedFrom > r.body.quantity) {
+        clamped.push({ name: r.body.name, requestedQty: r.clampedFrom, exportedQty: r.body.quantity });
+      }
+      return r.body;
+    }
     return null;
   });
 
   const unresolvedNames: { name: string; unit: string; origIndex: number }[] = [];
   resolved.forEach((r, i) => {
-    if (!r) unresolvedNames.push({ name: cart[i].product.title, unit: cart[i].product.quantity, origIndex: i });
+    if (!r) {
+      const isOos = outOfStock.some((o) => o.name === cart[i].product.title);
+      if (!isOos) {
+        unresolvedNames.push({ name: cart[i].product.title, unit: cart[i].product.quantity, origIndex: i });
+      }
+    }
   });
 
   const delivery = await api.resolveSwiggyDeliveryAddress(lat, lng);
+  if (!delivery || !delivery.id) {
+    throw new Error('Instamart delivery is currently not available in this area.');
+  }
   const targetLat = delivery?.location?.latitude ?? lat;
   const targetLng = delivery?.location?.longitude ?? lng;
+
+  console.log(`[Swiggy Export Location] Location used while clicking export for Swiggy:
+  - User GPS Location: (${lat}, ${lng}) - "${location.address || 'Unknown'}"
+  - Resolved Swiggy Delivery Address ID: ${delivery?.id || 'none (GPS only)'}
+  - Resolved Swiggy Delivery Address Name: "${delivery?.name || 'none'}"
+  - Delivery Address Coordinates: ${delivery?.location ? `(${delivery.location.latitude}, ${delivery.location.longitude})` : 'none'} (${delivery?.distanceKm ?? 0} km away)
+  - Target Coordinates used for Store Discovery: (${targetLat.toFixed(6)}, ${targetLng.toFixed(6)})
+  - Preferred Address ID set in Cart Payload: ${delivery?.id ?? 'null'}`);
 
   let storeInfo: SwiggyStoreInfo | null = null;
   let shipmentIdV2 = '';
@@ -262,19 +341,44 @@ export async function exportCartToSwiggy(
       if (!need) continue;
       const found = await freshSearchItem(need.name, need.unit, storeInfo);
       if (found) {
-        const qty = Math.max(1, Math.round(cart[i].quantity) || 1);
-        const base = resolvePlatformProduct(cart[i], 'swiggy')?.product || cart[i].product;
+        const res = resolvePlatformProduct(cart[i], 'swiggy');
+        const reqQty = Math.max(1, Math.round(cart[i].quantity) || 1);
+        const base = res?.product || cart[i].product;
+
+        let lim = getProductPlatformLimit(cart[i].product, 'swiggy', calculations);
+        if (lim === undefined) {
+          if (typeof found.availableStock === 'number' && found.availableStock >= 0 && typeof found.maxQuantity === 'number' && found.maxQuantity > 0) {
+            lim = Math.min(found.availableStock, found.maxQuantity);
+          } else if (typeof found.availableStock === 'number' && found.availableStock >= 0) {
+            lim = found.availableStock;
+          } else if (typeof found.maxQuantity === 'number' && found.maxQuantity > 0) {
+            lim = found.maxQuantity;
+          }
+        }
+
+        if (lim !== undefined && lim <= 0) {
+          outOfStock.push({ name: base.title, quantity: base.quantity || '' });
+          continue;
+        }
+
+        const finalQty = (typeof lim === 'number' && lim > 0) ? Math.min(reqQty, lim) : reqQty;
+        if (finalQty < reqQty) {
+          clamped.push({ name: base.title, requestedQty: reqQty, exportedQty: finalQty });
+        }
+
         resolved[i] = {
           productId: found.productId,
           itemId: found.itemId,
           spinId: found.spinId,
-          quantity: qty,
+          quantity: finalQty,
           name: base.title,
           price: base.price || 0,
           mrp: base.originalPrice || base.price || 0,
           imageUrl: base.imageUrl || '',
           unit: base.quantity || '',
         };
+      } else {
+        missing.push({ name: cart[i].product.title, quantity: cart[i].product.quantity });
       }
     }
   }
@@ -282,7 +386,19 @@ export async function exportCartToSwiggy(
   const items: SwiggyExportItem[] = [];
   for (let i = 0; i < resolved.length; i++) {
     if (resolved[i]) items.push(resolved[i]!);
-    else missing.push({ name: cart[i].product.title, quantity: cart[i].product.quantity });
+  }
+
+  if (items.length === 0) {
+    return {
+      items: [],
+      storeId: resolvedStoreId || null,
+      shipmentIdV2: '',
+      verified: false,
+      cartUrl: '',
+      missing,
+      outOfStock,
+      clamped,
+    };
   }
 
   // Find current cartId before clearing
@@ -404,6 +520,8 @@ export async function exportCartToSwiggy(
     verified,
     cartUrl,
     missing,
+    outOfStock,
+    clamped,
     cartId: newCartId,
     oldCartId,
     writePayload: postBodyObj,

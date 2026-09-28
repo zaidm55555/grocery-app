@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { StyleSheet, View, Text, TextInput, FlatList, TouchableOpacity, ActivityIndicator, Image, Keyboard, KeyboardAvoidingView, Platform as RNPlatform, Pressable, ScrollView } from 'react-native';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { StyleSheet, View, Text, TextInput, FlatList, TouchableOpacity, ActivityIndicator, Image, Keyboard, KeyboardAvoidingView, Platform as RNPlatform, Pressable, ScrollView, Modal, Dimensions, Alert } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Search, MapPin, X, Plus, Minus, ChevronDown, Check, Zap, ShoppingCart, ShoppingBag, LogIn, Link2Off } from 'lucide-react-native';
-import { api, UnifiedProduct, PlatformVariant } from '../../services/api';
+import { Search, MapPin, X, Plus, Minus, ChevronDown, Check, Zap, ShoppingCart, ShoppingBag, LogIn, Link2Off, Compass, ChevronRight } from 'lucide-react-native';
+import { api, UnifiedProduct, PlatformVariant, getProductOverallMax, getItemPlatformLimit, resolvePlatformProduct } from '../../services/api';
 import { storage, Platform, LocationData } from '../../services/storage';
 import { colors, fonts, platformThemes, PLATFORM_ORDER } from '../../constants/theme';
 import { liveKey, familyKey } from '../../utils/productKey';
@@ -11,6 +11,7 @@ import { pickBestMatch } from '../../utils/matcher';
 import MatchModal, { MatchFlowState, MatchTarget, MatchCell } from '../../components/MatchModal';
 import VariantPickerModal from '../../components/VariantPickerModal';
 import { resolveAreaName } from '../../utils/location';
+import { isAddressSyncing, waitForAddressSync, subscribeAddressSync, syncDeliveryAddresses, subscribeLocationReset } from '../../services/addressSync';
 
 const QUICK_SEARCHES = ['Milk', 'Bread', 'Eggs', 'Butter', 'Cheese'];
 type StoreFilter = 'all' | Platform;
@@ -30,6 +31,122 @@ export function LogoTile({ platform, size = 30 }: { platform: Platform; size?: n
   );
 }
 
+interface ProductCardProps {
+  group: { items: UnifiedProduct[]; minPrice: number };
+  cartItemMap: Map<string, number>;
+  onPress: (p: UnifiedProduct) => void;
+  onAddToCart: (p: UnifiedProduct) => void;
+  onStepQty: (p: UnifiedProduct, delta: number) => void;
+}
+
+const ProductCard = React.memo(({
+  group,
+  cartItemMap,
+  onPress,
+  onAddToCart,
+  onStepQty
+}: ProductCardProps) => {
+  const items = useMemo(() => [...group.items].sort((a, b) => a.price - b.price), [group.items]);
+  const rep = items[0];
+  const t = platformThemes[rep.platform];
+  const plats = useMemo(() => Array.from(new Set(items.map(i => i.platform))), [items]);
+  const cartedItem = items.find(i => (cartItemMap.get(liveKey({ name: i.title, unit: i.quantity })) || 0) > 0);
+  const qty = cartedItem ? (cartItemMap.get(liveKey({ name: cartedItem.title, unit: cartedItem.quantity })) || 0) : 0;
+  const inCart = !!cartedItem;
+  const cardLimit = getItemPlatformLimit(cartedItem || rep);
+  const overall = cartedItem ? getProductOverallMax(cartedItem) : getProductOverallMax(rep);
+  const isAtCardLimit = inCart && typeof cardLimit === 'number' && cardLimit > 0 && qty >= cardLimit;
+  const isAtMax = inCart && (isAtCardLimit || qty >= overall.maxAllowed);
+  const maxAllowedQty = typeof cardLimit === 'number' && cardLimit > 0 ? cardLimit : overall.maxAllowed;
+  const prices = useMemo(() => Array.from(new Set(items.map(i => i.price))), [items]);
+  const maxMrp = Math.max(...items.map(i => i.originalPrice || i.price || 0));
+  const discount = maxMrp > rep.price ? Math.round(((maxMrp - rep.price) / maxMrp) * 100) : 0;
+
+  return (
+    <TouchableOpacity
+      activeOpacity={0.9}
+      onPress={() => onPress(rep)}
+      style={[styles.pcCard, inCart && styles.pcCardAdded]}
+    >
+      <View style={styles.pcImageArea}>
+        <Image source={{ uri: rep.imageUrl }} style={styles.pcImage} resizeMode="contain" />
+        {discount > 0 && (
+          <View style={styles.discountBadge}>
+            <Text style={styles.discountText}>{discount}% OFF</Text>
+          </View>
+        )}
+        {items.length > 1 && (
+          <View style={styles.optCountBadge}>
+            <Text style={styles.optCountText}>{items.length} options</Text>
+          </View>
+        )}
+        <View style={styles.platBadgesRow}>
+          {plats.map(pl => {
+            const tt = platformThemes[pl];
+            return (
+              <View key={pl} style={[styles.platformCorner, { backgroundColor: tt.bgLight, borderColor: tt.borderColor }]}>
+                <Text style={[styles.platformCornerText, { color: tt.color }]}>{tt.name}</Text>
+              </View>
+            );
+          })}
+        </View>
+      </View>
+      <Text style={styles.pcName} numberOfLines={2}>{rep.title}</Text>
+      <Text style={styles.pcUnit} numberOfLines={1}>{rep.quantity}</Text>
+      <View style={styles.pcFooter}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', flexShrink: 1 }}>
+          {prices.length > 1 && !inCart && <Text style={styles.pcUnit}>from </Text>}
+          <Text style={styles.pcPrice} numberOfLines={1}>₹{rep.price}</Text>
+          {maxMrp > rep.price && !inCart && (
+            <Text style={styles.pcMrp} numberOfLines={1}>₹{maxMrp}</Text>
+          )}
+        </View>
+        {!inCart ? (
+          <TouchableOpacity
+            onPress={() => {
+              if (items.length > 1) {
+                onPress(rep);
+                return;
+              }
+              const lim = getItemPlatformLimit(rep);
+              if (rep.inStock === false || (typeof lim === 'number' && lim <= 0)) {
+                Alert.alert('Out of Stock', `This item is currently out of stock on ${t.name}.`);
+                return;
+              }
+              onAddToCart(rep);
+            }}
+            style={{ borderRadius: 17, overflow: 'hidden' }}
+          >
+            <LinearGradient colors={t.gradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.addBtn}>
+              <Plus size={16} color={t.textColor} />
+            </LinearGradient>
+          </TouchableOpacity>
+        ) : (
+          <View style={styles.stepper}>
+            <TouchableOpacity onPress={() => onStepQty(cartedItem!, -1)} style={styles.stepBtn}>
+              <Minus size={13} color="#FFF" />
+            </TouchableOpacity>
+            <Text style={styles.stepQty}>{qty}</Text>
+            <TouchableOpacity
+              activeOpacity={isAtMax ? 1 : 0.7}
+              onPress={() => {
+                if (isAtMax) {
+                  Alert.alert('Stock Limit Reached', `Only ${maxAllowedQty} unit${maxAllowedQty === 1 ? '' : 's'} available on ${t.name}.`);
+                  return;
+                }
+                onStepQty(cartedItem!, 1);
+              }}
+              style={[styles.stepBtn, isAtMax && { opacity: 0.35 }]}
+            >
+              <Plus size={13} color="#FFF" />
+            </TouchableOpacity>
+          </View>
+        )}
+      </View>
+    </TouchableOpacity>
+  );
+});
+
 export default function SearchScreen() {
   const router = useRouter();
   const [query, setQuery] = useState('');
@@ -40,7 +157,32 @@ export default function SearchScreen() {
   const [tokens, setTokens] = useState<{ blinkit: string | null; swiggy: string | null }>({ blinkit: null, swiggy: null });
   const [cartItems, setCartItems] = useState<{ product: UnifiedProduct; quantity: number }[]>([]);
   const [storeFilter, setStoreFilter] = useState<StoreFilter>('all');
+  const [platformErrors, setPlatformErrors] = useState<Partial<Record<Platform, string>>>({});
   const [switcherOpen, setSwitcherOpen] = useState(false);
+  const pillRef = useRef<View>(null);
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
+
+  const handleToggleSwitcher = useCallback(() => {
+    if (switcherOpen) {
+      setSwitcherOpen(false);
+      return;
+    }
+    if (pillRef.current) {
+      pillRef.current.measureInWindow((x, y, width, height) => {
+        if (y > 0) {
+          const { width: windowWidth } = Dimensions.get('window');
+          setMenuPos({
+            top: y + height + 6,
+            left: Math.max(16, Math.min(windowWidth - 306, x + (width - 290) / 2)),
+          });
+        }
+        setSwitcherOpen(true);
+      });
+    } else {
+      setSwitcherOpen(true);
+    }
+  }, [switcherOpen]);
+
   const [matchFlow, setMatchFlow] = useState<MatchFlowState | null>(null);
   const [variantBase, setVariantBase] = useState<UnifiedProduct | null>(null);
   const [matchToast, setMatchToast] = useState<{ platform: Platform; name: string } | null>(null);
@@ -49,6 +191,40 @@ export default function SearchScreen() {
   matchFlowRef.current = matchFlow;
   const cartItemsRef = useRef(cartItems);
   cartItemsRef.current = cartItems;
+
+  const [addressSyncing, setAddressSyncing] = useState(isAddressSyncing());
+  const lastLocationRef = useRef<{ latitude: number; longitude: number } | null>(null);
+
+  const resetSearchState = useCallback(() => {
+    console.log('[Search] Resetting search state due to location update...');
+    setQuery('');
+    setLoading(false);
+    setProducts([]);
+    setPlatformErrors({});
+    setPendingPlatforms([]);
+    setStoreFilter('all');
+    setSwitcherOpen(false);
+    setMatchFlow(null);
+    setVariantBase(null);
+    setMatchToast(null);
+  }, []);
+
+  useEffect(() => {
+    const unsubSync = subscribeAddressSync((syncing) => {
+      setAddressSyncing(syncing);
+      if (!syncing) {
+        loadInitialData();
+      }
+    });
+    const unsubReset = subscribeLocationReset(() => {
+      resetSearchState();
+      loadInitialData();
+    });
+    return () => {
+      unsubSync();
+      unsubReset();
+    };
+  }, [resetSearchState]);
 
   useEffect(() => {
     if (!matchToast) return;
@@ -66,6 +242,20 @@ export default function SearchScreen() {
     setTokens({ blinkit: blinkitToken, swiggy: swiggyToken });
     setLocation(userLoc);
     setCartItems(cart);
+
+    if (userLoc && typeof userLoc.latitude === 'number' && typeof userLoc.longitude === 'number') {
+      const prev = lastLocationRef.current;
+      const isDifferent = prev !== null && (
+        Math.abs(userLoc.latitude - prev.latitude) > 0.0001 ||
+        Math.abs(userLoc.longitude - prev.longitude) > 0.0001
+      );
+      if (isDifferent) {
+        console.log('[Search] Location coordinates changed. Resetting search state...');
+        resetSearchState();
+      }
+      lastLocationRef.current = { latitude: userLoc.latitude, longitude: userLoc.longitude };
+      syncDeliveryAddresses(userLoc.latitude, userLoc.longitude, false).catch(() => {});
+    }
 
     if (userLoc && (!userLoc.address || userLoc.address.startsWith('Manual:'))) {
       resolveAreaName(userLoc.latitude, userLoc.longitude).then(async (resolvedArea) => {
@@ -87,14 +277,35 @@ export default function SearchScreen() {
   const performSearch = async (searchTerm: string) => {
     if (!searchTerm.trim()) return;
     Keyboard.dismiss();
+    if (!location) {
+      setProducts([]);
+      return;
+    }
+
+    // Search should not work until Swiggy and Blinkit are done pulling address details
+    if (isAddressSyncing()) {
+      setAddressSyncing(true);
+      setLoading(true);
+      setProducts([]);
+      console.log('[Search] Waiting for Blinkit and Swiggy address details to finish pulling before executing search...');
+      await waitForAddressSync();
+      setAddressSyncing(false);
+      const freshLoc = await storage.getLocation();
+      if (freshLoc) setLocation(freshLoc);
+    }
+
     setLoading(true);
     setProducts([]);
+    setPlatformErrors({});
     setPendingPlatforms(PLATFORM_ORDER);
     try {
       // Each platform's results stream in as soon as they arrive
-      await api.search(searchTerm, (platform, results) => {
+      await api.search(searchTerm, (platform, results, platformError) => {
         setProducts(prev => [...prev, ...results]);
         setPendingPlatforms(prev => prev.filter(p => p !== platform));
+        if (platformError) {
+          setPlatformErrors(prev => ({ ...prev, [platform]: platformError }));
+        }
       });
     } catch (err) {
       console.error(err);
@@ -107,6 +318,7 @@ export default function SearchScreen() {
   const handleClear = () => {
     setQuery('');
     setProducts([]);
+    setPlatformErrors({});
   };
 
   const handleQuickSearch = (term: string) => {
@@ -128,6 +340,9 @@ export default function SearchScreen() {
     productId: p.productId,
     spinId: p.spinId,
     storeId: p.storeId,
+    inStock: p.inStock,
+    availableStock: p.availableStock,
+    maxQuantity: p.maxQuantity,
   });
 
   const runCellSearch = useCallback(async (tid: string, target: MatchTarget, pid: Platform) => {
@@ -280,11 +495,27 @@ export default function SearchScreen() {
   // ---------- Cart mutations ----------
 
   const handleAddToCart = async (product: UnifiedProduct) => {
+    console.log(`[AddToCart Debug] product: "${product.title}" (${product.platform}), limit: ${getItemPlatformLimit(product)}, availableStock: ${product.availableStock}, maxQuantity: ${product.maxQuantity}`);
     const items = cartItemsRef.current;
     const sameLineIdx = lineIdxFor(items, product);
 
     if (sameLineIdx > -1) {
       const line = items[sameLineIdx];
+      const prodLimit = getItemPlatformLimit(product);
+      const resolved = resolvePlatformProduct(line, product.platform);
+      const storeCurrentQty = resolved ? resolved.quantity : line.quantity;
+      const theme = platformThemes[product.platform];
+      console.log(`[AddToCart Debug - Incrementing] lineQty: ${line.quantity}, storeCurrentQty: ${storeCurrentQty}, prodLimit: ${prodLimit}`);
+      if (typeof prodLimit === 'number' && prodLimit > 0 && storeCurrentQty >= prodLimit) {
+        Alert.alert('Stock Limit Reached', `Only ${prodLimit} unit${prodLimit === 1 ? '' : 's'} available on ${theme.name}.`);
+        return;
+      }
+
+      const overall = getProductOverallMax(line.product);
+      if (line.quantity >= overall.maxAllowed) {
+        Alert.alert('Stock Limit Reached', `Only ${overall.maxAllowed} unit${overall.maxAllowed === 1 ? '' : 's'} available across stores.`);
+        return;
+      }
       const alreadyPricedHere = line.product.platform === product.platform || !!line.product.platformPrices?.[product.platform];
       let updatedLine;
       if (alreadyPricedHere) {
@@ -301,6 +532,14 @@ export default function SearchScreen() {
       updated[sameLineIdx] = updatedLine;
       setCartItems(updated);
       await storage.saveCart(updated);
+      return;
+    }
+
+    // Brand-new line — check if out of stock
+    const prodLimit = getItemPlatformLimit(product);
+    if (product.inStock === false || (typeof prodLimit === 'number' && prodLimit <= 0)) {
+      const theme = platformThemes[product.platform];
+      Alert.alert('Out of Stock', `This item is currently out of stock on ${theme.name}.`);
       return;
     }
 
@@ -329,25 +568,75 @@ export default function SearchScreen() {
     const idx = lineIdxFor(items, product);
     if (idx === -1) return;
     const updated = [...items];
-    const nextQty = updated[idx].quantity + delta;
+    const line = updated[idx];
+    if (delta > 0) {
+      const prodLimit = getItemPlatformLimit(product);
+      const resolved = resolvePlatformProduct(line, product.platform);
+      const storeCurrentQty = resolved ? resolved.quantity : line.quantity;
+      const theme = platformThemes[product.platform];
+      const overall = getProductOverallMax(line.product);
+      console.log(`[StepQty Debug] product: "${product.title}" (${product.platform}), delta: ${delta}, prodLimit: ${prodLimit}, storeCurrentQty: ${storeCurrentQty}, overallMax: ${overall.maxAllowed}`);
+      if (typeof prodLimit === 'number' && prodLimit > 0 && storeCurrentQty >= prodLimit) {
+        Alert.alert('Stock Limit Reached', `Only ${prodLimit} unit${prodLimit === 1 ? '' : 's'} available on ${theme.name}.`);
+        return;
+      }
+
+      if (line.quantity >= overall.maxAllowed) {
+        Alert.alert('Stock Limit Reached', `Only ${overall.maxAllowed} unit${overall.maxAllowed === 1 ? '' : 's'} available across stores.`);
+        return;
+      }
+    }
+    const nextQty = line.quantity + delta;
     if (nextQty <= 0) updated.splice(idx, 1);
-    else updated[idx] = { ...updated[idx], quantity: nextQty };
+    else updated[idx] = { ...line, quantity: nextQty };
     setCartItems(updated);
     await storage.saveCart(updated);
   };
 
-  const qtyFor = (product: UnifiedProduct) => {
-    const idx = lineIdxFor(cartItems, product);
-    return idx > -1 ? cartItems[idx].quantity : 0;
-  };
+  const cartItemMap = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const ci of cartItems) {
+      const k = liveKey({ name: ci.product.title, unit: ci.product.quantity });
+      const mainResolved = resolvePlatformProduct(ci, ci.product.platform);
+      map.set(k, mainResolved ? mainResolved.quantity : ci.quantity);
+      if (ci.product.platformPrices) {
+        for (const [pl, v] of Object.entries(ci.product.platformPrices)) {
+          const varResolved = resolvePlatformProduct(ci, pl as Platform);
+          map.set(liveKey({ name: v.title, unit: v.quantity }), varResolved ? varResolved.quantity : ci.quantity);
+        }
+      }
+    }
+    return map;
+  }, [cartItems]);
+
+  const qtyFor = useCallback((product: UnifiedProduct) => {
+    const k = liveKey({ name: product.title, unit: product.quantity });
+    let q = cartItemMap.get(k);
+    if (q === undefined) {
+      const idx = lineIdxFor(cartItemsRef.current, product);
+      if (idx !== -1) {
+        const resolved = resolvePlatformProduct(cartItemsRef.current[idx], product.platform);
+        q = resolved ? resolved.quantity : cartItemsRef.current[idx].quantity;
+      } else {
+        q = 0;
+      }
+    }
+    const lim = getItemPlatformLimit(product);
+    if (typeof lim === 'number' && lim > 0) {
+      return Math.min(q, lim);
+    }
+    return q;
+  }, [cartItemMap]);
 
   // Filter products by active store selection, preserving the server's relevance ranking order
-  const filteredProducts = products.filter(p => storeFilter === 'all' || p.platform === storeFilter);
+  const filteredProducts = useMemo(() => {
+    return products.filter(p => storeFilter === 'all' || p.platform === storeFilter);
+  }, [products, storeFilter]);
 
   // Collapse identical products (any pack size, either app) into ONE card —
   // tap it to open the variant picker, like the desktop optimizer.
   // Preserves the native relevance ranking order returned by the platform's search API.
-  const productGroups = (() => {
+  const productGroups = useMemo(() => {
     const map = new Map<string, UnifiedProduct[]>();
     for (const pr of filteredProducts) {
       // Per-app groups only — a card never mixes Blinkit & Instamart
@@ -361,9 +650,37 @@ export default function SearchScreen() {
       items,
       minPrice: Math.min(...items.map(i => i.price || Infinity))
     }));
-  })();
+  }, [filteredProducts]);
 
   const filterLabel = storeFilter === 'all' ? 'All Stores' : platformThemes[storeFilter].name;
+
+  const handleCardPress = useCallback((p: UnifiedProduct) => {
+    setVariantBase(p);
+  }, []);
+
+  const handleCardAddToCart = useCallback((p: UnifiedProduct) => {
+    handleAddToCart(p);
+  }, []);
+
+  const handleCardStepQty = useCallback((p: UnifiedProduct, delta: number) => {
+    handleStepQty(p, delta);
+  }, []);
+
+  const renderProductCard = useCallback(({ item: group }: { item: { items: UnifiedProduct[]; minPrice: number } }) => {
+    return (
+      <ProductCard
+        group={group}
+        cartItemMap={cartItemMap}
+        onPress={handleCardPress}
+        onAddToCart={handleCardAddToCart}
+        onStepQty={handleCardStepQty}
+      />
+    );
+  }, [cartItemMap, handleCardPress, handleCardAddToCart, handleCardStepQty]);
+
+  const groupKey = useCallback((g: { items: UnifiedProduct[]; minPrice: number }) => {
+    return g.items[0].platform + '|' + (g.items[0].originalId || g.items[0].id || familyKey(g.items[0]));
+  }, []);
 
   return (
     <KeyboardAvoidingView
@@ -404,286 +721,355 @@ export default function SearchScreen() {
         </TouchableOpacity>
       </View>
 
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        {/* Location bar */}
-        <View style={styles.locationBar}>
-          <MapPin size={13} color={colors.accentPrimary} />
-          <Text style={styles.locationText} numberOfLines={1}>
-            {location?.address || 'Pin delivery location in Accounts Tab'}
-          </Text>
-        </View>
+      <FlatList
+        data={filteredProducts.length > 0 ? productGroups : []}
+        keyExtractor={groupKey}
+        renderItem={renderProductCard}
+        numColumns={2}
+        columnWrapperStyle={filteredProducts.length > 0 ? styles.gridRow : undefined}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+        initialNumToRender={8}
+        maxToRenderPerBatch={8}
+        windowSize={5}
+        removeClippedSubviews={RNPlatform.OS === 'android'}
+        ListHeaderComponent={
+          <>
+            {/* Location bar */}
+            <TouchableOpacity
+              style={[styles.locationBar, !location && styles.locationBarMissing]}
+              onPress={() => router.push('/(tabs)/profile')}
+              activeOpacity={0.7}
+            >
+              <MapPin size={13} color={location ? colors.accentPrimary : '#F59E0B'} />
+              <Text
+                style={[styles.locationText, !location && styles.locationTextMissing]}
+                numberOfLines={1}
+              >
+                {location?.address || 'GPS location not set • Tap to configure'}
+              </Text>
+              <ChevronRight size={13} color={location ? colors.textMuted : '#F59E0B'} />
+            </TouchableOpacity>
 
-        {/* Search bar */}
-        <View style={styles.searchRow}>
-          <View style={styles.searchBox}>
-            <Search size={18} color={colors.textMuted} style={styles.searchIcon} />
-            <TextInput
-              style={styles.searchInput}
-              placeholder="Search Milk, Eggs, Atta, Butter, Oil…"
-              placeholderTextColor={colors.textMuted}
-              value={query}
-              onChangeText={setQuery}
-              onSubmitEditing={() => performSearch(query)}
-              returnKeyType="search"
-            />
-            {query.length > 0 && (
-              <TouchableOpacity onPress={handleClear} style={styles.clearBtn}>
-                <X size={16} color={colors.textMuted} />
-              </TouchableOpacity>
+            {/* Address Syncing Status Bar */}
+            {addressSyncing && (
+              <View style={styles.syncingAddressBanner}>
+                <ActivityIndicator size="small" color={colors.accentPrimary} />
+                <Text style={styles.syncingAddressText}>Syncing store delivery addresses for your location…</Text>
+              </View>
             )}
-          </View>
-          <TouchableOpacity style={styles.searchBtn} onPress={() => performSearch(query)}>
-            <Text style={styles.searchBtnText}>Search</Text>
-          </TouchableOpacity>
-        </View>
 
-        {/* Quick searches */}
-        {products.length === 0 && (
-          <View style={styles.quickRow}>
-            <Text style={styles.quickLabel}>Quick:</Text>
-            {QUICK_SEARCHES.map(term => (
-              <TouchableOpacity key={term} style={styles.quickChip} onPress={() => handleQuickSearch(term)}>
-                <Text style={styles.quickChipText}>{term}</Text>
+            {/* Search bar */}
+            <View style={styles.searchRow}>
+              <View style={styles.searchBox}>
+                <Search size={18} color={colors.textMuted} style={styles.searchIcon} />
+                <TextInput
+                  style={styles.searchInput}
+                  placeholder="Search Milk, Eggs, Atta, Butter, Oil…"
+                  placeholderTextColor={colors.textMuted}
+                  value={query}
+                  onChangeText={setQuery}
+                  onSubmitEditing={() => performSearch(query)}
+                  returnKeyType="search"
+                />
+                {query.length > 0 && (
+                  <TouchableOpacity onPress={handleClear} style={styles.clearBtn}>
+                    <X size={16} color={colors.textMuted} />
+                  </TouchableOpacity>
+                )}
+              </View>
+              <TouchableOpacity
+                style={[styles.searchBtn, addressSyncing && styles.searchBtnSyncing]}
+                onPress={() => performSearch(query)}
+              >
+                {addressSyncing ? (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                    <ActivityIndicator size="small" color="#FFF" />
+                    <Text style={styles.searchBtnText}>Syncing…</Text>
+                  </View>
+                ) : (
+                  <Text style={styles.searchBtnText}>Search</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+
+            {/* Quick searches */}
+            {products.length === 0 && (
+              <View style={styles.quickRow}>
+                <Text style={styles.quickLabel}>Quick:</Text>
+                {QUICK_SEARCHES.map(term => (
+                  <TouchableOpacity key={term} style={styles.quickChip} onPress={() => handleQuickSearch(term)}>
+                    <Text style={styles.quickChipText}>{term}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+
+            {/* Platform switcher */}
+            <View style={styles.switcherWrap} ref={pillRef} collapsable={false}>
+              <TouchableOpacity style={styles.switcherPill} onPress={handleToggleSwitcher}>
+                {storeFilter === 'all'
+                  ? <View style={[styles.logoTile, { width: 26, height: 26, borderRadius: 8, backgroundColor: 'rgba(99, 102, 241, 0.15)', borderColor: colors.borderGlow }]}><ShoppingBag size={13} color={colors.accentPrimary} /></View>
+                  : <LogoTile platform={storeFilter} size={26} />}
+                <Text style={styles.switcherLabel}>Showing results from</Text>
+                <Text style={[styles.switcherName, { color: storeFilter === 'all' ? colors.textPrimary : platformThemes[storeFilter].color }]}>
+                  {filterLabel}
+                </Text>
+                <ChevronDown size={15} color={colors.textMuted} style={switcherOpen && { transform: [{ rotate: '180deg' }] }} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Platform range warnings when a platform is too far */}
+            {Object.entries(platformErrors).map(([plat, err]) => {
+              if (!err) return null;
+              if (storeFilter !== 'all' && storeFilter !== plat) return null;
+              const p = plat as Platform;
+              const theme = platformThemes[p];
+              const cleanMsg = err.replace(/^[A-Z_]+:\s*/, '');
+              return (
+                <View key={plat} style={[styles.platformWarningCard, { borderColor: theme.borderColor, backgroundColor: theme.bgLight }]}>
+                  <View style={[styles.logoTile, { width: 26, height: 26, borderRadius: 7, backgroundColor: 'rgba(0,0,0,0.2)' }]}>
+                    <Text style={[styles.logoLetter, { color: theme.color, fontSize: 12 }]}>{theme.name[0]}</Text>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontFamily: fonts.bodySemiBold, color: theme.color, fontSize: 12, marginBottom: 2 }}>
+                      {theme.name} — Location
+                    </Text>
+                    <Text style={styles.platformWarningText} numberOfLines={2}>
+                      {cleanMsg || `Cannot search on your current location for ${theme.name}.`}
+                    </Text>
+                  </View>
+                </View>
+              );
+            })}
+
+            {/* Live Header Card when results exist */}
+            {filteredProducts.length > 0 && (
+              <View style={styles.liveHeaderCard}>
+                <View style={styles.liveHeader}>
+                  <View style={styles.liveIconChip}>
+                    <Zap size={17} color={colors.emerald} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.liveTitle} numberOfLines={1}>Live Results for “{query}”</Text>
+                    <Text style={styles.liveHint}>
+                      {storeFilter === 'all' && platformErrors.swiggy && !platformErrors.blinkit
+                        ? 'Showing Blinkit results only • Cannot search Instamart on current location'
+                        : storeFilter === 'all' && platformErrors.blinkit && !platformErrors.swiggy
+                        ? 'Showing Instamart results only • Cannot search Blinkit on current location'
+                        : 'Tap + to add the exact product — the other app gets auto-matched.'}
+                    </Text>
+                  </View>
+                </View>
+
+                {pendingPlatforms.length > 0 && (
+                  <View style={styles.searchingPill}>
+                    <ActivityIndicator size={11} color={colors.accentPrimary} />
+                    <Text style={styles.searchingPillText}>
+                      Searching {pendingPlatforms.map(p => platformThemes[p].name).join(' & ')}…
+                    </Text>
+                  </View>
+                )}
+              </View>
+            )}
+          </>
+        }
+        ListEmptyComponent={
+          loading && filteredProducts.length === 0 ? (
+            <View style={styles.centerContainer}>
+              <ActivityIndicator size="large" color={colors.accentPrimary} />
+              <Text style={styles.loadingText}>
+                {addressSyncing ? 'Syncing store addresses…' : 'Fetching live results…'}
+              </Text>
+              <Text style={styles.loadingSubtext}>
+                {addressSyncing
+                  ? 'Pulling delivery addresses for Blinkit & Instamart before searching'
+                  : pendingPlatforms.length > 0
+                  ? `Searching ${pendingPlatforms.map(p => platformThemes[p].name).join(' & ')}`
+                  : 'Searching Blinkit & Instamart'}
+              </Text>
+            </View>
+          ) : filteredProducts.length === 0 ? (
+            (() => {
+              const noTokens = !tokens.blinkit && !tokens.swiggy;
+              const singleStoreUnlinked = storeFilter !== 'all' && !tokens[storeFilter];
+
+              if (noTokens) {
+                return (
+                  <View style={styles.emptyContainer}>
+                    <View style={styles.emptyIconCircle}>
+                      <Link2Off size={32} color="#EF4444" />
+                    </View>
+                    <Text style={styles.emptyTitle}>Not Logged In</Text>
+                    <Text style={styles.emptySubtitle}>
+                      Login to Blinkit or Swiggy Instamart to search live catalog prices and stock.
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.loginRedirectBtn}
+                      onPress={() => router.push('/(tabs)/profile')}
+                    >
+                      <LogIn size={16} color="#FFF" style={{ marginRight: 8 }} />
+                      <Text style={styles.loginRedirectBtnText}>Go to Profile / Login</Text>
+                    </TouchableOpacity>
+                  </View>
+                );
+              }
+
+              if (!location) {
+                return (
+                  <View style={styles.emptyContainer}>
+                    <View style={[styles.emptyIconCircle, { backgroundColor: 'rgba(99, 102, 241, 0.15)', borderColor: colors.borderGlow }]}>
+                      <MapPin size={32} color={colors.accentPrimary} />
+                    </View>
+                    <Text style={styles.emptyTitle}>GPS Location Required</Text>
+                    <Text style={styles.emptySubtitle}>
+                      Quick commerce stores fulfill orders from local dark stores. Set your GPS location to search live catalog prices and stock.
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.loginRedirectBtn}
+                      onPress={() => router.push('/(tabs)/profile')}
+                    >
+                      <Compass size={16} color="#FFF" style={{ marginRight: 8 }} />
+                      <Text style={styles.loginRedirectBtnText}>Set GPS Location</Text>
+                    </TouchableOpacity>
+                  </View>
+                );
+              }
+
+              if (singleStoreUnlinked) {
+                const theme = platformThemes[storeFilter as Platform];
+                return (
+                  <View style={styles.emptyContainer}>
+                    <View style={[styles.emptyIconCircle, { backgroundColor: theme.bgLight, borderColor: theme.borderColor }]}>
+                      <LogoTile platform={storeFilter as Platform} size={36} />
+                    </View>
+                    <Text style={styles.emptyTitle}>Not Logged into {theme.name}</Text>
+                    <Text style={styles.emptySubtitle}>
+                      Link your {theme.name} account in Profile to search its live store catalog.
+                    </Text>
+                    <TouchableOpacity
+                      style={[styles.loginRedirectBtn, { backgroundColor: theme.color }]}
+                      onPress={() => router.push('/(tabs)/profile')}
+                    >
+                      <LogIn size={16} color="#FFF" style={{ marginRight: 8 }} />
+                      <Text style={styles.loginRedirectBtnText}>Login to {theme.name}</Text>
+                    </TouchableOpacity>
+                  </View>
+                );
+              }
+
+              if (query.trim().length > 0) {
+                const hasSwiggyError = !!platformErrors.swiggy;
+                const hasBlinkitError = !!platformErrors.blinkit;
+                const bothOutOfRange = hasSwiggyError && hasBlinkitError;
+
+                const activeTooFar = storeFilter !== 'all'
+                  ? platformErrors[storeFilter]
+                  : bothOutOfRange
+                    ? 'BOTH_TOO_FAR'
+                    : (!tokens.blinkit && hasSwiggyError)
+                      ? platformErrors.swiggy
+                      : (!tokens.swiggy && hasBlinkitError)
+                        ? platformErrors.blinkit
+                        : null;
+
+                if (activeTooFar) {
+                  const isBoth = storeFilter === 'all' && (activeTooFar === 'BOTH_TOO_FAR' || (hasSwiggyError && hasBlinkitError));
+                  const targetPlat = storeFilter !== 'all' ? storeFilter : (hasSwiggyError ? 'swiggy' : 'blinkit');
+                  const targetTheme = platformThemes[targetPlat];
+                  const theme = isBoth
+                    ? { color: '#EF4444', bgLight: 'rgba(239, 68, 68, 0.12)', borderColor: 'rgba(239, 68, 68, 0.3)' }
+                    : targetTheme;
+                  return (
+                    <View style={styles.emptyContainer}>
+                      <View style={[styles.emptyIconCircle, { backgroundColor: theme.bgLight, borderColor: theme.borderColor }]}>
+                        <MapPin size={32} color={theme.color} />
+                      </View>
+                      <Text style={styles.emptyTitle}>Cannot Search on Current Location</Text>
+                      <Text style={styles.emptySubtitle}>
+                        {isBoth
+                          ? 'Cannot search on your current location for Blinkit or Instamart.'
+                          : `Cannot search on your current location for ${targetTheme.name}.`}
+                      </Text>
+                    </View>
+                  );
+                }
+
+                return (
+                  <View style={styles.emptyContainer}>
+                    <Text style={styles.emptyEmoji}>🔍</Text>
+                    <Text style={styles.emptyTitle}>No Live Results Found</Text>
+                    <Text style={styles.emptySubtitle}>
+                      We couldn't find any live products matching “{query}” in your local store.
+                    </Text>
+                  </View>
+                );
+              }
+
+              return (
+                <View style={styles.emptyContainer}>
+                  <Text style={styles.emptyEmoji}>🛒</Text>
+                  <Text style={styles.emptyTitle}>Build your optimized basket</Text>
+                  <Text style={styles.emptySubtitle}>
+                    Search a product, tap +, and we’ll auto-match it on the other app with live checkout pricing.
+                  </Text>
+                </View>
+              );
+            })()
+          ) : null
+        }
+        ListFooterComponent={
+          <>
+            {loading && pendingPlatforms.length > 0 && (
+              <View style={styles.partialLoadingRow}>
+                <ActivityIndicator size="small" color={colors.accentPrimary} />
+                <Text style={styles.partialLoadingText}>
+                  Fetching {pendingPlatforms.map(p => platformThemes[p].name).join(' & ')} prices…
+                </Text>
+              </View>
+            )}
+            <View style={{ height: 40 }} />
+          </>
+        }
+      />
+
+      {/* Platform Switcher Dropdown Modal */}
+      <Modal
+        visible={switcherOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSwitcherOpen(false)}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={() => setSwitcherOpen(false)}>
+          <View
+            style={[
+              styles.switcherMenu,
+              {
+                position: 'absolute',
+                top: menuPos?.top ?? 220,
+                left: menuPos?.left ?? Math.max(16, (Dimensions.get('window').width - 290) / 2),
+              }
+            ]}
+          >
+            {(['all', ...PLATFORM_ORDER] as StoreFilter[]).map(opt => (
+              <TouchableOpacity
+                key={opt}
+                style={styles.switcherOption}
+                onPress={() => { setStoreFilter(opt); setSwitcherOpen(false); }}
+              >
+                {opt === 'all'
+                  ? <View style={[styles.logoTile, { width: 30, height: 30, borderRadius: 9, backgroundColor: 'rgba(99, 102, 241, 0.15)', borderColor: colors.borderGlow }]}><ShoppingBag size={14} color={colors.accentPrimary} /></View>
+                  : <LogoTile platform={opt} />}
+                <Text style={[styles.switcherOptionName, { color: opt === 'all' ? colors.textPrimary : platformThemes[opt].color }]}>
+                  {opt === 'all' ? 'All Stores' : platformThemes[opt].name}
+                </Text>
+                <Text style={styles.switcherTagline}>{opt === 'all' ? 'Both apps side-by-side' : platformThemes[opt].tagline}</Text>
+                {storeFilter === opt && <Check size={16} color={colors.emerald} />}
               </TouchableOpacity>
             ))}
           </View>
-        )}
-
-        {/* Platform switcher */}
-        <View style={styles.switcherWrap}>
-          {switcherOpen && <Pressable style={styles.switcherBackdrop} onPress={() => setSwitcherOpen(false)} />}
-          <TouchableOpacity style={styles.switcherPill} onPress={() => setSwitcherOpen(o => !o)}>
-            {storeFilter === 'all'
-              ? <View style={[styles.logoTile, { width: 26, height: 26, borderRadius: 8, backgroundColor: 'rgba(99, 102, 241, 0.15)', borderColor: colors.borderGlow }]}><ShoppingBag size={13} color={colors.accentPrimary} /></View>
-              : <LogoTile platform={storeFilter} size={26} />}
-            <Text style={styles.switcherLabel}>Showing results from</Text>
-            <Text style={[styles.switcherName, { color: storeFilter === 'all' ? colors.textPrimary : platformThemes[storeFilter].color }]}>
-              {filterLabel}
-            </Text>
-            <ChevronDown size={15} color={colors.textMuted} style={switcherOpen && { transform: [{ rotate: '180deg' }] }} />
-          </TouchableOpacity>
-
-          {switcherOpen && (
-            <View style={styles.switcherMenu}>
-              {(['all', ...PLATFORM_ORDER] as StoreFilter[]).map(opt => (
-                <TouchableOpacity
-                  key={opt}
-                  style={styles.switcherOption}
-                  onPress={() => { setStoreFilter(opt); setSwitcherOpen(false); }}
-                >
-                  {opt === 'all'
-                    ? <View style={[styles.logoTile, { width: 30, height: 30, borderRadius: 9, backgroundColor: 'rgba(99, 102, 241, 0.15)', borderColor: colors.borderGlow }]}><ShoppingBag size={14} color={colors.accentPrimary} /></View>
-                    : <LogoTile platform={opt} />}
-                  <Text style={[styles.switcherOptionName, { color: opt === 'all' ? colors.textPrimary : platformThemes[opt].color }]}>
-                    {opt === 'all' ? 'All Stores' : platformThemes[opt].name}
-                  </Text>
-                  <Text style={styles.switcherTagline}>{opt === 'all' ? 'Both apps side-by-side' : platformThemes[opt].tagline}</Text>
-                  {storeFilter === opt && <Check size={16} color={colors.emerald} />}
-                </TouchableOpacity>
-              ))}
-            </View>
-          )}
-        </View>
-
-        {/* Main Content */}
-        {loading && products.length === 0 ? (
-          <View style={styles.centerContainer}>
-            <ActivityIndicator size="large" color={colors.accentPrimary} />
-            <Text style={styles.loadingText}>Fetching live results…</Text>
-            <Text style={styles.loadingSubtext}>
-              {pendingPlatforms.length > 0
-                ? `Searching ${pendingPlatforms.map(p => platformThemes[p].name).join(' & ')}`
-                : 'Searching Blinkit & Instamart'}
-            </Text>
-          </View>
-        ) : products.length === 0 ? (
-          (() => {
-            const noTokens = !tokens.blinkit && !tokens.swiggy;
-            const singleStoreUnlinked = storeFilter !== 'all' && !tokens[storeFilter];
-
-            if (noTokens) {
-              return (
-                <View style={styles.emptyContainer}>
-                  <View style={styles.emptyIconCircle}>
-                    <Link2Off size={32} color="#EF4444" />
-                  </View>
-                  <Text style={styles.emptyTitle}>Not Logged In</Text>
-                  <Text style={styles.emptySubtitle}>
-                    Login to Blinkit or Swiggy Instamart to search live catalog prices and stock.
-                  </Text>
-                  <TouchableOpacity
-                    style={styles.loginRedirectBtn}
-                    onPress={() => router.push('/(tabs)/profile')}
-                  >
-                    <LogIn size={16} color="#FFF" style={{ marginRight: 8 }} />
-                    <Text style={styles.loginRedirectBtnText}>Go to Profile / Login</Text>
-                  </TouchableOpacity>
-                </View>
-              );
-            }
-
-            if (singleStoreUnlinked) {
-              const theme = platformThemes[storeFilter as Platform];
-              return (
-                <View style={styles.emptyContainer}>
-                  <View style={[styles.emptyIconCircle, { backgroundColor: theme.bgLight, borderColor: theme.borderColor }]}>
-                    <LogoTile platform={storeFilter as Platform} size={36} />
-                  </View>
-                  <Text style={styles.emptyTitle}>Not Logged into {theme.name}</Text>
-                  <Text style={styles.emptySubtitle}>
-                    Link your {theme.name} account in Profile to search its live store catalog.
-                  </Text>
-                  <TouchableOpacity
-                    style={[styles.loginRedirectBtn, { backgroundColor: theme.color }]}
-                    onPress={() => router.push('/(tabs)/profile')}
-                  >
-                    <LogIn size={16} color="#FFF" style={{ marginRight: 8 }} />
-                    <Text style={styles.loginRedirectBtnText}>Login to {theme.name}</Text>
-                  </TouchableOpacity>
-                </View>
-              );
-            }
-
-            if (query.trim().length > 0) {
-              return (
-                <View style={styles.emptyContainer}>
-                  <Text style={styles.emptyEmoji}>🔍</Text>
-                  <Text style={styles.emptyTitle}>No Live Results Found</Text>
-                  <Text style={styles.emptySubtitle}>
-                    We couldn't find any live products matching “{query}” in your local store.
-                  </Text>
-                </View>
-              );
-            }
-
-            return (
-              <View style={styles.emptyContainer}>
-                <Text style={styles.emptyEmoji}>🛒</Text>
-                <Text style={styles.emptyTitle}>Build your optimized basket</Text>
-                <Text style={styles.emptySubtitle}>
-                  Search a product, tap +, and we’ll auto-match it on the other app with live checkout pricing.
-                </Text>
-              </View>
-            );
-          })()
-        ) : (
-          <View style={styles.liveSection}>
-            <View style={styles.liveHeader}>
-              <View style={styles.liveIconChip}>
-                <Zap size={17} color={colors.emerald} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.liveTitle} numberOfLines={1}>Live Results for “{query}”</Text>
-                <Text style={styles.liveHint}>Tap + to add the exact product — the other app gets auto-matched.</Text>
-              </View>
-            </View>
-
-            {pendingPlatforms.length > 0 && (
-              <View style={styles.searchingPill}>
-                <ActivityIndicator size={11} color={colors.accentPrimary} />
-                <Text style={styles.searchingPillText}>
-                  Searching {pendingPlatforms.map(p => platformThemes[p].name).join(' & ')}…
-                </Text>
-              </View>
-            )}
-
-            <FlatList
-              data={productGroups}
-              keyExtractor={(g) => g.items[0].platform + '|' + (familyKey(g.items[0]) || g.items[0].id)}
-              numColumns={2}
-              columnWrapperStyle={styles.gridRow}
-              scrollEnabled={false}
-              contentContainerStyle={styles.gridContent}
-              ListFooterComponent={
-                loading && pendingPlatforms.length > 0 ? (
-                  <View style={styles.partialLoadingRow}>
-                    <ActivityIndicator size="small" color={colors.accentPrimary} />
-                    <Text style={styles.partialLoadingText}>
-                      Fetching {pendingPlatforms.map(p => platformThemes[p].name).join(' & ')} prices…
-                    </Text>
-                  </View>
-                ) : null
-              }
-              renderItem={({ item: group }) => {
-                const items = [...group.items].sort((a, b) => a.price - b.price);
-                const rep = items[0];
-                const t = platformThemes[rep.platform];
-                const plats = Array.from(new Set(items.map(i => i.platform)));
-                const cartedItem = items.find(i => qtyFor(i) > 0);
-                const qty = cartedItem ? qtyFor(cartedItem) : 0;
-                const inCart = !!cartedItem;
-                const prices = Array.from(new Set(items.map(i => i.price)));
-                const maxMrp = Math.max(...items.map(i => i.originalPrice || i.price || 0));
-                const discount = maxMrp > rep.price ? Math.round(((maxMrp - rep.price) / maxMrp) * 100) : 0;
-                return (
-                  <TouchableOpacity
-                    activeOpacity={0.9}
-                    onPress={() => setVariantBase(rep)}
-                    style={[styles.pcCard, inCart && styles.pcCardAdded]}
-                  >
-                    <View style={styles.pcImageArea}>
-                      <Image source={{ uri: rep.imageUrl }} style={styles.pcImage} resizeMode="contain" />
-                      {discount > 0 && (
-                        <View style={styles.discountBadge}>
-                          <Text style={styles.discountText}>{discount}% OFF</Text>
-                        </View>
-                      )}
-                      {items.length > 1 && (
-                        <View style={styles.optCountBadge}>
-                          <Text style={styles.optCountText}>{items.length} options</Text>
-                        </View>
-                      )}
-                      <View style={styles.platBadgesRow}>
-                        {plats.map(pl => {
-                          const tt = platformThemes[pl];
-                          return (
-                            <View key={pl} style={[styles.platformCorner, { backgroundColor: tt.bgLight, borderColor: tt.borderColor }]}>
-                              <Text style={[styles.platformCornerText, { color: tt.color }]}>{tt.name}</Text>
-                            </View>
-                          );
-                        })}
-                      </View>
-                    </View>
-                    <Text style={styles.pcName} numberOfLines={2}>{rep.title}</Text>
-                    <Text style={styles.pcUnit} numberOfLines={1}>{rep.quantity}</Text>
-                    <View style={styles.pcFooter}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', flexShrink: 1 }}>
-                        {prices.length > 1 && !inCart && <Text style={styles.pcUnit}>from </Text>}
-                        <Text style={styles.pcPrice} numberOfLines={1}>₹{rep.price}</Text>
-                        {maxMrp > rep.price && !inCart && (
-                          <Text style={styles.pcMrp} numberOfLines={1}>₹{maxMrp}</Text>
-                        )}
-                      </View>
-                      {!inCart ? (
-                        <TouchableOpacity
-                          onPress={() => items.length > 1 ? setVariantBase(rep) : handleAddToCart(rep)}
-                          style={{ borderRadius: 17, overflow: 'hidden' }}
-                        >
-                          <LinearGradient colors={t.gradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.addBtn}>
-                            <Plus size={16} color={t.textColor} />
-                          </LinearGradient>
-                        </TouchableOpacity>
-                      ) : (
-                        <View style={styles.stepper}>
-                          <TouchableOpacity onPress={() => handleStepQty(cartedItem!, -1)} style={styles.stepBtn}>
-                            <Minus size={13} color="#FFF" />
-                          </TouchableOpacity>
-                          <Text style={styles.stepQty}>{qty}</Text>
-                          <TouchableOpacity onPress={() => handleStepQty(cartedItem!, 1)} style={styles.stepBtn}>
-                            <Plus size={13} color="#FFF" />
-                          </TouchableOpacity>
-                        </View>
-                      )}
-                    </View>
-                  </TouchableOpacity>
-                );
-              }}
-            />
-          </View>
-        )}
-
-        <View style={{ height: 40 }} />
-      </ScrollView>
+        </Pressable>
+      </Modal>
 
       <VariantPickerModal
         visible={!!variantBase}
@@ -804,11 +1190,19 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
+  locationBarMissing: {
+    borderColor: 'rgba(245, 158, 11, 0.4)',
+    backgroundColor: 'rgba(245, 158, 11, 0.08)',
+  },
   locationText: {
     fontFamily: fonts.bodyMedium,
     fontSize: 11,
     color: colors.textSecondary,
     maxWidth: 260,
+  },
+  locationTextMissing: {
+    color: '#F59E0B',
+    fontFamily: fonts.bodySemiBold,
   },
   searchRow: {
     flexDirection: 'row',
@@ -846,6 +1240,47 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  searchBtnSyncing: {
+    opacity: 0.85,
+    backgroundColor: 'rgba(99, 102, 241, 0.75)',
+  },
+  syncingAddressBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(99, 102, 241, 0.12)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(99, 102, 241, 0.3)',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    marginHorizontal: 16,
+    marginBottom: 10,
+    gap: 8,
+  },
+  syncingAddressText: {
+    flex: 1,
+    fontFamily: fonts.bodyMedium,
+    fontSize: 12,
+    color: colors.accentPrimary,
+  },
+  platformWarningCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    marginHorizontal: 16,
+    marginBottom: 10,
+    gap: 9,
+  },
+  platformWarningText: {
+    flex: 1,
+    fontFamily: fonts.bodyMedium,
+    fontSize: 12,
+    color: colors.textSecondary,
+    lineHeight: 16,
+  },
   searchBtnText: {
     fontFamily: fonts.bodySemiBold,
     fontSize: 13,
@@ -881,7 +1316,7 @@ const styles = StyleSheet.create({
     marginVertical: 12,
   },
   switcherBackdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
   },
   switcherPill: {
     flexDirection: 'row',
@@ -904,16 +1339,22 @@ const styles = StyleSheet.create({
     fontFamily: fonts.bodySemiBold,
     fontSize: 12,
   },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+  },
   switcherMenu: {
-    position: 'absolute',
-    top: 46,
-    zIndex: 3,
     width: 290,
     backgroundColor: '#0f172a',
     borderRadius: 14,
     borderWidth: 1,
     borderColor: colors.glassBorder,
     padding: 6,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.55,
+    shadowRadius: 18,
+    elevation: 25,
   },
   switcherOption: {
     flexDirection: 'row',
@@ -1014,13 +1455,14 @@ const styles = StyleSheet.create({
     fontSize: 13.5,
     color: '#FFF',
   },
-  liveSection: {
+  liveHeaderCard: {
     marginHorizontal: 14,
     backgroundColor: colors.bgCard,
-    borderRadius: 20,
+    borderRadius: 18,
     borderWidth: 1,
     borderColor: colors.border,
     padding: 13,
+    marginBottom: 10,
   },
   liveHeader: {
     flexDirection: 'row',
@@ -1069,11 +1511,13 @@ const styles = StyleSheet.create({
     paddingTop: 8,
   },
   gridRow: {
+    paddingHorizontal: 14,
     gap: 10,
     marginBottom: 10,
   },
   pcCard: {
-    width: '48.5%',
+    flex: 1,
+    maxWidth: '48.5%',
     backgroundColor: colors.bgTile,
     borderRadius: 16,
     borderWidth: 1,

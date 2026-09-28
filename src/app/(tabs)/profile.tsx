@@ -1,13 +1,14 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { StyleSheet, View, Text, ScrollView, TouchableOpacity, ActivityIndicator, Alert, TextInput } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { MapPin, Link2, Link2Off, Compass, Trash2, Key, Info, RefreshCw } from 'lucide-react-native';
+import { MapPin, Link2, Link2Off, Compass, Trash2, Key, RefreshCw, CheckCircle2 } from 'lucide-react-native';
 import * as Location from 'expo-location';
 import { storage, Platform, LocationData } from '../../services/storage';
 import { colors, fonts, platformThemes } from '../../constants/theme';
 import { api } from '../../services/api';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { resolveAreaName, getFastLocation } from '../../utils/location';
+import { syncDeliveryAddresses, subscribeAddressSync, notifyLocationReset } from '../../services/addressSync';
 
 export default function ProfileScreen() {
   const router = useRouter();
@@ -17,8 +18,6 @@ export default function ProfileScreen() {
   });
   const [location, setLocation] = useState<LocationData | null>(null);
   const [locLoading, setLocLoading] = useState(false);
-  const [manualLat, setManualLat] = useState('');
-  const [manualLng, setManualLng] = useState('');
   const [blinkitAddressName, setBlinkitAddressName] = useState<string | null>(null);
   const [blinkitAddressId, setBlinkitAddressId] = useState<string | null>(null);
   const [addrLoading, setAddrLoading] = useState(false);
@@ -26,6 +25,8 @@ export default function ProfileScreen() {
   const [swiggyAddressId, setSwiggyAddressId] = useState<string | null>(null);
   const [swiggyAddressLocation, setSwiggyAddressLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [swiggyAddrLoading, setSwiggyAddrLoading] = useState(false);
+  const [manualLat, setManualLat] = useState('');
+  const [manualLng, setManualLng] = useState('');
 
   const loadData = async () => {
     const blinkitToken = await storage.getToken('blinkit');
@@ -56,8 +57,6 @@ export default function ProfileScreen() {
     });
     setLocation(userLoc);
     if (userLoc) {
-      setManualLat(String(userLoc.latitude));
-      setManualLng(String(userLoc.longitude));
 
       // Auto-resolve human-readable area name if current address is empty or "Manual: ..."
       if (!userLoc.address || userLoc.address.startsWith('Manual:')) {
@@ -69,16 +68,17 @@ export default function ProfileScreen() {
           }
         }).catch(() => {});
       }
-
-      // If address hasn't been fetched yet for this location, auto-fetch in background
-      if (blinkitToken && !savedName) {
-        refreshBlinkitAddress(userLoc.latitude, userLoc.longitude);
-      }
-      if (swiggyToken && !swiggyAddressId) {
-        refreshSwiggyAddress(userLoc.latitude, userLoc.longitude);
-      }
     }
   };
+
+  useEffect(() => {
+    const unsub = subscribeAddressSync((syncing) => {
+      if (!syncing) {
+        loadData();
+      }
+    });
+    return () => unsub();
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
@@ -107,6 +107,7 @@ export default function ProfileScreen() {
         const aLat = closest.latitude || closest.lat;
         const aLng = closest.longitude || closest.lon || closest.lng;
         
+        console.log(`[Profile] Blinkit address resolved: ID ${closest.id} - "${addrText}"`);
         setBlinkitAddressName(addrText);
         setBlinkitAddressId(String(closest.id));
         await AsyncStorage.setItem('@blinkit_address_id', String(closest.id));
@@ -116,6 +117,7 @@ export default function ProfileScreen() {
           await AsyncStorage.setItem('@blinkit_lng', String(aLng));
         }
       } else {
+        console.log('[Profile] Blinkit: No saved address found within 35km of current GPS location.');
         setBlinkitAddressName('No Saved Address in this Area');
         setBlinkitAddressId(null);
         await AsyncStorage.removeItem('@blinkit_address_id');
@@ -138,10 +140,12 @@ export default function ProfileScreen() {
     try {
       const resolved = await api.resolveSwiggyDeliveryAddress(lat, lng, true);
       if (resolved?.id) {
+        console.log(`[Profile] Swiggy address resolved: ID ${resolved.id} - "${resolved.name || 'Unnamed'}" (${resolved.distanceKm ?? 0} km away)`);
         setSwiggyAddressName(resolved.name);
         setSwiggyAddressId(resolved.id);
         setSwiggyAddressLocation(resolved.location);
       } else {
+        console.log('[Profile] Swiggy: No saved address found within 35km of current GPS location.');
         setSwiggyAddressName('No Saved Address in this Area');
         setSwiggyAddressId(null);
         setSwiggyAddressLocation(null);
@@ -193,7 +197,7 @@ export default function ProfileScreen() {
 
       const coords = await getFastLocation();
       if (!coords) {
-        Alert.alert('Location Error', 'Unable to retrieve GPS coordinates. Please ensure GPS is enabled or set coordinates manually.');
+        Alert.alert('Location Error', 'Unable to retrieve GPS coordinates. Please ensure GPS is enabled.');
         setLocLoading(false);
         return;
       }
@@ -208,17 +212,14 @@ export default function ProfileScreen() {
 
       await storage.saveLocation(newLoc);
       setLocation(newLoc);
-      setManualLat(String(coords.latitude));
-      setManualLng(String(coords.longitude));
+      notifyLocationReset();
+
+      // Force fresh address pull for the newly fetched GPS coordinates
+      await syncDeliveryAddresses(coords.latitude, coords.longitude, true);
+      await loadData();
       setLocLoading(false);
 
-      // Run Blinkit and Swiggy address refreshes in parallel in the background
-      Promise.allSettled([
-        storage.getToken('blinkit').then(t => t ? refreshBlinkitAddress(coords.latitude, coords.longitude) : null),
-        storage.getToken('swiggy').then(t => t ? refreshSwiggyAddress(coords.latitude, coords.longitude) : null),
-      ]);
-
-      Alert.alert('Location Updated', `Location synced for ${areaName}.`);
+      Alert.alert('Location & Addresses Synced', `Location and delivery addresses synced for ${areaName}.`);
     } catch (error) {
       console.error(error);
       Alert.alert('Location Error', 'Failed to retrieve GPS location.');
@@ -233,30 +234,24 @@ export default function ProfileScreen() {
       Alert.alert('Invalid Coordinates', 'Enter a valid latitude (-90 to 90) and longitude (-180 to 180).');
       return;
     }
+    const areaName = await resolveAreaName(latNum, lngNum);
+    const newLoc: LocationData = {
+      latitude: latNum,
+      longitude: lngNum,
+      address: areaName || `Manual: ${latNum.toFixed(5)}, ${lngNum.toFixed(5)}`
+    };
+    await storage.saveLocation(newLoc);
+    setLocation(newLoc);
+    notifyLocationReset();
     setLocLoading(true);
     try {
-      const areaName = await resolveAreaName(latNum, lngNum);
-      const newLoc: LocationData = {
-        latitude: latNum,
-        longitude: lngNum,
-        address: areaName
-      };
-      await storage.saveLocation(newLoc);
-      setLocation(newLoc);
-
-      const bToken = await storage.getToken('blinkit');
-      if (bToken) {
-        await refreshBlinkitAddress(latNum, lngNum);
-      }
-      const sToken = await storage.getToken('swiggy');
-      if (sToken) {
-        await refreshSwiggyAddress(latNum, lngNum);
-      }
-
-      Alert.alert('Location Updated', `Location set to ${areaName}.`);
-    } catch (error) {
-      console.error(error);
-      Alert.alert('Location Error', 'Failed to resolve location for coordinates.');
+      // Force fresh address pull for the new manual coordinates
+      await syncDeliveryAddresses(latNum, lngNum, true);
+      await loadData();
+      Alert.alert('Location & Addresses Synced', `Manual location and delivery addresses set to ${newLoc.address}.`);
+    } catch (e) {
+      console.error(e);
+      Alert.alert('Location Error', 'Failed to sync address details for manual coordinates.');
     } finally {
       setLocLoading(false);
     }
@@ -314,29 +309,6 @@ export default function ProfileScreen() {
           )}
         </View>
 
-        <Text style={styles.inputLabel}>Or set coordinates manually (for testing):</Text>
-        <View style={styles.manualRow}>
-          <TextInput
-            style={styles.input}
-            placeholder="Latitude"
-            placeholderTextColor={colors.textMuted}
-            keyboardType="numeric"
-            value={manualLat}
-            onChangeText={setManualLat}
-          />
-          <TextInput
-            style={styles.input}
-            placeholder="Longitude"
-            placeholderTextColor={colors.textMuted}
-            keyboardType="numeric"
-            value={manualLng}
-            onChangeText={setManualLng}
-          />
-        </View>
-        <TouchableOpacity style={styles.manualButton} onPress={handleManualLocation}>
-          <Text style={styles.manualButtonText}>Apply Manual Location</Text>
-        </TouchableOpacity>
-
         <TouchableOpacity 
           style={[styles.primaryButton, locLoading && styles.disabledButton]} 
           onPress={fetchGPSLocation}
@@ -350,6 +322,29 @@ export default function ProfileScreen() {
               <Text style={styles.buttonText}>Fetch Current GPS Location</Text>
             </>
           )}
+        </TouchableOpacity>
+
+        <Text style={styles.inputLabel}>Or set coordinates manually (for testing):</Text>
+        <View style={styles.manualRow}>
+          <TextInput
+            style={styles.input}
+            placeholder="Latitude (e.g. 28.7041)"
+            placeholderTextColor={colors.textMuted}
+            keyboardType="numeric"
+            value={manualLat}
+            onChangeText={setManualLat}
+          />
+          <TextInput
+            style={styles.input}
+            placeholder="Longitude (e.g. 77.1025)"
+            placeholderTextColor={colors.textMuted}
+            keyboardType="numeric"
+            value={manualLng}
+            onChangeText={setManualLng}
+          />
+        </View>
+        <TouchableOpacity style={styles.manualButton} onPress={handleManualLocation}>
+          <Text style={styles.manualButtonText}>Apply Manual Coordinates</Text>
         </TouchableOpacity>
       </View>
 
@@ -376,50 +371,25 @@ export default function ProfileScreen() {
         </View>
         
         {tokens.blinkit ? (
-          <View style={styles.tokenContainer}>
-            <View style={styles.row}>
-              <Key size={14} color={platformThemes.blinkit.color} />
-              <Text style={styles.tokenLabel}>Extracted Token:</Text>
+          <View style={styles.connectedCard}>
+            <View style={styles.connectedHeader}>
+              <View style={styles.statusIndicatorRow}>
+                <View style={styles.onlineDot} />
+                <Text style={styles.connectedTitle}>Connected & Active</Text>
+              </View>
+              <View style={styles.statusBadge}>
+                <CheckCircle2 size={11} color="#10B981" style={{ marginRight: 4 }} />
+                <Text style={styles.statusTextActive}>LOGGED IN</Text>
+              </View>
             </View>
-            <Text style={styles.tokenText}>{truncateToken(tokens.blinkit)}</Text>
-            
-            <View style={[styles.row, { marginTop: 8 }]}>
-              <MapPin size={14} color={platformThemes.blinkit.color} />
-              <Text style={styles.tokenLabel}>Saved Address (Closest):</Text>
-            </View>
-            <Text style={styles.addressDisplayVal}>
-              {blinkitAddressName || 'No saved address found or synced'}
+
+            <Text style={styles.connectedDesc}>
+              Blinkit session is linked. Live store inventory, catalog pricing, and 1-click cart export are active.
             </Text>
-            {blinkitAddressId && (
-              <Text style={styles.addressIdVal}>
-                ID: {blinkitAddressId}
-              </Text>
-            )}
 
-            <TouchableOpacity 
-              style={[styles.refreshAddrButton, addrLoading && styles.disabledRefreshBtn]} 
-              onPress={() => {
-                if (!location) {
-                  Alert.alert('No Location Set', 'Sync your GPS location first to pick the nearest saved address.');
-                  return;
-                }
-                refreshBlinkitAddress(location.latitude, location.longitude);
-              }}
-              disabled={addrLoading}
-            >
-              {addrLoading ? (
-                <ActivityIndicator size="small" color={platformThemes.blinkit.color} />
-              ) : (
-                <>
-                  <RefreshCw size={14} color={platformThemes.blinkit.color} style={{ marginRight: 6 }} />
-                  <Text style={[styles.refreshBtnText, { color: platformThemes.blinkit.color }]}>Refresh Saved Address</Text>
-                </>
-              )}
-            </TouchableOpacity>
-
-            <TouchableOpacity style={[styles.unlinkButton, { marginTop: 16 }]} onPress={() => handleUnlink('blinkit')}>
-              <Link2Off size={16} color="#EF4444" style={styles.btnIcon} />
-              <Text style={styles.unlinkText}>Disconnect Session</Text>
+            <TouchableOpacity style={styles.unlinkButton} onPress={() => handleUnlink('blinkit')}>
+              <Link2Off size={15} color="#EF4444" style={styles.btnIcon} />
+              <Text style={styles.unlinkText}>Disconnect Account</Text>
             </TouchableOpacity>
           </View>
         ) : (
@@ -449,54 +419,25 @@ export default function ProfileScreen() {
         </View>
         
         {tokens.swiggy ? (
-          <View style={styles.tokenContainer}>
-            <View style={styles.row}>
-              <Key size={14} color={platformThemes.swiggy.color} />
-              <Text style={styles.tokenLabel}>Extracted Cookies:</Text>
+          <View style={styles.connectedCard}>
+            <View style={styles.connectedHeader}>
+              <View style={styles.statusIndicatorRow}>
+                <View style={styles.onlineDot} />
+                <Text style={styles.connectedTitle}>Connected & Active</Text>
+              </View>
+              <View style={styles.statusBadge}>
+                <CheckCircle2 size={11} color="#10B981" style={{ marginRight: 4 }} />
+                <Text style={styles.statusTextActive}>LOGGED IN</Text>
+              </View>
             </View>
-            <Text style={styles.tokenText}>{truncateToken(tokens.swiggy)}</Text>
 
-            <View style={[styles.row, { marginTop: 8 }]}>
-              <MapPin size={14} color="#FC8019" />
-              <Text style={styles.tokenLabel}>Saved Address (Closest):</Text>
-            </View>
-            <Text style={styles.addressDisplayVal}>
-              {swiggyAddressName || 'No saved address found or synced'}
+            <Text style={styles.connectedDesc}>
+              Swiggy Instamart session is linked. Live store inventory, catalog pricing, and 1-click cart export are active.
             </Text>
-            {swiggyAddressId && (
-              <Text style={styles.addressIdVal}>
-                Saved Address ID: {swiggyAddressId}
-              </Text>
-            )}
-            {swiggyAddressLocation && (
-              <Text style={styles.addressIdVal}>
-                Address at: {swiggyAddressLocation.latitude.toFixed(5)}, {swiggyAddressLocation.longitude.toFixed(5)}
-              </Text>
-            )}
-            <TouchableOpacity 
-              style={[styles.refreshAddrButton, { borderColor: 'rgba(252,128,25,0.35)', backgroundColor: 'rgba(252,128,25,0.06)' }, swiggyAddrLoading && styles.disabledRefreshBtn]} 
-              onPress={() => {
-                if (!location) {
-                  Alert.alert('No Location Set', 'Sync your GPS location first to pick the nearest saved address.');
-                  return;
-                }
-                refreshSwiggyAddress(location.latitude, location.longitude);
-              }}
-              disabled={swiggyAddrLoading}
-            >
-              {swiggyAddrLoading ? (
-                <ActivityIndicator size="small" color="#FC8019" />
-              ) : (
-                <>
-                  <RefreshCw size={14} color="#FC8019" style={{ marginRight: 6 }} />
-                  <Text style={[styles.refreshBtnText, { color: '#FC8019' }]}>Refresh Saved Address</Text>
-                </>
-              )}
-            </TouchableOpacity>
 
             <TouchableOpacity style={styles.unlinkButton} onPress={() => handleUnlink('swiggy')}>
-              <Link2Off size={16} color="#EF4444" style={styles.btnIcon} />
-              <Text style={styles.unlinkText}>Disconnect Session</Text>
+              <Link2Off size={15} color="#EF4444" style={styles.btnIcon} />
+              <Text style={styles.unlinkText}>Disconnect Account</Text>
             </TouchableOpacity>
           </View>
         ) : (
@@ -505,14 +446,6 @@ export default function ProfileScreen() {
             <Text style={styles.buttonText}>Login to Link Swiggy</Text>
           </TouchableOpacity>
         )}
-      </View>
-
-      {/* Info Card */}
-      <View style={styles.infoCard}>
-        <Info size={16} color="#9CA3AF" style={styles.infoIcon} />
-        <Text style={styles.infoText}>
-          If session keys are missing, the search engine will automatically query high-fidelity simulated listings for testing purposes.
-        </Text>
       </View>
 
       {/* Clear configuration */}
@@ -594,44 +527,6 @@ const styles = StyleSheet.create({
     fontFamily: fonts.body,
     color: colors.textMuted,
   },
-  manualRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 8,
-  },
-  input: {
-    flex: 1,
-    backgroundColor: colors.bgDark,
-    borderWidth: 1,
-    borderColor: colors.glassBorder,
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    color: colors.textPrimary,
-    fontSize: 13,
-    fontFamily: fonts.body,
-  },
-  inputLabel: {
-    fontSize: 11,
-    color: colors.textMuted,
-    fontFamily: fonts.body,
-    marginBottom: 6,
-  },
-  manualButton: {
-    height: 38,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(139,92,246,0.4)',
-    backgroundColor: 'rgba(139,92,246,0.12)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 12,
-  },
-  manualButtonText: {
-    color: '#A78BFA',
-    fontSize: 12.5,
-    fontWeight: '600',
-  },
   primaryButton: {
     backgroundColor: colors.accentSecondary,
     flexDirection: 'row',
@@ -649,6 +544,44 @@ const styles = StyleSheet.create({
   buttonText: {
     color: colors.textPrimary,
     fontSize: 14,
+    fontFamily: fonts.bodySemiBold,
+  },
+  inputLabel: {
+    fontSize: 12,
+    fontFamily: fonts.bodyMedium,
+    color: colors.textSecondary,
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  manualRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 8,
+  },
+  input: {
+    flex: 1,
+    height: 40,
+    backgroundColor: colors.bgDark,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.glassBorder,
+    paddingHorizontal: 12,
+    color: colors.textPrimary,
+    fontSize: 13,
+    fontFamily: fonts.body,
+  },
+  manualButton: {
+    height: 38,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.accentSecondary,
+    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  manualButtonText: {
+    color: colors.accentSecondary,
+    fontSize: 13,
     fontFamily: fonts.bodySemiBold,
   },
   sectionTitle: {
@@ -714,6 +647,42 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(139,92,246,0.35)',
   },
+  connectedCard: {
+    backgroundColor: colors.bgDark,
+    padding: 14,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.glassBorder,
+  },
+  connectedHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  statusIndicatorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  onlineDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#10B981',
+    marginRight: 8,
+  },
+  connectedTitle: {
+    fontSize: 13.5,
+    fontFamily: fonts.bodySemiBold,
+    color: colors.textPrimary,
+  },
+  connectedDesc: {
+    fontSize: 12,
+    fontFamily: fonts.body,
+    color: colors.textSecondary,
+    lineHeight: 17,
+    marginBottom: 14,
+  },
   tokenContainer: {
     backgroundColor: colors.bgDark,
     padding: 12,
@@ -742,26 +711,6 @@ const styles = StyleSheet.create({
     color: '#EF4444',
     fontSize: 12,
     fontWeight: '600',
-  },
-  infoCard: {
-    flexDirection: 'row',
-    backgroundColor: 'rgba(245,158,11,0.08)',
-    borderWidth: 1,
-    borderColor: 'rgba(245,158,11,0.25)',
-    borderRadius: 8,
-    padding: 12,
-    marginTop: 16,
-    marginBottom: 24,
-  },
-  infoIcon: {
-    marginRight: 10,
-    marginTop: 2,
-  },
-  infoText: {
-    flex: 1,
-    fontSize: 12,
-    color: '#d4af5e',
-    lineHeight: 18,
   },
   clearAllBtn: {
     flexDirection: 'row',
