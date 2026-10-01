@@ -46,9 +46,11 @@ describe('resolvePlatformProduct', () => {
     expect(r.product).toMatchObject({ platform: 'swiggy', id: 'swiggy-9', price: 31 });
     expect(r.quantity).toBe(2);
   });
-  it('inherits inStock from the line when the variant does not say', () => {
+  it('does not inherit the source platform\'s inStock when the variant does not say', () => {
     const p = product({ inStock: false, platformPrices: { swiggy: variant() } });
-    expect(resolvePlatformProduct({ product: p, quantity: 1 }, 'swiggy')!.product.inStock).toBe(false);
+    const r = resolvePlatformProduct({ product: p, quantity: 1 }, 'swiggy')!;
+    expect(r.product.inStock).toBeUndefined();
+    expect(isKnownUnavailable(r.product)).toBe(false);
   });
 });
 

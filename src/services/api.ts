@@ -2,8 +2,10 @@ import { storage, Platform, LocationData } from './storage';
 import { requestViaSwiggyBridge, requestEvalViaSwiggyBridge } from './swiggyBridge';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { priceBlinkitCart } from './blinkitPricing';
+import { requestViaBlinkitBridge, isBlinkitBridgeConnected, waitForBlinkitBridge } from './blinkitBridge';
 import { pickBestMatch, isSameProduct } from '../utils/matcher';
 import { stripSizeToken } from '../utils/productKey';
+import { dlog, dumpWatched } from '../utils/debugLog';
 
 export interface UnifiedProduct {
   id: string;
@@ -72,7 +74,10 @@ export function resolvePlatformProduct(item: { product: UnifiedProduct; quantity
         productId: v.productId,
         spinId: v.spinId,
         storeId: v.storeId,
-        inStock: v.inStock !== undefined ? v.inStock : item.product.inStock,
+        // Never inherit stock from the source platform's listing: a variant with no
+        // stock flag is "unknown", and the source (e.g. Blinkit marked OOS by its
+        // bill) says nothing about this platform's availability.
+        inStock: v.inStock,
         availableStock: v.availableStock,
         maxQuantity: v.maxQuantity,
       },
@@ -215,6 +220,64 @@ export function getProductOverallMax(
   );
 
   return { maxAllowed, blinkitLimit, swiggyLimit, isAsymmetric };
+}
+
+// Bridged Blinkit searches share one browser session, and Blinkit rate-limits it
+// (429 even on a lone search once the main search, auto-match and the basket
+// refresh overlap). So they run strictly one at a time with a small gap, an
+// identical in-flight query is shared, and a good result is reused for a minute.
+const BLINKIT_SEARCH_GAP_MS = 500;
+const BLINKIT_SEARCH_CACHE_MS = 60 * 1000;
+const blinkitSearchInflight = new Map<string, Promise<any | null>>();
+const blinkitSearchCache = new Map<string, { at: number; json: any }>();
+let blinkitSearchChain: Promise<unknown> = Promise.resolve();
+const BLINKIT_CHALLENGE_COOLDOWN_MS = 2 * 60 * 1000;
+let blinkitBridgeSearchBlockedUntil = 0;
+
+function bridgedBlinkitSearch(url: string, headers: Record<string, string>, statuses: (number | null)[]): Promise<any | null> {
+  const key = `${url}|${headers.lat}|${headers.lon}`;
+  const cached = blinkitSearchCache.get(key);
+  if (cached && Date.now() - cached.at < BLINKIT_SEARCH_CACHE_MS) return Promise.resolve(cached.json);
+  const existing = blinkitSearchInflight.get(key);
+  if (existing) return existing;
+
+  // Recently challenged: don't retry (each failed attempt is slow and keeps the
+  // session flagged); the caller falls back to the direct request.
+  if (Date.now() < blinkitBridgeSearchBlockedUntil) return Promise.resolve(null);
+
+  const run = blinkitSearchChain.then(async () => {
+    let rateLimitWaits = 0;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const res = await requestViaBlinkitBridge(url, 'POST', JSON.stringify({}), headers);
+      statuses.push(res ? res.status : null);
+      if (!res) break;
+      if (res.status === 200) {
+        try {
+          const json = JSON.parse(res.text);
+          blinkitSearchCache.set(key, { at: Date.now(), json });
+          return json;
+        } catch { return null; }
+      }
+      // Cloudflare "Just a moment..." challenge: a background fetch can't solve
+      // it and reloading the hidden page didn't clear it either.
+      const challenged = (res.status === 429 || res.status === 403) && /just a moment|enable javascript and cookies/i.test(res.text);
+      dlog('blinkit-search', `bridge ${res.status} ${challenged ? 'Cloudflare challenge' : 'rate limit/other'}`);
+      if (challenged) {
+        blinkitBridgeSearchBlockedUntil = Date.now() + BLINKIT_CHALLENGE_COOLDOWN_MS;
+        break;
+      }
+      if (res.status === 429 && rateLimitWaits < 2) {
+        await new Promise(r => setTimeout(r, rateLimitWaits++ === 0 ? 2000 : 4000));
+        continue;
+      }
+      break;
+    }
+    return null;
+  }).finally(() => blinkitSearchInflight.delete(key));
+  blinkitSearchInflight.set(key, run);
+  // Next search starts only after this one settles plus the gap.
+  blinkitSearchChain = run.then(() => new Promise(r => setTimeout(r, BLINKIT_SEARCH_GAP_MS)), () => undefined);
+  return run;
 }
 
 export interface AddressCacheEntry {
@@ -1022,6 +1085,16 @@ export const api = {
     const lng = location.longitude;
 
     if (platform === 'blinkit') {
+      // Resolve the saved address FIRST: the bill prices at that address's
+      // coordinates (@blinkit_lat/lng, written here), and Blinkit assigns the
+      // dark store (merchant) from the coordinates. Reading them before the
+      // address was resolved sent the first search from raw GPS, so search and
+      // cart could land on different stores and disagree on stock.
+      let bStatusRaw = await AsyncStorage.getItem('@blinkit_address_status');
+      if (!bStatusRaw) {
+        await this.getClosestBlinkitAddress(lat, lng);
+        bStatusRaw = await AsyncStorage.getItem('@blinkit_address_status');
+      }
       let bLat = lat;
       let bLng = lng;
       try {
@@ -1032,12 +1105,6 @@ export const api = {
           bLng = Number(savedBLng);
         }
       } catch {}
-      // Check if Blinkit closest address is too far (>35km) or no address found
-      let bStatusRaw = await AsyncStorage.getItem('@blinkit_address_status');
-      if (!bStatusRaw) {
-        await this.getClosestBlinkitAddress(lat, lng);
-        bStatusRaw = await AsyncStorage.getItem('@blinkit_address_status');
-      }
       const bStatus = bStatusRaw ? JSON.parse(bStatusRaw) : null;
       if (bStatus?.status === 'too_far') {
         throw new Error('BLINKIT_UNAVAILABLE: Cannot search Blinkit on your current location.');
@@ -1049,26 +1116,52 @@ export const api = {
       const q = encodeURIComponent(query);
       const url = `https://blinkit.com/v1/layout/search?offset=0&limit=60&actual_query=${q}&q=${q}&search_type=type_to_search`;
 
-      const response = await this.fetchWithTimeout(url, {
-        method: 'POST',
-        headers: {
-          'Accept': 'application/json, text/plain, */*',
-          'app_client': 'consumer_web',
-          'auth_key': token,
-          'lat': String(bLat),
-          'lon': String(bLng),
-          'Content-Type': 'application/json',
-          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1'
-        },
-        body: JSON.stringify({})
-      });
+      // Search through the same hidden blinkit.com page the bill uses: its
+      // cookie jar (location/session) decides which dark store answers, and a
+      // direct RN fetch lands on a different store than the cart (observed:
+      // search merchant 31530 vs cart merchant 30614 at identical coordinates),
+      // so search showed stock the bill then reported as 0. Falls back to a
+      // direct request when no page is connected.
+      let json: any = null;
+      let via = 'bridge';
+      // At app start the page may not have registered yet; the direct fallback
+      // answers from the wrong store, so give the bridge a few seconds first.
+      if (!isBlinkitBridgeConnected()) await waitForBlinkitBridge(5000);
+      const bridgeHeaders = {
+        'app_client': 'consumer_web',
+        'auth_key': token,
+        'lat': String(bLat),
+        'lon': String(bLng),
+        'Content-Type': 'application/json',
+      };
+      const bridgeStatuses: (number | null)[] = [];
+      json = await bridgedBlinkitSearch(url, bridgeHeaders, bridgeStatuses);
+      if (!json) {
+        // Direct fallback (bridge unavailable or challenged by Cloudflare). It is
+        // answered from a different dark store than the cart, so its stock can be
+        // stale; the bill remains the authority once an item is added.
+        via = `direct(bridge status: ${bridgeStatuses.join(',') || 'skipped'})`;
+        const response = await this.fetchWithTimeout(url, {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/json, text/plain, */*',
+            'app_client': 'consumer_web',
+            'auth_key': token,
+            'lat': String(bLat),
+            'lon': String(bLng),
+            'Content-Type': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1'
+          },
+          body: JSON.stringify({})
+        });
 
-      if (!response.ok) {
-        throw new Error(`Blinkit API error: ${response.status}`);
+        if (!response.ok) {
+          throw new Error(`Blinkit API error: ${response.status}`);
+        }
+        json = await response.json();
       }
-
-      const json = await response.json();
       const parsed = parseBlinkitProducts(json);
+      dlog('blinkit-search', `q="${query}" via=${via} store lat=${bLat} lng=${bLng} merchants=[${Array.from(new Set(parsed.map((p: any) => p.merchantId))).join(',')}]`);
 
       return parsed.map((item: any) => ({
         id: `blinkit-${item.productId || Math.random()}`,
@@ -2879,7 +2972,9 @@ export function parseBlinkitProducts(json: any): any[] {
       const numPrice = typeof price === 'number' ? price : Number((String(price).match(/\d[\d,]*/) || [])[0] || 0);
       const numMrp = typeof mrp === 'number' ? mrp : Number((String(mrp || price).match(/\d[\d,]*/) || [])[0] || 0);
       if (numPrice > 0 && name.length >= 3 && name.length <= 150) {
-        if (isBlinkitInStock(node)) {
+        const nodeInStock = isBlinkitInStock(node);
+        dumpWatched('blinkit-search', String(name), () => ({ inStockVerdict: nodeInStock, node }));
+        if (nodeInStock) {
           const rawImg = findBlinkitImageUrl(node, 0);
           image = formatBlinkitImageUrl(rawImg);
           const cleanName = String(name).trim();
@@ -2939,6 +3034,7 @@ export function parseBlinkitProducts(json: any): any[] {
             itemId: String((cartItem && cartItem.sku_id) || ''),
             spinId: String((cartItem && (cartItem.spin_id || cartItem.spin)) || ''),
             storeId: String((cartItem && (cartItem.pod_id || cartItem.store_id)) || ''),
+            merchantId: String(cartItem?.merchant_id ?? node.merchant_id ?? ''),
             availableStock,
             maxQuantity,
           });

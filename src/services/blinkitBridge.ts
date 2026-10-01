@@ -117,6 +117,20 @@ export function handleBlinkitBridgeMessage(payload: string): boolean {
   return false;
 }
 
+// True once the hidden blinkit.com page has registered itself.
+export function isBlinkitBridgeConnected(): boolean {
+  return injector !== null;
+}
+
+// Polls for the bridge page to connect (it mounts shortly after app start).
+export async function waitForBlinkitBridge(maxMs: number): Promise<boolean> {
+  const deadline = Date.now() + maxMs;
+  while (!injector && Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 250));
+  }
+  return injector !== null;
+}
+
 // Runs one request through the blinkit.com page. Resolves null when no page
 // is connected or on timeout, so the caller can fall back to its own
 // transport.
