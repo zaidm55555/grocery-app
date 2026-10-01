@@ -3004,7 +3004,7 @@ interface BillFees {
   total: number | null;
 }
 
-function parseBlinkitBill(json: any): BillFees {
+export function parseBlinkitBill(json: any): BillFees {
   const cd = json?.cart_data || json?.data?.cart_data || json?.data || json;
   let bill = cd?.bill_details || cd?.billDetails || cd?.bill || json?.bill_details || json?.billDetails || json?.bill || null;
   if (!bill && cd?.shipments?.[0]) {
@@ -3195,7 +3195,7 @@ export function pickInstamartCandidate(candidates: any[], name: string, unit: st
 // (data.data.bill) is tried first, then a structural scan keyed on the bill's
 // own numeric fields — Swiggy occasionally nests the bill deeper or returns
 // only an ack on POST, with the bill arriving on the follow-up GET instead.
-function findSwiggyBillNode(json: any): any | null {
+export function findSwiggyBillNode(json: any): any | null {
   // Swiggy sends bill values as strings ("125.0") as often as numbers.
   const toNum = (v: any) => {
     const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN;
@@ -3241,7 +3241,7 @@ function findSwiggyBillNode(json: any): any | null {
 // grocery-order-optimizer extension). Every value is taken verbatim from the
 // response — packaging + convenience are only summed because the app shows
 // them as one "Packaging/Conv." line.
-function parseSwiggyBill(bill: any): BillFees {
+export function parseSwiggyBill(bill: any): BillFees {
   const empty: BillFees = { subtotal: null, deliveryFee: null, handlingFee: null, smallCartFee: null, surgeFee: 0, tax: null, total: null };
   if (!bill || typeof bill !== 'object') return empty;
 
