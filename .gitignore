@@ -41,3 +41,7 @@ example
 # generated native folders
 /ios
 /android
+
+# graphify local cache
+graphify-out/cache/
+graphify-out/manifest.json
