@@ -18,14 +18,8 @@ interface Props {
   onCancel: () => void;
 }
 
-// Shown before exporting a basket when some lines can't go through as-is
-// (out of stock, quantity trimmed to stock, not found on the app).
-export default function ExportNoticeModal({ notice, onCancel }: Props) {
-  if (!notice) return null;
-  const theme = platformThemes[notice.platform];
-  const n = notice.itemCount;
-
-  const Section = ({ icon, color, title, children }: { icon: React.ReactNode; color: string; title: string; children: React.ReactNode }) => (
+function Section({ icon, color, title, children }: { icon: React.ReactNode; color: string; title: string; children: React.ReactNode }) {
+  return (
     <View style={styles.section}>
       <View style={styles.sectionHead}>
         {icon}
@@ -34,6 +28,14 @@ export default function ExportNoticeModal({ notice, onCancel }: Props) {
       {children}
     </View>
   );
+}
+
+// Shown before exporting a basket when some lines can't go through as-is
+// (out of stock, quantity trimmed to stock, not found on the app).
+export default function ExportNoticeModal({ notice, onCancel }: Props) {
+  if (!notice) return null;
+  const theme = platformThemes[notice.platform];
+  const n = notice.itemCount;
 
   return (
     <Modal visible transparent animationType="slide" onRequestClose={onCancel}>

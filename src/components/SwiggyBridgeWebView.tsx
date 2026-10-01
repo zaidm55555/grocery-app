@@ -155,7 +155,9 @@ export default function SwiggyBridgeWebView() {
   const webViewRef = useRef<WebView>(null);
   const mode = useSyncExternalStore(subscribeSwiggySetupMode, getSwiggySetupMode);
   const modeRef = useRef(mode);
-  modeRef.current = mode;
+  useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
 
   useEffect(() => {
     const injector = (id: number, url: string, method: string, body: string) => {

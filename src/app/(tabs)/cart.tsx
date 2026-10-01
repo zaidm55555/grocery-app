@@ -54,7 +54,6 @@ export default function CartScreen() {
   const [exporting, setExporting] = useState<Platform | 'blinkit' | 'swiggy' | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [locationMismatch, setLocationMismatch] = useState(false);
-  const [cartLocationName, setCartLocationName] = useState<string | null>(null);
   const [listsOpen, setListsOpen] = useState(false);
   const calcRunIdRef = useRef(0);
 
@@ -80,34 +79,22 @@ export default function CartScreen() {
     setLoaded(true);
     setCartItems(cart);
 
+    const isMismatch =
+      mismatchFlag === 'true' ||
+      (cart.length > 0 && !!currentLoc && !!cartLoc &&
+        Math.hypot(currentLoc.latitude - cartLoc.latitude, currentLoc.longitude - cartLoc.longitude) > 0.005);
+
     // Saved lines can be days old: re-validate price/stock/links against the
     // live catalogs before pricing, so the basket matches what Search shows.
     // Skipped on a location mismatch (prices there would be for another area).
     let liveCart = cart;
-    if (cart.length > 0 && !(currentLoc && cartLoc && Math.hypot(currentLoc.latitude - cartLoc.latitude, currentLoc.longitude - cartLoc.longitude) > 0.005) && mismatchFlag !== 'true') {
+    if (cart.length > 0 && !isMismatch) {
       const refreshed = await refreshBasketLines(cart);
       if (refreshed.changed) {
         liveCart = refreshed.items;
         setCartItems(liveCart);
         await storage.saveCart(liveCart);
       }
-    }
-
-    let isMismatch = mismatchFlag === 'true';
-
-    if (cart.length > 0 && currentLoc && cartLoc) {
-      const dist = Math.sqrt(
-        Math.pow(currentLoc.latitude - cartLoc.latitude, 2) +
-        Math.pow(currentLoc.longitude - cartLoc.longitude, 2)
-      );
-      if (dist > 0.005) {
-        isMismatch = true;
-      }
-      setCartLocationName(cartLoc.address || null);
-    } else if (cart.length > 0 && mismatchFlag === 'true') {
-      setCartLocationName('previous location');
-    } else {
-      setCartLocationName(null);
     }
 
     setLocationMismatch(isMismatch);
@@ -132,7 +119,7 @@ export default function CartScreen() {
     }, [])
   );
 
-  const runCalculations = async (items: { product: UnifiedProduct; quantity: number }[]) => {
+  async function runCalculations(items: { product: UnifiedProduct; quantity: number }[]) {
     if (items.length === 0) {
       calcRunIdRef.current++;
       setCalculations([]);
@@ -175,7 +162,7 @@ export default function CartScreen() {
       console.error(err);
       setPendingPlatforms([]);
     }
-  };
+  }
 
   const handleUpdateQuantity = async (productId: string, delta: number) => {
     let updatedCart = [...cartItems];

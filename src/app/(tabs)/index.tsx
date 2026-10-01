@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { StyleSheet, View, Text, TextInput, FlatList, TouchableOpacity, ActivityIndicator, Image, Keyboard, KeyboardAvoidingView, Platform as RNPlatform, Pressable, ScrollView, Modal, Dimensions, Alert } from 'react-native';
+import { StyleSheet, View, Text, TextInput, FlatList, TouchableOpacity, ActivityIndicator, Image, Keyboard, KeyboardAvoidingView, Platform as RNPlatform, Pressable, Modal, Dimensions, Alert } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Search, MapPin, X, Plus, Minus, ChevronDown, Check, Zap, ShoppingCart, ShoppingBag, LogIn, Link2Off, Compass, ChevronRight } from 'lucide-react-native';
@@ -45,13 +45,13 @@ interface ProductCardProps {
 const cartQtyFor = (map: Map<string, number>, p: UnifiedProduct): number | undefined =>
   map.get('id:' + p.id) ?? map.get(p.platform + '|' + liveKey({ name: p.title, unit: p.quantity }));
 
-const ProductCard = React.memo(({
+const ProductCard = React.memo(function ProductCard({
   group,
   cartItemMap,
   onPress,
   onAddToCart,
   onStepQty
-}: ProductCardProps) => {
+}: ProductCardProps) {
   const items = useMemo(() => [...group.items].sort((a, b) => a.price - b.price), [group.items]);
   const rep = items[0];
   const t = platformThemes[rep.platform];
@@ -237,7 +237,7 @@ export default function SearchScreen() {
     return () => clearTimeout(timer);
   }, [matchToast]);
 
-  const loadInitialData = async () => {
+  async function loadInitialData() {
     const [blinkitToken, swiggyToken, userLoc, cart] = await Promise.all([
       storage.getToken('blinkit'),
       storage.getToken('swiggy'),
@@ -270,7 +270,7 @@ export default function SearchScreen() {
         }
       }).catch(() => {});
     }
-  };
+  }
 
   useFocusEffect(
     useCallback(() => {
@@ -487,8 +487,7 @@ export default function SearchScreen() {
       if (!prices) return ci;
       return { ...ci, product: { ...ci.product, platformPrices: { ...(ci.product.platformPrices || {}), ...prices } } };
     });
-    setCartItems(updatedCart);
-    await storage.saveCart(updatedCart);
+    await commitCart(updatedCart);
     setMatchFlow(null);
     if (toastPlatform) {
       setMatchToast({ platform: toastPlatform, name: toastName });
@@ -496,6 +495,14 @@ export default function SearchScreen() {
   };
 
   // ---------- Cart mutations ----------
+
+  // Update the ref synchronously so back-to-back taps (before React
+  // re-renders) build on the latest cart instead of a stale snapshot.
+  const commitCart = async (updated: { product: UnifiedProduct; quantity: number }[]) => {
+    cartItemsRef.current = updated;
+    setCartItems(updated);
+    await storage.saveCart(updated);
+  };
 
   const handleAddToCart = async (product: UnifiedProduct) => {
     const items = cartItemsRef.current;
@@ -531,8 +538,7 @@ export default function SearchScreen() {
       }
       const updated = [...items];
       updated[sameLineIdx] = updatedLine;
-      setCartItems(updated);
-      await storage.saveCart(updated);
+      await commitCart(updated);
       return;
     }
 
@@ -547,8 +553,7 @@ export default function SearchScreen() {
     // Brand-new line — add it, then auto-match the other apps
     const newLine = { product, quantity: 1 };
     const updated = [...items, newLine];
-    setCartItems(updated);
-    await storage.saveCart(updated);
+    await commitCart(updated);
     beginMatchFlow(newLine);
   };
 
@@ -589,8 +594,7 @@ export default function SearchScreen() {
     const nextQty = line.quantity + delta;
     if (nextQty <= 0) updated.splice(idx, 1);
     else updated[idx] = { ...line, quantity: nextQty };
-    setCartItems(updated);
-    await storage.saveCart(updated);
+    await commitCart(updated);
   };
 
   const cartItemMap = useMemo(() => {
@@ -1001,7 +1005,7 @@ export default function SearchScreen() {
                     <Text style={styles.emptyEmoji}>🔍</Text>
                     <Text style={styles.emptyTitle}>No Live Results Found</Text>
                     <Text style={styles.emptySubtitle}>
-                      We couldn't find any live products matching “{query}” in your local store.
+                      We couldn&apos;t find any live products matching “{query}” in your local store.
                     </Text>
                   </View>
                 );

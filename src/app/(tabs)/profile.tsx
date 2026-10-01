@@ -1,12 +1,10 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { StyleSheet, View, Text, ScrollView, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { MapPin, Link2, Link2Off, Compass, Trash2, Key, RefreshCw, CheckCircle2 } from 'lucide-react-native';
+import { MapPin, Link2, Link2Off, Compass, Trash2, CheckCircle2 } from 'lucide-react-native';
 import * as Location from 'expo-location';
 import { storage, Platform, LocationData } from '../../services/storage';
 import { colors, fonts, platformThemes } from '../../constants/theme';
-import { api } from '../../services/api';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { resolveAreaName, getFastLocation } from '../../utils/location';
 import { syncDeliveryAddresses, subscribeAddressSync, notifyLocationReset } from '../../services/addressSync';
 
@@ -18,36 +16,11 @@ export default function ProfileScreen() {
   });
   const [location, setLocation] = useState<LocationData | null>(null);
   const [locLoading, setLocLoading] = useState(false);
-  const [blinkitAddressName, setBlinkitAddressName] = useState<string | null>(null);
-  const [blinkitAddressId, setBlinkitAddressId] = useState<string | null>(null);
-  const [addrLoading, setAddrLoading] = useState(false);
-  const [swiggyAddressName, setSwiggyAddressName] = useState<string | null>(null);
-  const [swiggyAddressId, setSwiggyAddressId] = useState<string | null>(null);
-  const [swiggyAddressLocation, setSwiggyAddressLocation] = useState<{ latitude: number; longitude: number } | null>(null);
-  const [swiggyAddrLoading, setSwiggyAddrLoading] = useState(false);
 
   const loadData = async () => {
     const blinkitToken = await storage.getToken('blinkit');
     const swiggyToken = await storage.getToken('swiggy');
     const userLoc = await storage.getLocation();
-
-    const savedName = await AsyncStorage.getItem('@blinkit_address_name');
-    const savedId = await AsyncStorage.getItem('@blinkit_address_id');
-    setBlinkitAddressName(savedName);
-    setBlinkitAddressId(savedId);
-
-    setSwiggyAddressName(null);
-    setSwiggyAddressId(null);
-    setSwiggyAddressLocation(null);
-    try {
-      const swiggyAddrJson = await AsyncStorage.getItem('@swiggy_address');
-      if (swiggyAddrJson) {
-        const parsed = JSON.parse(swiggyAddrJson);
-        setSwiggyAddressName(parsed?.name || null);
-        setSwiggyAddressId(parsed?.id || null);
-        setSwiggyAddressLocation(parsed?.location || null);
-      }
-    } catch {}
 
     setTokens({
       blinkit: blinkitToken,
@@ -86,73 +59,6 @@ export default function ProfileScreen() {
       return () => clearTimeout(timer);
     }, [])
   );
-
-  const refreshBlinkitAddress = async (lat: number, lng: number) => {
-    const hasToken = await storage.getToken('blinkit');
-    if (!hasToken) return;
-    setAddrLoading(true);
-    try {
-      const closest = await api.getClosestBlinkitAddress(lat, lng);
-      if (closest) {
-        const addrText = closest.display_address 
-          || closest.address_string 
-          || closest.address 
-          || closest.line1 
-          || closest.text 
-          || closest.display_text 
-          || (closest.house_number ? `${closest.house_number}, ${closest.line2 || ''}` : '')
-          || 'Unnamed Address';
-        const aLat = closest.latitude || closest.lat;
-        const aLng = closest.longitude || closest.lon || closest.lng;
-        
-        setBlinkitAddressName(addrText);
-        setBlinkitAddressId(String(closest.id));
-        await AsyncStorage.setItem('@blinkit_address_id', String(closest.id));
-        await AsyncStorage.setItem('@blinkit_address_name', addrText);
-        if (aLat && aLng) {
-          await AsyncStorage.setItem('@blinkit_lat', String(aLat));
-          await AsyncStorage.setItem('@blinkit_lng', String(aLng));
-        }
-      } else {
-        setBlinkitAddressName('No Saved Address in this Area');
-        setBlinkitAddressId(null);
-        await AsyncStorage.removeItem('@blinkit_address_id');
-        await AsyncStorage.removeItem('@blinkit_address_name');
-        await AsyncStorage.removeItem('@blinkit_lat');
-        await AsyncStorage.removeItem('@blinkit_lng');
-      }
-    } catch (e) {
-      console.error(e);
-      setBlinkitAddressName('Error Fetching Address');
-    } finally {
-      setAddrLoading(false);
-    }
-  };
-
-  const refreshSwiggyAddress = async (lat: number, lng: number) => {
-    const hasToken = await storage.getToken('swiggy');
-    if (!hasToken) return;
-    setSwiggyAddrLoading(true);
-    try {
-      const resolved = await api.resolveSwiggyDeliveryAddress(lat, lng, true);
-      if (resolved?.id) {
-        setSwiggyAddressName(resolved.name);
-        setSwiggyAddressId(resolved.id);
-        setSwiggyAddressLocation(resolved.location);
-      } else {
-        setSwiggyAddressName('No Saved Address in this Area');
-        setSwiggyAddressId(null);
-        setSwiggyAddressLocation(null);
-      }
-    } catch (e) {
-      console.error(e);
-      setSwiggyAddressName('Error Fetching Address');
-      setSwiggyAddressId(null);
-      setSwiggyAddressLocation(null);
-    } finally {
-      setSwiggyAddrLoading(false);
-    }
-  };
 
   const handleLink = (platform: Platform) => {
     router.push({
@@ -237,12 +143,6 @@ export default function ProfileScreen() {
         }
       ]
     );
-  };
-
-  const truncateToken = (token: string | null) => {
-    if (!token) return '';
-    if (token.length < 20) return token;
-    return `${token.substring(0, 10)}...${token.substring(token.length - 10)}`;
   };
 
   return (

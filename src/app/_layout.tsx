@@ -19,6 +19,8 @@ import SwiggyBridgeWebView from '../components/SwiggyBridgeWebView';
 import BlinkitBridgeWebView from '../components/BlinkitBridgeWebView';
 
 import { LogBox } from 'react-native';
+import { storage } from '../services/storage';
+import { syncDeliveryAddresses } from '../services/addressSync';
 
 LogBox.ignoreLogs([
   'SWIGGY_TOO_FAR',
@@ -30,9 +32,6 @@ LogBox.ignoreLogs([
 ]);
 
 SplashScreen.preventAutoHideAsync();
-
-import { storage } from '../services/storage';
-import { syncDeliveryAddresses } from '../services/addressSync';
 
 export default function RootLayout() {
   const [loaded, error] = useFonts({

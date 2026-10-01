@@ -37,6 +37,7 @@ export default function SavedListsModal({ visible, onClose, cartItems, onCartCha
 
   useEffect(() => {
     if (visible) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- reset the draft each time the sheet opens
       setName('');
       refresh();
     }
