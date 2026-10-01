@@ -69,6 +69,9 @@ export default function CartScreen() {
   const winnerPlatform = verdict.winnerKey;
   const mostCompleteKeys = verdict.mostCompleteKeys;
 
+  const platformsToPrice = (items: { product: UnifiedProduct }[]) =>
+    PLATFORM_ORDER.filter(p => items.some(i => i.product.platform === p || i.product.platformPrices?.[p]));
+
   const loadCartData = async () => {
     const [cart, currentLoc, cartLoc, mismatchFlag] = await Promise.all([
       storage.getCart(),
@@ -89,6 +92,11 @@ export default function CartScreen() {
     // Skipped on a location mismatch (prices there would be for another area).
     let liveCart = cart;
     if (cart.length > 0 && !isMismatch) {
+      // The bills on screen belong to the previous basket; drop them now so
+      // they don't flash while the catalogs are re-checked below.
+      calcRunIdRef.current++;
+      setCalculations([]);
+      setPendingPlatforms(platformsToPrice(cart));
       const refreshed = await refreshBasketLines(cart);
       if (refreshed.changed) {
         liveCart = refreshed.items;
@@ -134,8 +142,7 @@ export default function CartScreen() {
 
     // Only platforms that actually have items need a live bill — the others
     // resolve instantly with zeroed totals.
-    const platformsWithItems = PLATFORM_ORDER
-      .filter(p => items.some(i => i.product.platform === p || i.product.platformPrices?.[p]));
+    const platformsWithItems = platformsToPrice(items);
 
     setCalculations([]);
     setPendingPlatforms(platformsWithItems);

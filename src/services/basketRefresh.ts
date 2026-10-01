@@ -17,8 +17,12 @@ const REFRESH_TTL_MS = 10 * 60 * 1000;
 const POOL = 5;
 const LINK_MIN_SCORE = 0.5;
 
-const idsOf = (v: { id?: string; productId?: string; originalId?: string }): string[] =>
-  [v.productId, v.originalId, v.id?.replace(/^(blinkit|swiggy)-/, '')].filter(Boolean).map(String);
+type IdBearer = { id?: string; productId?: string; originalId?: string; spinId?: string };
+const clean = (xs: (string | undefined)[]) => xs.filter(Boolean).map(String);
+
+// Ids that pin ONE pack size. Instamart's productId is shared by every pack
+// size of a product (100 g, 3 x 100 g, ...), so it must never decide alone.
+const variantIdsOf = (v: IdBearer): string[] => clean([v.originalId, v.spinId, v.id?.replace(/^(blinkit|swiggy)-/, '')]);
 
 async function searchLive(platform: Platform, title: string): Promise<UnifiedProduct[]> {
   const queries = [title];
@@ -52,8 +56,8 @@ const unavailable = <T extends PlatformVariant | UnifiedProduct>(v: T): T => ({ 
 
 // Live listing for a stored one: same catalog id, else strictly the same product.
 function findLive(stored: PlatformVariant | UnifiedProduct, candidates: UnifiedProduct[]): UnifiedProduct | null {
-  const ids = idsOf(stored);
-  const byId = candidates.find(c => idsOf(c).some(i => ids.includes(i)));
+  const ids = variantIdsOf(stored);
+  const byId = candidates.find(c => variantIdsOf(c).some(i => ids.includes(i)));
   if (byId) return byId;
   const best = pickBestMatch({ name: stored.title, unit: stored.quantity, price: stored.price }, candidates);
   return best && isSameProduct({ name: stored.title, unit: stored.quantity }, { name: best.candidate.title, unit: best.candidate.quantity })

@@ -21,6 +21,15 @@ describe('refreshBasketLines', () => {
     expect(items[0].product.refreshedAt).toBeGreaterThan(0);
   });
 
+  it('does not jump to another pack size that shares the productId', async () => {
+    const single = product({ id: 'swiggy-100', platform: 'swiggy', productId: 'shared', originalId: '100', spinId: 'spin-100', title: 'Milky Mist Salted Butter', quantity: '100 g', price: 82 });
+    const triple = { ...single, id: 'swiggy-300', originalId: '300', spinId: 'spin-300', quantity: '3 x 100 g', price: 246 };
+    search.mockResolvedValue([triple, { ...single, price: 85 }]);
+    const { items } = await refreshBasketLines([{ product: single, quantity: 1 }]);
+    expect(items[0].product.quantity).toBe('100 g');
+    expect(items[0].product.price).toBe(85);
+  });
+
   it('skips fresh lines unless forced', async () => {
     const fresh = { product: product({ refreshedAt: Date.now() }), quantity: 1 };
     expect((await refreshBasketLines([fresh])).changed).toBe(false);
