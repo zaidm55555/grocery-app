@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { StyleSheet, View, Text, ScrollView, TouchableOpacity, ActivityIndicator, Alert, TextInput } from 'react-native';
+import { StyleSheet, View, Text, ScrollView, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { MapPin, Link2, Link2Off, Compass, Trash2, Key, RefreshCw, CheckCircle2 } from 'lucide-react-native';
 import * as Location from 'expo-location';
@@ -25,8 +25,6 @@ export default function ProfileScreen() {
   const [swiggyAddressId, setSwiggyAddressId] = useState<string | null>(null);
   const [swiggyAddressLocation, setSwiggyAddressLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [swiggyAddrLoading, setSwiggyAddrLoading] = useState(false);
-  const [manualLat, setManualLat] = useState('');
-  const [manualLng, setManualLng] = useState('');
 
   const loadData = async () => {
     const blinkitToken = await storage.getToken('blinkit');
@@ -107,7 +105,6 @@ export default function ProfileScreen() {
         const aLat = closest.latitude || closest.lat;
         const aLng = closest.longitude || closest.lon || closest.lng;
         
-        console.log(`[Profile] Blinkit address resolved: ID ${closest.id} - "${addrText}"`);
         setBlinkitAddressName(addrText);
         setBlinkitAddressId(String(closest.id));
         await AsyncStorage.setItem('@blinkit_address_id', String(closest.id));
@@ -117,7 +114,6 @@ export default function ProfileScreen() {
           await AsyncStorage.setItem('@blinkit_lng', String(aLng));
         }
       } else {
-        console.log('[Profile] Blinkit: No saved address found within 35km of current GPS location.');
         setBlinkitAddressName('No Saved Address in this Area');
         setBlinkitAddressId(null);
         await AsyncStorage.removeItem('@blinkit_address_id');
@@ -140,12 +136,10 @@ export default function ProfileScreen() {
     try {
       const resolved = await api.resolveSwiggyDeliveryAddress(lat, lng, true);
       if (resolved?.id) {
-        console.log(`[Profile] Swiggy address resolved: ID ${resolved.id} - "${resolved.name || 'Unnamed'}" (${resolved.distanceKm ?? 0} km away)`);
         setSwiggyAddressName(resolved.name);
         setSwiggyAddressId(resolved.id);
         setSwiggyAddressLocation(resolved.location);
       } else {
-        console.log('[Profile] Swiggy: No saved address found within 35km of current GPS location.');
         setSwiggyAddressName('No Saved Address in this Area');
         setSwiggyAddressId(null);
         setSwiggyAddressLocation(null);
@@ -227,36 +221,6 @@ export default function ProfileScreen() {
     }
   };
 
-  const handleManualLocation = async () => {
-    const latNum = parseFloat(manualLat);
-    const lngNum = parseFloat(manualLng);
-    if (!isFinite(latNum) || !isFinite(lngNum) || Math.abs(latNum) > 90 || Math.abs(lngNum) > 180) {
-      Alert.alert('Invalid Coordinates', 'Enter a valid latitude (-90 to 90) and longitude (-180 to 180).');
-      return;
-    }
-    const areaName = await resolveAreaName(latNum, lngNum);
-    const newLoc: LocationData = {
-      latitude: latNum,
-      longitude: lngNum,
-      address: areaName || `Manual: ${latNum.toFixed(5)}, ${lngNum.toFixed(5)}`
-    };
-    await storage.saveLocation(newLoc);
-    setLocation(newLoc);
-    notifyLocationReset();
-    setLocLoading(true);
-    try {
-      // Force fresh address pull for the new manual coordinates
-      await syncDeliveryAddresses(latNum, lngNum, true);
-      await loadData();
-      Alert.alert('Location & Addresses Synced', `Manual location and delivery addresses set to ${newLoc.address}.`);
-    } catch (e) {
-      console.error(e);
-      Alert.alert('Location Error', 'Failed to sync address details for manual coordinates.');
-    } finally {
-      setLocLoading(false);
-    }
-  };
-
   const clearAllData = async () => {
     Alert.alert(
       'Reset Application',
@@ -322,29 +286,6 @@ export default function ProfileScreen() {
               <Text style={styles.buttonText}>Fetch Current GPS Location</Text>
             </>
           )}
-        </TouchableOpacity>
-
-        <Text style={styles.inputLabel}>Or set coordinates manually (for testing):</Text>
-        <View style={styles.manualRow}>
-          <TextInput
-            style={styles.input}
-            placeholder="Latitude (e.g. 28.7041)"
-            placeholderTextColor={colors.textMuted}
-            keyboardType="numeric"
-            value={manualLat}
-            onChangeText={setManualLat}
-          />
-          <TextInput
-            style={styles.input}
-            placeholder="Longitude (e.g. 77.1025)"
-            placeholderTextColor={colors.textMuted}
-            keyboardType="numeric"
-            value={manualLng}
-            onChangeText={setManualLng}
-          />
-        </View>
-        <TouchableOpacity style={styles.manualButton} onPress={handleManualLocation}>
-          <Text style={styles.manualButtonText}>Apply Manual Coordinates</Text>
         </TouchableOpacity>
       </View>
 
@@ -544,44 +485,6 @@ const styles = StyleSheet.create({
   buttonText: {
     color: colors.textPrimary,
     fontSize: 14,
-    fontFamily: fonts.bodySemiBold,
-  },
-  inputLabel: {
-    fontSize: 12,
-    fontFamily: fonts.bodyMedium,
-    color: colors.textSecondary,
-    marginTop: 16,
-    marginBottom: 8,
-  },
-  manualRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 8,
-  },
-  input: {
-    flex: 1,
-    height: 40,
-    backgroundColor: colors.bgDark,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: colors.glassBorder,
-    paddingHorizontal: 12,
-    color: colors.textPrimary,
-    fontSize: 13,
-    fontFamily: fonts.body,
-  },
-  manualButton: {
-    height: 38,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: colors.accentSecondary,
-    backgroundColor: 'rgba(59, 130, 246, 0.1)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  manualButtonText: {
-    color: colors.accentSecondary,
-    fontSize: 13,
     fontFamily: fonts.bodySemiBold,
   },
   sectionTitle: {

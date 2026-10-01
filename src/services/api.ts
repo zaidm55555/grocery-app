@@ -101,6 +101,9 @@ export interface CartCalculation {
   tax: number;
   total: number;
   savings: number;
+  // Rupees of extra items needed to unlock free delivery, as reported by the
+  // platform for this exact bill. Undefined = unknown / already free / n/a.
+  freeDeliveryGap?: number;
   // True when a live checkout bill was fetched from the platform's own API
   // (false = baseline estimate only / not fetched).
   live?: boolean;
@@ -297,7 +300,6 @@ export const api = {
           if (fresh && nearby) {
             blinkitAddressSessionCache = cached;
             if (cached.status === 'in_range') {
-              console.log(`[Blinkit Address] -> Using CACHED in-range address: ID ${cached.address?.id} ("${cached.name || 'Unnamed'}")`);
               await AsyncStorage.setItem('@blinkit_address_status', JSON.stringify({
                 status: 'in_range',
                 distanceKm: cached.distanceKm,
@@ -306,7 +308,6 @@ export const api = {
               }));
               return cached.address;
             } else if (cached.status === 'too_far') {
-              console.log(`[Blinkit Address] -> Using CACHED too_far status: ${cached.distanceKm} km away`);
               await AsyncStorage.setItem('@blinkit_address_status', JSON.stringify({
                 status: 'too_far',
                 distanceKm: cached.distanceKm,
@@ -314,7 +315,6 @@ export const api = {
               }));
               return null;
             } else if (cached.status === 'no_address') {
-              console.log('[Blinkit Address] -> Using CACHED no_address status');
               await AsyncStorage.setItem('@blinkit_address_status', JSON.stringify({ status: 'no_address' }));
               return null;
             }
@@ -326,7 +326,6 @@ export const api = {
     // 3. Network fetch (only executed on initial app sync or when GPS location changed)
     const addresses = await this.getBlinkitAddresses(lat, lng);
     if (addresses.length === 0) {
-      console.log('[Blinkit Address] No saved addresses returned from Blinkit account.');
       const entry: AddressCacheEntry = {
         lat,
         lng,
@@ -355,20 +354,10 @@ export const api = {
       }
     }
 
-    console.log(`[Blinkit Address] Evaluated ${addresses.length} saved address(es) for GPS (${lat.toFixed(4)}, ${lng.toFixed(4)}):`,
-      addresses.map((a: any) => {
-        const aLat = parseFloat(a.latitude || a.lat);
-        const aLng = parseFloat(a.longitude || a.lon || a.lng);
-        const d = (!isNaN(aLat) && !isNaN(aLng)) ? distanceKm(lat, lng, aLat, aLng).toFixed(2) + ' km' : 'unknown';
-        const name = a.name || a.display_address || a.address_string || a.address || a.line1 || a.text || 'Unnamed';
-        return `ID ${a.id}: "${name}" [${d}]`;
-      })
-    );
 
     // Only return the address if it is within 35km of the user's current/manual location
     if (closest && minDistance <= 35) {
       const closestName = closest.display_address || closest.address_string || closest.address || closest.line1 || closest.text || 'Unnamed';
-      console.log(`[Blinkit Address] -> MATCHED within 35km: ID ${closest.id} ("${closestName}") at ${minDistance.toFixed(2)} km`);
       const entry: AddressCacheEntry = {
         lat,
         lng,
@@ -390,7 +379,6 @@ export const api = {
     }
     if (closest) {
       const closestName = closest.name || closest.display_address || 'Unnamed';
-      console.log(`[Blinkit Address] -> Closest address is ${minDistance.toFixed(2)} km away (> 35km threshold), cached as too_far.`);
       const entry: AddressCacheEntry = {
         lat,
         lng,
@@ -804,7 +792,6 @@ export const api = {
           if (fresh && nearby) {
             swiggyAddressSessionCache = cached;
             if (cached.status === 'too_far') {
-              console.log(`[Swiggy Address] -> Using CACHED status: TOO FAR (${cached.distanceKm} km away from "${cached.name || 'Unnamed'}")`);
               await AsyncStorage.setItem('@swiggy_address_status', JSON.stringify({
                 status: 'too_far',
                 distanceKm: cached.distanceKm,
@@ -813,12 +800,10 @@ export const api = {
               return null;
             }
             if (cached.status === 'no_address') {
-              console.log('[Swiggy Address] -> Using CACHED status: NO ADDRESS');
               await AsyncStorage.setItem('@swiggy_address_status', JSON.stringify({ status: 'no_address' }));
               return null;
             }
             if (cached.id && (cached.status === 'in_range' || !cached.status)) {
-              console.log(`[Swiggy Address] -> Using CACHED nearby address: ID ${cached.id} ("${cached.name || 'Unnamed'}")`);
               const addr = cached.address || {
                 id: String(cached.id),
                 name: cached.name || null,
@@ -860,15 +845,8 @@ export const api = {
         return x.d - y.d;
       });
 
-      console.log(`[Swiggy Address] Evaluated ${addresses.length} saved address(es) for GPS (${lat.toFixed(4)}, ${lng.toFixed(4)}):`,
-        scored.map((a: any) => {
-          const dStr = a.distanceKm >= 0 ? `${a.distanceKm} km` : 'unknown';
-          return `ID ${a.id}: "${a.name || 'Unnamed'}" [${dStr}]`;
-        })
-      );
 
       if (scored.length === 0) {
-        console.log('[Swiggy Address] No saved addresses returned from Swiggy account.');
         const entry: AddressCacheEntry = {
           lat,
           lng,
@@ -890,7 +868,6 @@ export const api = {
 
       const best = scored[0];
       if (!best || best.distanceKm > 35 || best.distanceKm < 0) {
-        console.log(`[Swiggy Address] -> Closest address is ${best?.distanceKm} km away (> 35km threshold), cached as too_far.`);
         const entry: AddressCacheEntry = {
           lat,
           lng,
@@ -914,7 +891,6 @@ export const api = {
         return null;
       }
 
-      console.log(`[Swiggy Address] -> MATCHED within 35km: ID ${best.id} ("${best.name || 'Unnamed'}") at ${best.distanceKm} km`);
       const resolvedAddr = {
         id: String(best.id),
         name: best.name,
@@ -957,7 +933,7 @@ export const api = {
         await AsyncStorage.setItem('@swiggy_lng', String(best.location.longitude));
       }
       return resolvedAddr;
-    } catch (e) {
+    } catch {
       return null;
     }
   },
@@ -998,11 +974,9 @@ export const api = {
       if (token) {
         try {
           results = await this.fetchDirectAPI(platform, query, token, location);
-          console.log(`[Search] ${platform} returned ${results.length} result(s) for "${query}"`);
         } catch (error: any) {
           const msg = error?.message || String(error);
           if (msg.includes('_TOO_FAR') || msg.includes('_NO_ADDRESS') || msg.includes('_UNAVAILABLE')) {
-            console.log(`[Search - ${platform} skipped]: ${msg}`);
           } else {
             console.warn(`[Search Warning - ${platform} for "${query}"]: ${msg}`);
           }
@@ -1025,7 +999,7 @@ export const api = {
     const location = await storage.getLocation();
     try {
       return await this.fetchDirectAPI(platform, query, token, location);
-    } catch (error) {
+    } catch {
       return [];
     }
   },
@@ -1054,11 +1028,9 @@ export const api = {
       }
       const bStatus = bStatusRaw ? JSON.parse(bStatusRaw) : null;
       if (bStatus?.status === 'too_far') {
-        console.log('[Blinkit Search] Blinkit out of range (>35km). Skipping results.');
         throw new Error('BLINKIT_UNAVAILABLE: Cannot search Blinkit on your current location.');
       }
       if (bStatus?.status === 'no_address') {
-        console.log('[Blinkit Search] No saved address found on Blinkit account. Skipping results.');
         throw new Error('BLINKIT_UNAVAILABLE: Cannot search Blinkit on your current location.');
       }
 
@@ -1112,10 +1084,8 @@ export const api = {
       // If user is out of range (>35km) or has no address, do not return results
       if (!delivery || !delivery.id || sStatus?.status === 'too_far' || sStatus?.status === 'no_address') {
         if (sStatus?.status === 'no_address') {
-          console.log('[Swiggy Search] No saved address found on Swiggy account. Skipping results.');
           throw new Error('SWIGGY_UNAVAILABLE: Cannot search Instamart on your current location.');
         }
-        console.log('[Swiggy Search] Swiggy out of range (>35km). Skipping results.');
         throw new Error('SWIGGY_UNAVAILABLE: Cannot search Instamart on your current location.');
       }
 
@@ -1235,30 +1205,8 @@ export const api = {
         searchJson = JSON.parse(text);
       }
 
-      console.log(`[Swiggy Search Debug] ========================================`);
-      console.log(`[Swiggy Search Debug] URL: ${searchUrl}`);
-      console.log(`[Swiggy Search Debug] Query: "${query}", HTTP status: ${searchResponse.status}`);
-      console.log(`[Swiggy Search Debug] Top-level keys:`, Object.keys(searchJson || {}));
-      if (searchJson?.data) {
-        console.log(`[Swiggy Search Debug] data keys:`, Object.keys(searchJson.data));
-      }
-      const scannedMatches = debugScanSwiggyStock(searchJson, query);
-      console.log(`[Swiggy Search Debug] Scanned stock/inventory paths in raw response (${scannedMatches.length}):\n` + (scannedMatches.length ? scannedMatches.join('\n') : 'No stock-related strings/numbers found'));
 
       const parsed = extractSwiggySearchProducts(searchJson, query);
-      console.log(`[Swiggy Search Debug] Parsed items count: ${parsed.length}`);
-      if (parsed.length > 0) {
-        console.log(`[Swiggy Search Debug] Sample parsed items (up to 5):`, JSON.stringify(parsed.slice(0, 5).map(p => ({
-          name: p.name,
-          unit: p.unit,
-          price: p.price,
-          itemId: p.itemId,
-          availableStock: p.availableStock,
-          maxQuantity: p.maxQuantity,
-          rawInventory: p._rawVariation?.inventory,
-        })), null, 2));
-      }
-      console.log(`[Swiggy Search Debug] ========================================`);
 
       return parsed.map((item: any) => ({
         id: `swiggy-${item.itemId || Math.random()}`,
@@ -1322,11 +1270,6 @@ export const api = {
         const q = (typeof lim === 'number' && lim > 0) ? Math.min(item.quantity, lim) : item.quantity;
         return sum + (item.product.price * q);
       }, 0);
-      const originalSubtotal = platformItems.reduce((sum, item) => {
-        const lim = getItemPlatformLimit(item.product);
-        const q = (typeof lim === 'number' && lim > 0) ? Math.min(item.quantity, lim) : item.quantity;
-        return sum + ((item.product.originalPrice || item.product.price) * q);
-      }, 0);
 
       // No charge is ever estimated locally — every fee/tax below comes from
       // the platform's own cart/bill API. Until an API responds we only know
@@ -1335,6 +1278,7 @@ export const api = {
       let handlingFee = 0;
       let smallCartFee = 0;
       let surgeFee = 0;
+      let freeDeliveryGap: number | undefined;
       let surgeLabel: string | undefined;
       let tax = 0;
       let total = subtotal;
@@ -1407,10 +1351,6 @@ export const api = {
               }
             }
 
-            console.log(`[Pricing Location - Blinkit] Location used to fetch pricing:
-  - User GPS Location: (${gpsLat}, ${gpsLng})
-  - Coordinates used for Blinkit layout/store query: (${blLat}, ${blLng})
-  - Address ID attached in cart body: ${isFinite(addrNum) && addrNum && !simulateNoAddress ? addrNum : 'none (GPS coordinates only)'}`);
 
             const cartsBody = JSON.stringify({
               items: slimItems,
@@ -1599,6 +1539,7 @@ export const api = {
               if (fees.smallCartFee !== null) smallCartFee = fees.smallCartFee;
               if (fees.surgeFee) surgeFee = fees.surgeFee;
               if (fees.surgeLabel) surgeLabel = fees.surgeLabel;
+              freeDeliveryGap = fees.freeDeliveryGap ?? undefined;
               if (fees.tax !== null) tax = fees.tax;
               if (fees.total !== null) {
                 total = fees.total;
@@ -1767,12 +1708,6 @@ export const api = {
             const targetLat = delivery?.location?.latitude ?? gpsLat;
             const targetLng = delivery?.location?.longitude ?? gpsLng;
 
-            console.log(`[Pricing Location - Swiggy] Location used to fetch pricing:
-  - User GPS Location: (${gpsLat}, ${gpsLng})
-  - Target Coordinates used for Swiggy store discovery & cart API: (${targetLat.toFixed(6)}, ${targetLng.toFixed(6)})
-  - Resolved Delivery Address ID: ${delivery?.id || 'none (GPS coordinates only)'}
-  - Resolved Delivery Address Name: "${delivery?.name || 'none'}"
-  - Delivery Address Distance: ${delivery?.distanceKm !== undefined ? `${delivery.distanceKm} km` : 'N/A'}`);
 
             const HOME_URL = `https://www.swiggy.com/api/instamart/home/v2?offset=0&storeId=&primaryStoreId=&secondaryStoreId=&clientId=INSTAMART-APP&lat=${targetLat.toFixed(6)}&lng=${targetLng.toFixed(6)}&overrideLocation=true`;
 
@@ -1851,12 +1786,6 @@ export const api = {
 
             const resolvedStoreId = storeInfo?.storeId || storeInfo?.primaryStoreId || null;
             if (resolvedStoreId) {
-              const storeParams = 'offset=0&ageConsent=false' +
-                (storeInfo?.layoutId ? '&layoutId=' + encodeURIComponent(storeInfo.layoutId) : '') +
-                '&voiceSearchTrackingId=' +
-                '&storeId=' + encodeURIComponent(resolvedStoreId) +
-                '&primaryStoreId=' + encodeURIComponent(storeInfo?.primaryStoreId || resolvedStoreId) +
-                '&secondaryStoreId=' + encodeURIComponent(storeInfo?.secondaryStoreId || resolvedStoreId);
 
               const buildBody = (productId: any, itemId: any, spinId: any, qty: number) => ({
                 productId: productId || itemId,
@@ -2020,7 +1949,6 @@ export const api = {
                   return [];
                 };
 
-                console.log(`[Swiggy API Checkout] Posting ${bodies.length} item(s) to checkout/v2/cart:`, JSON.stringify(bodies));
                 let postCartRes = await postBasket([resolvedStoreId], delivery);
                 if (!postCartRes.ok) {
                   const rejText = (await postCartRes.text().catch(() => '')).slice(0, 800);
@@ -2037,7 +1965,6 @@ export const api = {
                     extractStockCount(rejText);
 
                   if (stockInRej !== undefined && stockInRej > 0) {
-                    console.log(`[Swiggy API Checkout] Detected stock limit of ${stockInRej} from rejection! Auto-clamping bodies.`);
                     for (const b of bodies) {
                       b.quantity = Math.min(b.quantity, stockInRej);
                       if (b.itemId) platformItemLimits[String(b.itemId)] = stockInRej;
@@ -2146,6 +2073,7 @@ export const api = {
                     if (fees.smallCartFee !== null) smallCartFee = fees.smallCartFee;
                     if (fees.surgeFee) surgeFee = fees.surgeFee;
                     if (fees.surgeLabel) surgeLabel = fees.surgeLabel;
+                    freeDeliveryGap = fees.freeDeliveryGap ?? undefined;
                     if (fees.tax !== null) tax = fees.tax;
                     if (fees.total !== null) {
                       total = fees.total;
@@ -2437,6 +2365,7 @@ export const api = {
         smallCartFee,
         surgeFee,
         surgeLabel,
+        freeDeliveryGap: liveBill && deliveryFee > 0 ? freeDeliveryGap : undefined,
         tax,
         total,
         savings: savings > 0 ? savings : 0,
@@ -2712,39 +2641,6 @@ function isSwiggyInStock(product: any, v: any): boolean {
   if (product && Array.isArray(product.badges) && product.badges.some(checkBadge)) return false;
 
   return true;
-}
-
-export function debugScanSwiggyStock(json: any, query?: string): string[] {
-  const matches: string[] = [];
-  function walk(node: any, path: string) {
-    if (!node || matches.length >= 60) return;
-    if (typeof node === 'string') {
-      if (/left|stock|available|only\s*\d+|units?|per\s*order|limit|quota|cap/i.test(node)) {
-        matches.push(`${path}: "${node.slice(0, 100)}"`);
-      }
-      return;
-    }
-    if (typeof node === 'number') {
-      if (/stock|quantity|remaining|limit|max|inventory|count|available|units/i.test(path)) {
-        matches.push(`${path}: ${node}`);
-      }
-      return;
-    }
-    if (Array.isArray(node)) {
-      for (let i = 0; i < node.length && matches.length < 60; i++) {
-        walk(node[i], `${path}[${i}]`);
-      }
-      return;
-    }
-    if (typeof node === 'object') {
-      for (const k of Object.keys(node)) {
-        if (matches.length >= 60) break;
-        walk(node[k], path ? `${path}.${k}` : k);
-      }
-    }
-  }
-  walk(json, '');
-  return matches;
 }
 
 export function extractStockCount(val: any): number | undefined {
@@ -3087,7 +2983,6 @@ function extractVariation(product: any, v: any, productId: string): any {
   if (interestingKeys.length > 0 || availableStock !== undefined || maxQuantity !== undefined) {
     const detail: Record<string, any> = {};
     for (const k of interestingKeys) detail[k] = v[k];
-    console.log(`[Swiggy Search Debug] Variation "${name}" (${unit}) itemId=${itemIdVal} -> availableStock=${availableStock}, maxQuantity=${maxQuantity}`, JSON.stringify(detail));
   }
 
   return {
@@ -3478,6 +3373,7 @@ interface BillFees {
   smallCartFee: number | null;
   surgeFee: number | null;
   surgeLabel?: string | null;
+  freeDeliveryGap?: number | null;
   tax: number | null;
   total: number | null;
 }
@@ -3619,8 +3515,21 @@ function parseBlinkitBill(json: any): BillFees {
     }
   }
 
+  // Free-delivery gap. The live threshold sits in
+  // flat_delivery_charge_attributes.free_delivery_mov and is measured against
+  // total_cost (item total after discounts) — verified against the native app
+  // ("shop ₹19 more": 199 − 180). bill_details.free_delivery_mov (250) is NOT
+  // what the app uses, so it is deliberately ignored.
+  let freeDeliveryGap: number | null = null;
+  const flatMov = bill && typeof bill === 'object' ? num(bill.flat_delivery_charge_attributes?.free_delivery_mov) : null;
+  if (flatMov !== null && flatMov > 0 && parsedSubtotal !== null && (deliveryVal ?? 0) > 0) {
+    const gap = Math.ceil(flatMov - parsedSubtotal);
+    if (gap > 0) freeDeliveryGap = gap;
+  }
+
   return {
     subtotal: parsedSubtotal,
+    freeDeliveryGap,
     deliveryFee: deliveryVal,
     handlingFee: handlingVal,
     smallCartFee: smallCartVal,
@@ -3676,23 +3585,14 @@ export function pickInstamartCandidate(candidates: any[], name: string, unit: st
         score += Math.round(overlap * 20);
       }
     }
+    if (score === 0) continue; // unit alone never makes a match
     if (nu && cu === nu) score += 12;
     else if (nu && (cu.indexOf(nu) === 0 || nu.indexOf(cu) === 0)) score += 6;
     if (score > bestScore) { bestScore = score; best = c; }
   }
   if (bestScore >= 5) return best;
 
-  // 3. Fallback: if candidates were returned from a targeted search, pick the first candidate that shares tokens
-  if (candidates.length > 0) {
-    for (const c of candidates) {
-      const cTitle = c.name || c.title || '';
-      const cTokens = new Set(String(cTitle).toLowerCase().split(/[^a-z0-9]+/).filter(t => t.length > 1));
-      let hasShared = false;
-      nameTokens.forEach(t => { if (cTokens.has(t)) hasShared = true; });
-      if (hasShared) return c;
-    }
-  }
-
+  // No loose fallback: a single shared word ("salt") is not enough to call it a match.
   return null;
 }
 
@@ -3823,6 +3723,20 @@ function parseSwiggyBill(bill: any): BillFees {
     ? (packaging ?? 0) + (convenience ?? 0)
     : null;
   const smallCartVal = chargeGross('smallCartCharges') ?? num(bill.smallCartCharges);
+
+  // Swiggy states the remaining gap itself on the delivery charge line, e.g.
+  // "Add items worth ₹34 to avail your Swiggy One Free Delivery on this order".
+  // Only trusted when the message is about free delivery and a rupee amount.
+  let freeDeliveryGap: number | null = null;
+  if (Array.isArray(bill.charges)) {
+    const del = bill.charges.find((c: any) => c?.type === 'deliveryCharge' || c?.type === 'deliveryFee');
+    const msg = String(del?.ctx?.inlineMessage || '');
+    const m = /free\s+delivery/i.test(msg) ? msg.match(/₹\s*(\d+(?:\.\d+)?)/) : null;
+    if (m) {
+      const gap = Math.ceil(Number(m[1]));
+      if (gap > 0) freeDeliveryGap = gap;
+    }
+  }
   const taxVal = num(bill.gst);
 
   if (swiggySubtotal === null && toPayVal !== null) {
@@ -3839,6 +3753,7 @@ function parseSwiggyBill(bill: any): BillFees {
     smallCartFee: smallCartVal,
     surgeFee: surge,
     surgeLabel,
+    freeDeliveryGap,
     tax: taxVal,
     total: toPayVal
   };

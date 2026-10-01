@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useMemo } from 'react';
 import { StyleSheet, View, Text, ScrollView, TouchableOpacity, Image, Alert, ActivityIndicator, Linking } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
@@ -6,7 +6,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Plus, Minus, Trophy, ShieldCheck, Layers, RefreshCw, Trash2, Send, AlertTriangle, MapPinOff, CheckCircle2, AlertCircle, Info } from 'lucide-react-native';
 import { storage, Platform } from '../../services/storage';
-import { api, UnifiedProduct, CartCalculation, resolvePlatformProduct, getProductOverallMax, getProductPlatformLimit } from '../../services/api';
+import { api, UnifiedProduct, CartCalculation, resolvePlatformProduct, getProductOverallMax } from '../../services/api';
+import { computeBasketVerdict, getPlatformFulfillment, BasketVerdict } from '../../utils/basketVerdict';
 import { createBlinkitShareLink } from '../../services/blinkitExport';
 import { exportCartToSwiggy } from '../../services/swiggyExport';
 import { colors, fonts, platformThemes, PLATFORM_ORDER } from '../../constants/theme';
@@ -35,12 +36,14 @@ interface VariantRowItem {
   isCapped: boolean;
 }
 
+const EMPTY_VERDICT: BasketVerdict = {
+  winnerKey: null, mostCompleteKeys: [], lowestBillKey: null, winnerIsPartial: false, fulfillment: {},
+};
+
 export default function CartScreen() {
   const router = useRouter();
   const [cartItems, setCartItems] = useState<{ product: UnifiedProduct; quantity: number }[]>([]);
   const [calculations, setCalculations] = useState<CartCalculation[]>([]);
-  const [winnerPlatform, setWinnerPlatform] = useState<Platform | null>(null);
-  const [mostCompleteKeys, setMostCompleteKeys] = useState<Platform[]>([]);
   // Platforms whose live bill is still being fetched — rendered as skeleton
   // cards so an already-arrived platform shows up immediately.
   const [pendingPlatforms, setPendingPlatforms] = useState<Platform[]>([]);
@@ -50,57 +53,17 @@ export default function CartScreen() {
   const [cartLocationName, setCartLocationName] = useState<string | null>(null);
   const calcRunIdRef = useRef(0);
 
-  // Ported from the Grocery Order Optimizer's optimizer.js badge logic:
-  // verdicts use REAL bills only, prefer full basket in-stock coverage, and stay
-  // silent on ties/noise.
-  const computeVerdict = (calcs: CartCalculation[], totalLines: number) => {
-    const real = calcs.filter(c => c.live && (c.inStockProductIds ? c.inStockProductIds.length > 0 : c.items.length > 0));
-    let winnerKey: Platform | null = null;
-    let lowestTotal = Infinity;
-    // First pass: cheapest platform that stocks every item in the basket (real bills only).
-    for (const c of real) {
-      const inStockCount = c.inStockProductIds ? c.inStockProductIds.length : c.items.length;
-      if (inStockCount === totalLines && c.total < lowestTotal) {
-        lowestTotal = c.total;
-        winnerKey = c.platform;
-      }
-    }
-    // Fallback: nobody stocks everything — score coverage vs price so a
-    // cheaper-but-incomplete platform can't beat a fuller basket at a
-    // slightly higher price.
-    if (!winnerKey) {
-      let bestScore = -Infinity;
-      for (const c of real) {
-        const inStockCount = c.inStockProductIds ? c.inStockProductIds.length : c.items.length;
-        if (inStockCount === 0) continue;
-        const coverage = totalLines > 0 ? inStockCount / totalLines : 0;
-        const missingItems = totalLines - inStockCount;
-        const perItemPenalty = totalLines > 0 ? c.total / totalLines : 0;
-        const score = (coverage * 1000) - (missingItems * perItemPenalty) - (c.total * 0.001);
-        if (score > bestScore || (score === bestScore && c.total < lowestTotal)) {
-          bestScore = score;
-          lowestTotal = c.total;
-          winnerKey = c.platform;
-        }
-      }
-    }
-    // Most Items: only meaningful when at least one platform is actually
-    // missing items — and every platform tied at the max in-stock count gets the badge.
-    let maxStock = -1;
-    let minStock = Infinity;
-    for (const c of real) {
-      const inStockCount = c.inStockProductIds ? c.inStockProductIds.length : c.items.length;
-      if (inStockCount > maxStock) maxStock = inStockCount;
-      if (inStockCount < minStock) minStock = inStockCount;
-    }
-    const mostComplete = (maxStock > minStock && maxStock > 0)
-      ? real.filter(c => {
-          const inStockCount = c.inStockProductIds ? c.inStockProductIds.length : c.items.length;
-          return inStockCount === maxStock;
-        }).map(c => c.platform)
-      : [];
-    return { winnerKey, mostCompleteKeys: mostComplete };
-  };
+  // Verdict badges are derived, never stored: recomputed only once every
+  // priced platform has reported, so a fast-but-expensive result never
+  // flashes as "Best Value".
+  const verdict = useMemo(
+    () => (pendingPlatforms.length === 0 && calculations.length > 0 && !locationMismatch
+      ? computeBasketVerdict(calculations, cartItems)
+      : EMPTY_VERDICT),
+    [calculations, cartItems, pendingPlatforms, locationMismatch],
+  );
+  const winnerPlatform = verdict.winnerKey;
+  const mostCompleteKeys = verdict.mostCompleteKeys;
 
   const loadCartData = async () => {
     const [cart, currentLoc, cartLoc, mismatchFlag] = await Promise.all([
@@ -133,11 +96,8 @@ export default function CartScreen() {
 
     // If location has changed, do NOT fetch prices for the new location!
     if (isMismatch) {
-      console.log('[Cart] Location mismatch detected. Pausing live pricing calculations.');
       calcRunIdRef.current++;
       setCalculations([]);
-      setWinnerPlatform(null);
-      setMostCompleteKeys([]);
       setPendingPlatforms([]);
       return;
     }
@@ -158,8 +118,6 @@ export default function CartScreen() {
     if (items.length === 0) {
       calcRunIdRef.current++;
       setCalculations([]);
-      setWinnerPlatform(null);
-      setMostCompleteKeys([]);
       setPendingPlatforms([]);
       return;
     }
@@ -174,30 +132,18 @@ export default function CartScreen() {
     const platformsWithItems = PLATFORM_ORDER
       .filter(p => items.some(i => i.product.platform === p || i.product.platformPrices?.[p]));
 
-    setWinnerPlatform(null);
-    setMostCompleteKeys([]);
     setCalculations([]);
     setPendingPlatforms(platformsWithItems);
 
-    const arrivedCalcs: CartCalculation[] = [];
     try {
       await api.calculateCart(items, (calc) => {
         if (isStale()) return;
-        arrivedCalcs.push(calc);
         setCalculations(prev => {
           const map = new Map(prev.map(c => [c.platform, c]));
           map.set(calc.platform, calc);
           return PLATFORM_ORDER.map(p => map.get(p)).filter((c): c is CartCalculation => !!c);
         });
         setPendingPlatforms(prev => prev.filter(p => p !== calc.platform));
-
-        // Finalize the winner badge only once every priced platform is in,
-        // so a fast-but-expensive result never flashes as "Best Value".
-        if (platformsWithItems.length > 0 && arrivedCalcs.length === platformsWithItems.length) {
-          const verdict = computeVerdict(arrivedCalcs, items.length);
-          setWinnerPlatform(verdict.winnerKey);
-          setMostCompleteKeys(verdict.mostCompleteKeys);
-        }
       });
     } catch (err) {
       console.error(err);
@@ -213,7 +159,6 @@ export default function CartScreen() {
 
     if (delta > 0) {
       const overall = getProductOverallMax(updatedCart[index].product, calculations);
-      console.log(`[Cart Qty Debug] item: "${updatedCart[index].product.title}", qty: ${updatedCart[index].quantity}, overallMax: ${overall.maxAllowed}, blinkitLimit: ${overall.blinkitLimit}, swiggyLimit: ${overall.swiggyLimit}`);
       if (updatedCart[index].quantity >= overall.maxAllowed) {
         Alert.alert('Stock Limit Reached', `Maximum available stock of ${overall.maxAllowed} unit${overall.maxAllowed === 1 ? '' : 's'} reached across stores.`);
         return;
@@ -256,8 +201,6 @@ export default function CartScreen() {
     await AsyncStorage.removeItem('@cart_location');
     await AsyncStorage.removeItem('@cart_location_mismatch');
     setCalculations([]);
-    setWinnerPlatform(null);
-    setMostCompleteKeys([]);
     setLocationMismatch(false);
     router.push('/(tabs)');
   };
@@ -270,11 +213,7 @@ export default function CartScreen() {
         setCalculations(prev => {
           const map = new Map(prev.map(c => [c.platform, c]));
           map.set(calc.platform, calc);
-          const next = PLATFORM_ORDER.map(p => map.get(p)).filter((c): c is CartCalculation => !!c);
-          const verdict = computeVerdict(next, cartItems.length);
-          setWinnerPlatform(verdict.winnerKey);
-          setMostCompleteKeys(verdict.mostCompleteKeys);
-          return next;
+          return PLATFORM_ORDER.map(p => map.get(p)).filter((c): c is CartCalculation => !!c);
         });
         setPendingPlatforms(prev => prev.filter(p => p !== calc.platform));
       }, platform);
@@ -376,8 +315,6 @@ export default function CartScreen() {
       }
 
       // Swiggy
-      const activeLoc = await storage.getLocation();
-      console.log(`[Cart] User clicked export for Swiggy. Active location: (${activeLoc?.latitude}, ${activeLoc?.longitude}) - "${activeLoc?.address || 'Unknown'}"`);
       const swiggyResult = await exportCartToSwiggy(cartItems, calculations);
       if (!swiggyResult) {
         Alert.alert('Swiggy not linked', 'Link your Swiggy account in the Accounts tab first, then export your basket.', [
@@ -719,6 +656,7 @@ export default function CartScreen() {
                 if (calc) {
                   const isWinner = !!winnerPlatform && calc.platform === winnerPlatform;
                   const isMostItems = mostCompleteKeys.includes(calc.platform);
+                  const isLowestBill = verdict.lowestBillKey === calc.platform;
                   const inStockCount = calc.inStockProductIds ? calc.inStockProductIds.length : calc.items.length;
                   const hasItems = inStockCount > 0 || calc.items.length > 0 || calc.total > 0;
                   return (
@@ -738,7 +676,12 @@ export default function CartScreen() {
                           </View>
                         )}
                         <View style={{ flex: 1 }} />
-                        {isMostItems && (
+                        {isLowestBill && !isWinner && (
+                          <View style={styles.lowestBillBadge}>
+                            <Text style={styles.mostItemsText}>LOWEST BILL</Text>
+                          </View>
+                        )}
+                        {isMostItems && !isWinner && (
                           <View style={styles.mostItemsBadge}>
                             <Layers size={9} color="#FFF" />
                             <Text style={styles.mostItemsText}>MOST ITEMS</Text>
@@ -752,7 +695,7 @@ export default function CartScreen() {
                             style={styles.bestValueBadge}
                           >
                             <Trophy size={9} color="#FFF" />
-                            <Text style={styles.bestValueText}>BEST VALUE</Text>
+                            <Text style={styles.bestValueText}>{verdict.winnerIsPartial ? 'BEST VALUE · PARTIAL' : 'BEST VALUE'}</Text>
                           </LinearGradient>
                         )}
                         <TouchableOpacity
@@ -775,26 +718,11 @@ export default function CartScreen() {
 
                       {/* Store Stock & Inventory Breakdown */}
                       {(() => {
-                        const storeOosLines = cartItems.filter(ci => {
-                          const isCalcOos = calc.outOfStockProductIds?.includes(ci.product.id);
-                          const resolved = resolvePlatformProduct(ci, calc.platform);
-                          const isProdOos = resolved?.product.inStock === false;
-                          const lim = calc.platformItemLimits?.[ci.product.id];
-                          return isCalcOos || isProdOos || (lim !== undefined && lim <= 0);
-                        });
-
-                        const storeCappedLines = cartItems.filter(ci => {
-                          const isOos = storeOosLines.some(o => o.product.id === ci.product.id);
-                          if (isOos) return false;
-                          const lim = calc.platformItemLimits?.[ci.product.id] ?? getProductPlatformLimit(ci.product, calc.platform, calculations);
-                          return lim !== undefined && lim > 0 && ci.quantity > lim;
-                        }).map(ci => {
-                          const lim = calc.platformItemLimits?.[ci.product.id] ?? getProductPlatformLimit(ci.product, calc.platform, calculations) ?? ci.quantity;
-                          return { line: ci, limit: lim };
-                        });
-
-                        const inStockCount = cartItems.length - storeOosLines.length;
-                        const fullyFulfilledCount = cartItems.length - storeOosLines.length - storeCappedLines.length;
+                        const fulfil = verdict.fulfillment[calc.platform] ?? getPlatformFulfillment(calc, cartItems, calculations);
+                        const storeOosLines = fulfil.oos.map(o => o.line);
+                        const storeCappedLines = fulfil.capped.map(c => ({ line: c.line, limit: c.limit ?? c.line.quantity }));
+                        const inStockCount = fulfil.availableLineCount;
+                        const fullyFulfilledCount = fulfil.fullLineCount;
 
                         return (
                           <View style={styles.inventoryStatusCard}>
@@ -906,8 +834,8 @@ export default function CartScreen() {
                         <>
                           <View style={styles.feeRow}>
                             <Text style={styles.feeLabel}>
-                              Item subtotal {cartItems.filter(ci => !calc.outOfStockProductIds?.includes(ci.product.id)).length < cartItems.length
-                                ? `(${cartItems.filter(ci => !calc.outOfStockProductIds?.includes(ci.product.id)).length} of ${cartItems.length} items)`
+                              Item subtotal {inStockCount < cartItems.length
+                                ? `(${inStockCount} of ${cartItems.length} items)`
                                 : ''}
                             </Text>
                             <Text style={styles.feeValue}>₹{calc.subtotal}</Text>
@@ -920,6 +848,11 @@ export default function CartScreen() {
                               <Text style={styles.feeValue}>₹{calc.deliveryFee}</Text>
                             )}
                           </View>
+                          {calc.freeDeliveryGap !== undefined && calc.freeDeliveryGap > 0 && calc.deliveryFee > 0 && (
+                            <Text style={styles.freeDeliveryNudge}>
+                              Add ₹{calc.freeDeliveryGap} more for free delivery
+                            </Text>
+                          )}
                           <View style={styles.feeRow}>
                             <Text style={styles.feeLabel}>Handling / packaging</Text>
                             <Text style={styles.feeValue}>₹{calc.handlingFee}</Text>
@@ -1380,6 +1313,14 @@ const styles = StyleSheet.create({
     color: '#FFF',
     letterSpacing: 0.4,
   },
+  lowestBillBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.amber,
+    paddingHorizontal: 7,
+    paddingVertical: 3.5,
+    borderRadius: 999,
+  },
   bestValueBadge: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1459,6 +1400,14 @@ const styles = StyleSheet.create({
     fontFamily: fonts.headingBold,
     fontSize: 19,
     color: colors.textPrimary,
+  },
+  freeDeliveryNudge: {
+    fontFamily: fonts.bodyBold,
+    fontSize: 10.5,
+    color: colors.emerald,
+    textAlign: 'right',
+    marginTop: -2,
+    marginBottom: 6,
   },
   savingsLine: {
     fontFamily: fonts.bodyMedium,

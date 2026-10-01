@@ -97,7 +97,6 @@ export async function syncDeliveryAddresses(lat: number, lng: number, force = fa
     if (force) {
       notifyLocationReset();
     }
-    console.log(`[AddressSync] >>> START pulling address details for GPS (${lat.toFixed(5)}, ${lng.toFixed(5)})${force ? ' [FORCE FRESH]' : ''}`);
 
     try {
       const [blinkitToken, swiggyToken] = await Promise.all([
@@ -111,7 +110,6 @@ export async function syncDeliveryAddresses(lat: number, lng: number, force = fa
         tasks.push(
           (async () => {
             try {
-              console.log('[AddressSync] Fetching Blinkit addresses for location...');
               const closest = await api.getClosestBlinkitAddress(lat, lng, force);
               if (closest && closest.id) {
                 const addrText =
@@ -132,9 +130,7 @@ export async function syncDeliveryAddresses(lat: number, lng: number, force = fa
                   await AsyncStorage.setItem('@blinkit_lat', String(aLat));
                   await AsyncStorage.setItem('@blinkit_lng', String(aLng));
                 }
-                console.log(`[AddressSync] Blinkit address resolved: ID ${closest.id} - "${addrText}"`);
               } else {
-                console.log('[AddressSync] Blinkit: No saved address found within 35km.');
                 await AsyncStorage.removeItem('@blinkit_address_id');
                 await AsyncStorage.removeItem('@blinkit_address_name');
                 await AsyncStorage.removeItem('@blinkit_lat');
@@ -145,30 +141,20 @@ export async function syncDeliveryAddresses(lat: number, lng: number, force = fa
             }
           })()
         );
-      } else {
-        console.log('[AddressSync] Blinkit not logged in, skipping address pull.');
       }
 
       if (swiggyToken) {
         tasks.push(
           (async () => {
             try {
-              console.log('[AddressSync] Fetching Swiggy addresses for location...');
               const resolved = await api.resolveSwiggyDeliveryAddress(lat, lng, force);
               if (resolved?.id) {
-                console.log(
-                  `[AddressSync] Swiggy address resolved: ID ${resolved.id} - "${resolved.name || 'Unnamed'}" (${resolved.distanceKm ?? 0} km away)`
-                );
-              } else {
-                console.log('[AddressSync] Swiggy: No saved address found within 35km.');
               }
             } catch (err) {
               console.error('[AddressSync] Error fetching Swiggy address:', err);
             }
           })()
         );
-      } else {
-        console.log('[AddressSync] Swiggy not logged in, skipping address pull.');
       }
 
       // Add a safety timeout of 12 seconds so sync cannot block the app indefinitely
@@ -179,7 +165,6 @@ export async function syncDeliveryAddresses(lat: number, lng: number, force = fa
       lastSyncedLng = lng;
       lastSyncedAt = Date.now();
 
-      console.log(`[AddressSync] <<< COMPLETED pulling address details. Search is now unblocked.`);
     } catch (err) {
       console.error('[AddressSync] Unexpected sync error:', err);
     } finally {

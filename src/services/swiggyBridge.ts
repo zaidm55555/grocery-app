@@ -61,7 +61,6 @@ function dispatch(entry: QueuedRequest): boolean {
 export function notifySwiggyBridgeReady(): void {
   if (ready) return;
   ready = true;
-  console.log(`[SwiggyBridge] page ready — flushing ${queue.length} queued request(s)`);
   while (queue.length > 0) {
     const entry = queue.shift()!;
     dispatch(entry);
@@ -149,7 +148,6 @@ async function runBridge(
         resolve(null);
       }
     } else {
-      console.log(`[SwiggyBridge] page not ready — queuing ${method} ${url}`);
       queue.push(entry);
     }
   });

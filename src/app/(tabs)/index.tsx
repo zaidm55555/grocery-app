@@ -196,7 +196,6 @@ export default function SearchScreen() {
   const lastLocationRef = useRef<{ latitude: number; longitude: number } | null>(null);
 
   const resetSearchState = useCallback(() => {
-    console.log('[Search] Resetting search state due to location update...');
     setQuery('');
     setLoading(false);
     setProducts([]);
@@ -250,7 +249,6 @@ export default function SearchScreen() {
         Math.abs(userLoc.longitude - prev.longitude) > 0.0001
       );
       if (isDifferent) {
-        console.log('[Search] Location coordinates changed. Resetting search state...');
         resetSearchState();
       }
       lastLocationRef.current = { latitude: userLoc.latitude, longitude: userLoc.longitude };
@@ -287,7 +285,6 @@ export default function SearchScreen() {
       setAddressSyncing(true);
       setLoading(true);
       setProducts([]);
-      console.log('[Search] Waiting for Blinkit and Swiggy address details to finish pulling before executing search...');
       await waitForAddressSync();
       setAddressSyncing(false);
       const freshLoc = await storage.getLocation();
@@ -495,7 +492,6 @@ export default function SearchScreen() {
   // ---------- Cart mutations ----------
 
   const handleAddToCart = async (product: UnifiedProduct) => {
-    console.log(`[AddToCart Debug] product: "${product.title}" (${product.platform}), limit: ${getItemPlatformLimit(product)}, availableStock: ${product.availableStock}, maxQuantity: ${product.maxQuantity}`);
     const items = cartItemsRef.current;
     const sameLineIdx = lineIdxFor(items, product);
 
@@ -505,7 +501,6 @@ export default function SearchScreen() {
       const resolved = resolvePlatformProduct(line, product.platform);
       const storeCurrentQty = resolved ? resolved.quantity : line.quantity;
       const theme = platformThemes[product.platform];
-      console.log(`[AddToCart Debug - Incrementing] lineQty: ${line.quantity}, storeCurrentQty: ${storeCurrentQty}, prodLimit: ${prodLimit}`);
       if (typeof prodLimit === 'number' && prodLimit > 0 && storeCurrentQty >= prodLimit) {
         Alert.alert('Stock Limit Reached', `Only ${prodLimit} unit${prodLimit === 1 ? '' : 's'} available on ${theme.name}.`);
         return;
@@ -575,7 +570,6 @@ export default function SearchScreen() {
       const storeCurrentQty = resolved ? resolved.quantity : line.quantity;
       const theme = platformThemes[product.platform];
       const overall = getProductOverallMax(line.product);
-      console.log(`[StepQty Debug] product: "${product.title}" (${product.platform}), delta: ${delta}, prodLimit: ${prodLimit}, storeCurrentQty: ${storeCurrentQty}, overallMax: ${overall.maxAllowed}`);
       if (typeof prodLimit === 'number' && prodLimit > 0 && storeCurrentQty >= prodLimit) {
         Alert.alert('Stock Limit Reached', `Only ${prodLimit} unit${prodLimit === 1 ? '' : 's'} available on ${theme.name}.`);
         return;

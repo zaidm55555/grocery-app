@@ -312,13 +312,6 @@ export async function exportCartToSwiggy(
   const targetLat = delivery?.location?.latitude ?? lat;
   const targetLng = delivery?.location?.longitude ?? lng;
 
-  console.log(`[Swiggy Export Location] Location used while clicking export for Swiggy:
-  - User GPS Location: (${lat}, ${lng}) - "${location.address || 'Unknown'}"
-  - Resolved Swiggy Delivery Address ID: ${delivery?.id || 'none (GPS only)'}
-  - Resolved Swiggy Delivery Address Name: "${delivery?.name || 'none'}"
-  - Delivery Address Coordinates: ${delivery?.location ? `(${delivery.location.latitude}, ${delivery.location.longitude})` : 'none'} (${delivery?.distanceKm ?? 0} km away)
-  - Target Coordinates used for Store Discovery: (${targetLat.toFixed(6)}, ${targetLng.toFixed(6)})
-  - Preferred Address ID set in Cart Payload: ${delivery?.id ?? 'null'}`);
 
   let storeInfo: SwiggyStoreInfo | null = null;
   let shipmentIdV2 = '';
