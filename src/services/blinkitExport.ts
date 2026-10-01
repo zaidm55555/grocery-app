@@ -44,6 +44,8 @@ export interface BlinkitShareResult {
   missing: { name: string; quantity: string }[];
   outOfStock: { name: string; quantity: string }[];
   clamped: { name: string; requestedQty: number; exportedQty: number }[];
+  // Why no url came back (HTTP statuses; null = no response / not tried).
+  diag?: { bridgeStatus: number | null; directStatus: number | null; challenged: boolean };
 }
 
 /**
@@ -267,12 +269,17 @@ export async function createBlinkitShareLink(
   });
 
   const headers = await buildBlinkitSessionHeaders(authKey, lat, lng);
-  let res = await requestViaBlinkitBridge(
-    'https://blinkit.com/v1/assist/cart/share',
-    'POST',
-    shareBody,
-    headers
-  );
+  const postShare = () => requestViaBlinkitBridge('https://blinkit.com/v1/assist/cart/share', 'POST', shareBody, headers);
+  const isChallenge = (r: { text: string } | null) => !!r && /just a moment|enable javascript and cookies/i.test(r.text);
+  let res = await postShare();
+  // A rate limit, gateway hiccup, or Cloudflare "Just a moment" challenge right
+  // after other bridge traffic (e.g. a bill refresh) is usually transient:
+  // retry up to twice, waiting longer for a challenge.
+  for (let attempt = 0; attempt < 2 && res && (res.status === 429 || res.status >= 500); attempt++) {
+    await new Promise((r) => setTimeout(r, isChallenge(res) ? 3000 : 1500));
+    res = (await postShare()) ?? res;
+  }
+  const diag = { bridgeStatus: res ? res.status : null, directStatus: null as number | null, challenged: isChallenge(res) };
   if (!res || res.status < 200 || res.status >= 300) {
     try {
       const directRes = await api.fetchWithTimeout(
@@ -280,6 +287,7 @@ export async function createBlinkitShareLink(
         { method: 'POST', headers, body: shareBody },
         8000
       );
+      diag.directStatus = directRes.status;
       if (directRes.ok) {
         const text = await directRes.text();
         res = { status: directRes.status, text };
@@ -292,7 +300,7 @@ export async function createBlinkitShareLink(
     url = extractShareUrl(res.text);
   }
 
-  return { url, items, total, missing, outOfStock, clamped };
+  return { url, items, total, missing, outOfStock, clamped, ...(url ? {} : { diag }) };
 }
 
 // The share-cart response nests the link differently across the web/app

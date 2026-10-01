@@ -66,6 +66,52 @@ describe('createBlinkitShareLink', () => {
     expect((await createBlinkitShareLink([line()]))!.url).toBe('');
   });
 
+  it('retries once on a plain rate limit', async () => {
+    jest.useFakeTimers();
+    try {
+      request
+        .mockResolvedValueOnce({ status: 429, text: '{"message":"slow down"}' })
+        .mockResolvedValueOnce({ status: 200, text: '{"url":"https://blinkit.com/share/ok"}' });
+      const p = createBlinkitShareLink([line()]);
+      await jest.advanceTimersByTimeAsync(2000);
+      expect((await p)!.url).toBe('https://blinkit.com/share/ok');
+      expect(request).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('retries a transient Cloudflare challenge and succeeds once it clears', async () => {
+    jest.useFakeTimers();
+    try {
+      request
+        .mockResolvedValueOnce({ status: 429, text: '<html><title>Just a moment...</title></html>' })
+        .mockResolvedValueOnce({ status: 200, text: '{"url":"https://blinkit.com/share/ok"}' });
+      const p = createBlinkitShareLink([line()]);
+      await jest.advanceTimersByTimeAsync(4000);
+      expect((await p)!.url).toBe('https://blinkit.com/share/ok');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('gives up after two retries on a persistent challenge and reports why', async () => {
+    jest.useFakeTimers();
+    const spy = jest.spyOn(api, 'fetchWithTimeout').mockResolvedValue({ ok: false, status: 400, text: async () => '' } as any);
+    try {
+      request.mockResolvedValue({ status: 429, text: '<html><title>Just a moment...</title>Enable JavaScript and cookies to continue</html>' });
+      const p = createBlinkitShareLink([line()]);
+      await jest.advanceTimersByTimeAsync(10000);
+      const r = await p;
+      expect(r!.url).toBe('');
+      expect(r!.diag).toEqual({ bridgeStatus: 429, directStatus: 400, challenged: true });
+      expect(request).toHaveBeenCalledTimes(3);
+    } finally {
+      jest.useRealTimers();
+      spy.mockRestore();
+    }
+  });
+
   it('reports lines it cannot resolve as missing', async () => {
     request.mockResolvedValue({ status: 200, text: '{"url":"https://blinkit.com/share/1"}' });
     jest.spyOn(api, 'fetchWithTimeout').mockResolvedValue({ ok: true, json: async () => ({}) } as any);

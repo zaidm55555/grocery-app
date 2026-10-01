@@ -56,6 +56,11 @@ export default function CartScreen() {
   const [locationMismatch, setLocationMismatch] = useState(false);
   const [listsOpen, setListsOpen] = useState(false);
   const calcRunIdRef = useRef(0);
+  // Latest bill state for async handlers, whose closures go stale mid-await.
+  const pendingRef = useRef<Platform[]>([]);
+  const calculationsRef = useRef<CartCalculation[]>([]);
+  pendingRef.current = pendingPlatforms;
+  calculationsRef.current = calculations;
 
   // Verdict badges are derived, never stored: recomputed only once every
   // priced platform has reported, so a fast-but-expensive result never
@@ -273,7 +278,15 @@ export default function CartScreen() {
     setExporting(platform);
     try {
       if (platform === 'blinkit') {
-        const share = await createBlinkitShareLink(cartItems, calculations);
+        // A quantity change starts a fresh Blinkit bill through the same bridge
+        // session; exporting while it is still running trips Blinkit's bot
+        // challenge on the share request. Wait for the bill (up to 20s), and
+        // use its result, not the pre-change snapshot, for stock limits.
+        const waitUntil = Date.now() + 20000;
+        while (pendingRef.current.includes('blinkit') && Date.now() < waitUntil) {
+          await new Promise((r) => setTimeout(r, 250));
+        }
+        const share = await createBlinkitShareLink(cartItems, calculationsRef.current);
         if (!share) {
           Alert.alert('Blinkit not linked', 'Link your Blinkit account in the Accounts tab first, then export your basket.', [
             { text: 'OK' }
