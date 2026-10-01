@@ -8,7 +8,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { requestViaBlinkitBridge, getBlinkitPageStorage } from './blinkitBridge';
 import type { UnifiedProduct } from './api';
-import { dlog } from '../utils/debugLog';
 
 type CartLine = { product: UnifiedProduct; quantity: number };
 
@@ -305,8 +304,6 @@ export async function priceBlinkitCart(
   }
 
   if (resJson) {
-    const dbg = resJson?.cart_data || resJson?.data || resJson;
-    dlog('blinkit-bill', `store lat=${blLat} lng=${blLng} address_id=${addrNum} cart_address_id=${dbg?.address_id} merchants=[${(dbg?.items || []).map((i: any) => i?.merchant_id).join(',')}]`, dbg?.merchant_details);
     const fees = deps.parseBlinkitBill(resJson);
     if (fees.subtotal !== null) subtotal = fees.subtotal;
     if (fees.deliveryFee !== null) deliveryFee = fees.deliveryFee;

@@ -261,7 +261,6 @@ function bridgedBlinkitSearch(url: string, headers: Record<string, string>, stat
       // Cloudflare "Just a moment..." challenge: a background fetch can't solve
       // it and reloading the hidden page didn't clear it either.
       const challenged = (res.status === 429 || res.status === 403) && /just a moment|enable javascript and cookies/i.test(res.text);
-      dlog('blinkit-search', `bridge ${res.status} ${challenged ? 'Cloudflare challenge' : 'rate limit/other'}`);
       if (challenged) {
         blinkitBridgeSearchBlockedUntil = Date.now() + BLINKIT_CHALLENGE_COOLDOWN_MS;
         break;
@@ -1123,7 +1122,6 @@ export const api = {
       // so search showed stock the bill then reported as 0. Falls back to a
       // direct request when no page is connected.
       let json: any = null;
-      let via = 'bridge';
       // At app start the page may not have registered yet; the direct fallback
       // answers from the wrong store, so give the bridge a few seconds first.
       if (!isBlinkitBridgeConnected()) await waitForBlinkitBridge(5000);
@@ -1140,7 +1138,6 @@ export const api = {
         // Direct fallback (bridge unavailable or challenged by Cloudflare). It is
         // answered from a different dark store than the cart, so its stock can be
         // stale; the bill remains the authority once an item is added.
-        via = `direct(bridge status: ${bridgeStatuses.join(',') || 'skipped'})`;
         const response = await this.fetchWithTimeout(url, {
           method: 'POST',
           headers: {
@@ -1161,7 +1158,6 @@ export const api = {
         json = await response.json();
       }
       const parsed = parseBlinkitProducts(json);
-      dlog('blinkit-search', `q="${query}" via=${via} store lat=${bLat} lng=${bLng} merchants=[${Array.from(new Set(parsed.map((p: any) => p.merchantId))).join(',')}]`);
 
       return parsed.map((item: any) => ({
         id: `blinkit-${item.productId || Math.random()}`,
@@ -1268,6 +1264,20 @@ export const api = {
         throw new Error('No active Swiggy store ID discovered from your location');
       }
 
+      // home/v2 discovery takes the first storeId/podId it finds, which can be a
+      // different store than the one Swiggy bills this address from (observed:
+      // search on 1386090, bill items returned under 1392660 with other item
+      // ids), so search showed stock the bill then called unavailable. The bill's
+      // own store, remembered from the last bill at this location, wins.
+      try {
+        const rawBilled = await AsyncStorage.getItem('@swiggy_billed_store');
+        const billed = rawBilled ? JSON.parse(rawBilled) : null;
+        if (billed && billed.locKey === locKey && billed.storeId && Date.now() - billed.at < 24 * 3600 * 1000 && billed.storeId !== store.storeId) {
+          dlog('swiggy-search', `using billed store ${billed.storeId} instead of discovered ${store.storeId}`);
+          store = { ...store, storeId: billed.storeId, primaryStoreId: billed.storeId, secondaryStoreId: billed.storeId };
+        }
+      } catch {}
+
       const params = 'offset=0&ageConsent=false' +
         (store.layoutId ? '&layoutId=' + encodeURIComponent(store.layoutId) : '') +
         '&voiceSearchTrackingId=' +
@@ -1312,6 +1322,7 @@ export const api = {
 
 
       const parsed = extractSwiggySearchProducts(searchJson, query);
+      dlog('swiggy-search', `q="${query}" store=${store.storeId} primary=${store.primaryStoreId || store.storeId} secondary=${store.secondaryStoreId || store.storeId} addr=${delivery.id} results=${parsed.length} pods=[${Array.from(new Set(parsed.map((p: any) => p.storeId))).join(',')}]`);
 
       return parsed.map((item: any) => ({
         id: `swiggy-${item.itemId || Math.random()}`,
@@ -1669,6 +1680,7 @@ export const api = {
                 };
 
                 let postCartRes = await postBasket([resolvedStoreId], delivery);
+                dlog('swiggy-bill', `POST store=${storeInfo?.storeId} primary=${storeInfo?.primaryStoreId} secondary=${storeInfo?.secondaryStoreId} sentStoreId=${resolvedStoreId} addr=${delivery?.id} status=${postCartRes.status} sent=${JSON.stringify(bodies.map(b => ({ itemId: b.itemId, productId: b.productId, qty: b.quantity })))}`);
                 if (!postCartRes.ok) {
                   const rejText = (await postCartRes.text().catch(() => '')).slice(0, 800);
                   console.warn(`[Swiggy API Checkout] POST rejected (${postCartRes.status}): ${rejText}`);
@@ -1712,6 +1724,11 @@ export const api = {
                   } catch (e) {
                     console.warn('[Swiggy API Checkout] cart refetch failed:', e);
                   }
+                }
+
+                const billedStoreId = (Array.isArray(sItems) ? sItems : []).map((it: any) => it?.storeId).find((v: any) => v !== undefined && v !== null && v !== '');
+                if (billedStoreId !== undefined) {
+                  AsyncStorage.setItem('@swiggy_billed_store', JSON.stringify({ locKey, storeId: String(billedStoreId), at: Date.now() })).catch(() => {});
                 }
 
                 const sentPids = new Set<string>();
@@ -1859,6 +1876,10 @@ export const api = {
                     return instamartNormKey(name);
                   };
 
+                  dlog('swiggy-bill', 'bill items', (Array.isArray(sItems) ? sItems : []).map((it: any) => ({
+                    name: it?.name || it?.displayName, itemId: it?.itemId, storeId: it?.storeId, qty: it?.quantity,
+                    inStock: it?.inStock, available: it?.isAvailable, inventory: it?.inventory, status: it?.status,
+                  })));
                   if (Array.isArray(sItems)) {
                     for (const it of sItems) {
                       const isOos = it.inStock === false ||
@@ -1949,6 +1970,7 @@ export const api = {
                   for (const arr of sOosArrays) {
                     if (Array.isArray(arr)) {
                       for (const it of arr) {
+                        dlog('swiggy-bill', 'UNAVAILABLE item', it);
                         getSwiggyPids(it).forEach(p => {
                           returnedOosSwiggyPids.add(p);
                           platformItemLimits[p] = 0;
@@ -2662,7 +2684,13 @@ export function extractSwiggyStockAndLimit(v: any, product?: any): { availableSt
 
 function extractVariation(product: any, v: any, productId: string): any {
   if (!v || typeof v !== 'object') return null;
-  if (!isSwiggyInStock(product, v)) return null;
+  const inStockVerdict = isSwiggyInStock(product, v);
+  dumpWatched('swiggy-search', String(v.displayName || product?.displayName || ''), () => ({
+    inStockVerdict, skuId: v.skuId, podId: v.podId, storeId: v.storeId, inventory: v.inventory,
+    cartAllowedQuantity: v.cartAllowedQuantity, slotInfo: v.slotInfo,
+    productInStock: product?.inStock, productIsAvail: product?.isAvail, flags: product?.analytics?.extraFields,
+  }));
+  if (!inStockVerdict) return null;
   const name = (typeof v.displayName === 'string' && v.displayName.trim())
     ? v.displayName.trim()
     : (typeof product.displayName === 'string' ? product.displayName.trim() : '');
@@ -2973,7 +3001,6 @@ export function parseBlinkitProducts(json: any): any[] {
       const numMrp = typeof mrp === 'number' ? mrp : Number((String(mrp || price).match(/\d[\d,]*/) || [])[0] || 0);
       if (numPrice > 0 && name.length >= 3 && name.length <= 150) {
         const nodeInStock = isBlinkitInStock(node);
-        dumpWatched('blinkit-search', String(name), () => ({ inStockVerdict: nodeInStock, node }));
         if (nodeInStock) {
           const rawImg = findBlinkitImageUrl(node, 0);
           image = formatBlinkitImageUrl(rawImg);
