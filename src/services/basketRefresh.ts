@@ -82,13 +82,15 @@ async function refreshLine(line: Line): Promise<Line> {
   // Linked listings on the other platforms
   for (const pl of Object.keys(prices) as Platform[]) {
     const stored = prices[pl]!;
-    const linkValid = matchScore({ name: src.title, unit: src.quantity, price: src.price }, { name: stored.title, unit: stored.quantity, price: stored.price }) >= LINK_MIN_SCORE;
+    // A link the user picked by hand is kept however weakly it scores — it is
+    // usually the very reason auto-match found nothing.
+    const linkValid = stored.manual || matchScore({ name: src.title, unit: src.quantity, price: src.price }, { name: stored.title, unit: stored.quantity, price: stored.price }) >= LINK_MIN_SCORE;
 
     if (linkValid) {
       const cands = await searchLive(pl, stored.title);
       if (cands.length === 0) continue; // search gave nothing — keep what we have
       const live = findLive(stored, cands);
-      prices[pl] = live ? toVariant(live) : unavailable(stored);
+      prices[pl] = live ? { ...toVariant(live), ...(stored.manual ? { manual: true } : {}) } : unavailable(stored);
     } else {
       // Bad link from an older matcher: replace with a proper match for the
       // SOURCE product, or drop the link rather than keep a different product.

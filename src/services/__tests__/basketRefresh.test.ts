@@ -72,6 +72,21 @@ describe('refreshBasketLines', () => {
     expect(items[0].product.platformPrices).toBeUndefined();
   });
 
+  it('keeps a manually picked link even though it scores as a weak match', async () => {
+    const picked = variant({ id: 'swiggy-9', title: 'Aashirvaad Atta', quantity: '5 kg', productId: 's9', originalId: '9', manual: true });
+    search.mockImplementation(async (platform) =>
+      platform === 'blinkit' ? [live()] : [product({ id: 'swiggy-9', platform: 'swiggy', productId: 's9', originalId: '9', title: 'Aashirvaad Atta', quantity: '5 kg', price: 280 })]);
+    const { items } = await refreshBasketLines([{ product: product({ productId: 'p1', platformPrices: { swiggy: picked } }), quantity: 1 }]);
+    expect(items[0].product.platformPrices?.swiggy).toMatchObject({ productId: 's9', price: 280, manual: true });
+  });
+
+  it('keeps a manual link when its own search returns nothing relevant', async () => {
+    const picked = variant({ id: 'swiggy-9', title: 'Aashirvaad Atta', quantity: '5 kg', productId: 's9', manual: true });
+    search.mockImplementation(async (platform) => (platform === 'blinkit' ? [live()] : []));
+    const { items } = await refreshBasketLines([{ product: product({ productId: 'p1', platformPrices: { swiggy: picked } }), quantity: 1 }]);
+    expect(items[0].product.platformPrices?.swiggy?.productId).toBe('s9');
+  });
+
   it('retries the search with the pack size stripped from the title', async () => {
     search.mockImplementation(async (_p, q) => (q === 'Tata Salt 1 kg' ? [] : [live()]));
     await refreshBasketLines([{ product: product({ title: 'Tata Salt 1 kg', productId: 'p1' }), quantity: 1 }]);

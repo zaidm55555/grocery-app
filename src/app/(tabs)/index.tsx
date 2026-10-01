@@ -476,7 +476,7 @@ export default function SearchScreen() {
         // Explicit pick wins; otherwise fall back to the auto-matched best.
         const product = typeof pick === 'object' ? pick.product : flow.results[t.id]?.[pid]?.best;
         if (product) {
-          prices[pid] = toVariant(product);
+          prices[pid] = { ...toVariant(product), ...(typeof pick === 'object' ? { manual: true } : {}) };
           if (!toastPlatform) { toastPlatform = pid; toastName = t.name; }
         }
       }

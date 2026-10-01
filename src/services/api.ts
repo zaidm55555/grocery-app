@@ -5,7 +5,6 @@ import { priceBlinkitCart } from './blinkitPricing';
 import { requestViaBlinkitBridge, isBlinkitBridgeConnected, waitForBlinkitBridge } from './blinkitBridge';
 import { pickBestMatch, isSameProduct } from '../utils/matcher';
 import { stripSizeToken } from '../utils/productKey';
-import { dlog, dumpWatched } from '../utils/debugLog';
 
 export interface UnifiedProduct {
   id: string;
@@ -47,6 +46,10 @@ export interface PlatformVariant {
   inStock?: boolean;
   availableStock?: number;
   maxQuantity?: number;
+  // Picked by the user in the match modal rather than chosen by the matcher.
+  // Such a pick is often a different-looking product (that is why auto-match
+  // found nothing), so a refresh must not discard it as a weak link.
+  manual?: boolean;
 }
 
 // Effective product used when pricing a cart line on a given platform:
@@ -1273,7 +1276,6 @@ export const api = {
         const rawBilled = await AsyncStorage.getItem('@swiggy_billed_store');
         const billed = rawBilled ? JSON.parse(rawBilled) : null;
         if (billed && billed.locKey === locKey && billed.storeId && Date.now() - billed.at < 24 * 3600 * 1000 && billed.storeId !== store.storeId) {
-          dlog('swiggy-search', `using billed store ${billed.storeId} instead of discovered ${store.storeId}`);
           store = { ...store, storeId: billed.storeId, primaryStoreId: billed.storeId, secondaryStoreId: billed.storeId };
         }
       } catch {}
@@ -1322,7 +1324,6 @@ export const api = {
 
 
       const parsed = extractSwiggySearchProducts(searchJson, query);
-      dlog('swiggy-search', `q="${query}" store=${store.storeId} primary=${store.primaryStoreId || store.storeId} secondary=${store.secondaryStoreId || store.storeId} addr=${delivery.id} results=${parsed.length} pods=[${Array.from(new Set(parsed.map((p: any) => p.storeId))).join(',')}]`);
 
       return parsed.map((item: any) => ({
         id: `swiggy-${item.itemId || Math.random()}`,
@@ -1680,7 +1681,6 @@ export const api = {
                 };
 
                 let postCartRes = await postBasket([resolvedStoreId], delivery);
-                dlog('swiggy-bill', `POST store=${storeInfo?.storeId} primary=${storeInfo?.primaryStoreId} secondary=${storeInfo?.secondaryStoreId} sentStoreId=${resolvedStoreId} addr=${delivery?.id} status=${postCartRes.status} sent=${JSON.stringify(bodies.map(b => ({ itemId: b.itemId, productId: b.productId, qty: b.quantity })))}`);
                 if (!postCartRes.ok) {
                   const rejText = (await postCartRes.text().catch(() => '')).slice(0, 800);
                   console.warn(`[Swiggy API Checkout] POST rejected (${postCartRes.status}): ${rejText}`);
@@ -1876,10 +1876,6 @@ export const api = {
                     return instamartNormKey(name);
                   };
 
-                  dlog('swiggy-bill', 'bill items', (Array.isArray(sItems) ? sItems : []).map((it: any) => ({
-                    name: it?.name || it?.displayName, itemId: it?.itemId, storeId: it?.storeId, qty: it?.quantity,
-                    inStock: it?.inStock, available: it?.isAvailable, inventory: it?.inventory, status: it?.status,
-                  })));
                   if (Array.isArray(sItems)) {
                     for (const it of sItems) {
                       const isOos = it.inStock === false ||
@@ -1970,7 +1966,6 @@ export const api = {
                   for (const arr of sOosArrays) {
                     if (Array.isArray(arr)) {
                       for (const it of arr) {
-                        dlog('swiggy-bill', 'UNAVAILABLE item', it);
                         getSwiggyPids(it).forEach(p => {
                           returnedOosSwiggyPids.add(p);
                           platformItemLimits[p] = 0;
@@ -2684,13 +2679,7 @@ export function extractSwiggyStockAndLimit(v: any, product?: any): { availableSt
 
 function extractVariation(product: any, v: any, productId: string): any {
   if (!v || typeof v !== 'object') return null;
-  const inStockVerdict = isSwiggyInStock(product, v);
-  dumpWatched('swiggy-search', String(v.displayName || product?.displayName || ''), () => ({
-    inStockVerdict, skuId: v.skuId, podId: v.podId, storeId: v.storeId, inventory: v.inventory,
-    cartAllowedQuantity: v.cartAllowedQuantity, slotInfo: v.slotInfo,
-    productInStock: product?.inStock, productIsAvail: product?.isAvail, flags: product?.analytics?.extraFields,
-  }));
-  if (!inStockVerdict) return null;
+  if (!isSwiggyInStock(product, v)) return null;
   const name = (typeof v.displayName === 'string' && v.displayName.trim())
     ? v.displayName.trim()
     : (typeof product.displayName === 'string' ? product.displayName.trim() : '');
