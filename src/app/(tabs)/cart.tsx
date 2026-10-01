@@ -10,6 +10,7 @@ import { api, UnifiedProduct, CartCalculation, resolvePlatformProduct, getProduc
 import { refreshBasketLines, applyLiveLimits } from '../../services/basketRefresh';
 import { computeBasketVerdict, getPlatformFulfillment, BasketVerdict } from '../../utils/basketVerdict';
 import SavedListsModal from '../../components/SavedListsModal';
+import ExportNoticeModal, { ExportNotice } from '../../components/ExportNoticeModal';
 import { lists } from '../../services/lists';
 import { createBlinkitShareLink } from '../../services/blinkitExport';
 import { exportCartToSwiggy } from '../../services/swiggyExport';
@@ -263,6 +264,8 @@ export default function CartScreen() {
   //  - Swiggy (Instamart): clear → write → verify over the real checkout/v2
   //    cart APIs, then the visible page wipes local caches and navigates to
   //    /instamart/cart.
+  const [exportNotice, setExportNotice] = useState<ExportNotice | null>(null);
+
   const handleExport = async (platform: 'blinkit' | 'swiggy') => {
     if (exporting || cartItems.length === 0) return;
     const display = platform === 'swiggy' ? 'Swiggy' : 'Blinkit';
@@ -323,23 +326,15 @@ export default function CartScreen() {
           }
         };
 
-        const notices: string[] = [];
-        if (share.outOfStock.length > 0) {
-          notices.push(`Skipped (Out of Stock on Blinkit):\n${share.outOfStock.map((o) => `• ${o.name}`).join('\n')}`);
-        }
-        if (share.clamped.length > 0) {
-          notices.push(`Quantity adjusted to available stock:\n${share.clamped.map((c) => `• ${c.name} (${c.requestedQty} → ${c.exportedQty})`).join('\n')}`);
-        }
-        if (share.missing.length > 0) {
-          notices.push(`Skipped (Not found on Blinkit):\n${share.missing.map((m) => `• ${m.name}`).join('\n')}`);
-        }
-
-        if (notices.length > 0) {
-          Alert.alert(
-            'Exporting to Blinkit',
-            `${notices.join('\n\n')}\n\nOpening Blinkit with ${share.items.length} in-stock item${share.items.length === 1 ? '' : 's'}...`,
-            [{ text: 'Continue', onPress: proceedToOpen }]
-          );
+        if (share.outOfStock.length > 0 || share.clamped.length > 0 || share.missing.length > 0) {
+          setExportNotice({
+            platform: 'blinkit',
+            outOfStock: share.outOfStock,
+            clamped: share.clamped,
+            missing: share.missing,
+            itemCount: share.items.length,
+            onContinue: proceedToOpen,
+          });
         } else {
           await proceedToOpen();
         }
@@ -381,23 +376,15 @@ export default function CartScreen() {
         });
       };
 
-      const notices: string[] = [];
-      if (swiggyResult.outOfStock.length > 0) {
-        notices.push(`Skipped (Out of Stock on Swiggy):\n${swiggyResult.outOfStock.map((o) => `• ${o.name}`).join('\n')}`);
-      }
-      if (swiggyResult.clamped.length > 0) {
-        notices.push(`Quantity adjusted to available stock:\n${swiggyResult.clamped.map((c) => `• ${c.name} (${c.requestedQty} → ${c.exportedQty})`).join('\n')}`);
-      }
-      if (swiggyResult.missing.length > 0) {
-        notices.push(`Skipped (Not found on Swiggy):\n${swiggyResult.missing.map((m) => `• ${m.name}`).join('\n')}`);
-      }
-
-      if (notices.length > 0) {
-        Alert.alert(
-          'Exporting to Swiggy',
-          `${notices.join('\n\n')}\n\nProceeding to Swiggy cart with ${swiggyResult.items.length} in-stock item${swiggyResult.items.length === 1 ? '' : 's'}...`,
-          [{ text: 'Continue', onPress: proceedToWebview }]
-        );
+      if (swiggyResult.outOfStock.length > 0 || swiggyResult.clamped.length > 0 || swiggyResult.missing.length > 0) {
+        setExportNotice({
+          platform: 'swiggy',
+          outOfStock: swiggyResult.outOfStock,
+          clamped: swiggyResult.clamped,
+          missing: swiggyResult.missing,
+          itemCount: swiggyResult.items.length,
+          onContinue: proceedToWebview,
+        });
       } else {
         proceedToWebview();
       }
@@ -417,8 +404,10 @@ export default function CartScreen() {
         const resolved = resolvePlatformProduct(line, p);
         if (!resolved) return null;
         const calc = calculations.find(c => c.platform === p);
-        const isOos = calc ? (calc.outOfStockProductIds?.includes(line.product.id) ?? false) : (resolved.product.inStock === false);
         const platformLimit = p === 'blinkit' ? overall.blinkitLimit : overall.swiggyLimit;
+        // A known limit of 0 means out of stock, not "Only 0 in stock".
+        const isOos = (calc ? (calc.outOfStockProductIds?.includes(line.product.id) ?? false) : (resolved.product.inStock === false))
+          || (platformLimit !== undefined && platformLimit <= 0);
         const billedQty = calc?.platformItemQuantities?.[line.product.id];
         const isCapped = !isOos && platformLimit !== undefined && line.quantity > platformLimit;
         const item: VariantRowItem = {
@@ -443,8 +432,9 @@ export default function CartScreen() {
 
     // Check single-variant line OOS
     const singleCalc = calculations.find(c => c.platform === line.product.platform);
-    const isSingleOos = singleCalc ? (singleCalc.outOfStockProductIds?.includes(line.product.id) ?? false) : (line.product.inStock === false);
     const singleLimit = line.product.platform === 'blinkit' ? overall.blinkitLimit : overall.swiggyLimit;
+    const isSingleOos = (singleCalc ? (singleCalc.outOfStockProductIds?.includes(line.product.id) ?? false) : (line.product.inStock === false))
+      || (singleLimit !== undefined && singleLimit <= 0);
     const isSingleCapped = !isSingleOos && singleLimit !== undefined && line.quantity > singleLimit;
     const isAtOverallMax = line.quantity >= overall.maxAllowed;
 
@@ -1021,6 +1011,7 @@ export default function CartScreen() {
           )}
         </View>
       )}
+      <ExportNoticeModal notice={exportNotice} onCancel={() => setExportNotice(null)} />
       <SavedListsModal
         visible={listsOpen}
         onClose={() => setListsOpen(false)}

@@ -123,6 +123,16 @@ export function getItemPlatformLimit(product: UnifiedProduct | PlatformVariant |
   return stock ?? maxQ;
 }
 
+// A saved listing the live catalog search reported as unavailable (inStock false
+// or a stock limit of 0). For Swiggy, search is the availability authority: the
+// cart API happily accepts and bills stale item ids for items that no longer
+// show up in search, so such lines must never be sent for pricing.
+export function isKnownUnavailable(product: UnifiedProduct | PlatformVariant | null | undefined): boolean {
+  if (!product) return true;
+  const lim = getItemPlatformLimit(product);
+  return product.inStock === false || (lim !== undefined && lim <= 0);
+}
+
 export function getProductPlatformLimit(
   product: UnifiedProduct,
   platform: Platform,
@@ -1267,7 +1277,7 @@ export const api = {
 
       // The item subtotal starts from the search-API prices, capped by known item limits,
       // and gets overwritten by the live bill's itemTotal when the cart API responds.
-      let subtotal = platformItems.reduce((sum, item) => {
+      let subtotal = platformItems.filter(item => platform !== 'swiggy' || !isKnownUnavailable(item.product)).reduce((sum, item) => {
         const lim = getItemPlatformLimit(item.product);
         const q = (typeof lim === 'number' && lim > 0) ? Math.min(item.quantity, lim) : item.quantity;
         return sum + (item.product.price * q);
@@ -1414,9 +1424,10 @@ export const api = {
               });
 
               // FAST PATH: reuse the catalog IDs captured during auto-match
-              let usedFastPath = platformItems.length > 0;
+              const billableItems = platformItems.filter(ci => !isKnownUnavailable(ci.product));
+              let usedFastPath = billableItems.length > 0;
               let bodies: any[] = [];
-              for (const ci of platformItems) {
+              for (const ci of billableItems) {
                 const src: any = ci.product.platformPrices?.swiggy || (ci.product.platform === 'swiggy' ? ci.product : null);
                 const pid = src?.productId || src?.originalId || src?.itemId;
                 const iid = src?.originalId || src?.itemId || src?.productId;
@@ -1479,7 +1490,7 @@ export const api = {
                   const slice = items.slice(start, start + SEARCH_POOL);
                   const settled = await Promise.all(slice.map(cartItem => {
                     const resolved = resolvePlatformProduct(cartItem, 'swiggy');
-                    if (!resolved) return Promise.resolve(null);
+                    if (!resolved || isKnownUnavailable(resolved.product)) return Promise.resolve(null);
                     return searchItem(resolved.product.title, resolved.product.quantity, resolved.product.price, resolved.product.productId || resolved.product.originalId);
                   }));
                   settled.forEach((r, i) => { searchResults[start + i] = r; });
@@ -1491,7 +1502,7 @@ export const api = {
 
                 items.forEach((cartItem, i) => {
                   const resolved = resolvePlatformProduct(cartItem, 'swiggy');
-                  if (!resolved) {
+                  if (!resolved || isKnownUnavailable(resolved.product)) {
                     oosItemIds.push(cartItem.product.id);
                     return;
                   }
@@ -1513,7 +1524,7 @@ export const api = {
 
               let freshOosItemIds: string[] = [];
               let freshCandidateMap = new Map<string, any>();
-              if (bodies.length === 0 && platformItems.length > 0) {
+              if (bodies.length === 0 && billableItems.length > 0) {
                 const fresh = await freshSearchBodies();
                 freshOosItemIds = fresh.oosItemIds;
                 freshCandidateMap = fresh.candidateMap;
@@ -1857,7 +1868,7 @@ export const api = {
 
                   for (const cartItem of items) {
                     const resolved = resolvePlatformProduct(cartItem, 'swiggy');
-                    if (!resolved || freshOosItemIds.includes(cartItem.product.id)) {
+                    if (!resolved || freshOosItemIds.includes(cartItem.product.id) || isKnownUnavailable(resolved.product)) {
                       outOfStockProductIds.push(cartItem.product.id);
                       platformItemLimits[cartItem.product.id] = 0;
                       continue;
@@ -1937,7 +1948,7 @@ export const api = {
       for (const cartItem of items) {
         if (!inStockProductIds.includes(cartItem.product.id) && !outOfStockProductIds.includes(cartItem.product.id)) {
           const resolved = resolvePlatformProduct(cartItem, platform);
-          if (!resolved || resolved.product.inStock === false) {
+          if (!resolved || resolved.product.inStock === false || (platform === 'swiggy' && isKnownUnavailable(resolved.product))) {
             outOfStockProductIds.push(cartItem.product.id);
           } else {
             inStockProductIds.push(cartItem.product.id);
