@@ -4,10 +4,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { Plus, Minus, Trophy, ShieldCheck, Layers, RefreshCw, Trash2, Send, AlertTriangle, MapPinOff, CheckCircle2, AlertCircle, Info } from 'lucide-react-native';
+import { Plus, Minus, Trophy, ShieldCheck, Layers, RefreshCw, Trash2, Bookmark, Send, AlertTriangle, MapPinOff, CheckCircle2, AlertCircle, Info } from 'lucide-react-native';
 import { storage, Platform } from '../../services/storage';
 import { api, UnifiedProduct, CartCalculation, resolvePlatformProduct, getProductOverallMax } from '../../services/api';
 import { computeBasketVerdict, getPlatformFulfillment, BasketVerdict } from '../../utils/basketVerdict';
+import SavedListsModal from '../../components/SavedListsModal';
+import { lists } from '../../services/lists';
 import { createBlinkitShareLink } from '../../services/blinkitExport';
 import { exportCartToSwiggy } from '../../services/swiggyExport';
 import { colors, fonts, platformThemes, PLATFORM_ORDER } from '../../constants/theme';
@@ -51,6 +53,7 @@ export default function CartScreen() {
   const [loaded, setLoaded] = useState(false);
   const [locationMismatch, setLocationMismatch] = useState(false);
   const [cartLocationName, setCartLocationName] = useState<string | null>(null);
+  const [listsOpen, setListsOpen] = useState(false);
   const calcRunIdRef = useRef(0);
 
   // Verdict badges are derived, never stored: recomputed only once every
@@ -177,6 +180,13 @@ export default function CartScreen() {
     }
   };
 
+  const handleCartChangedByLists = async (next: { product: UnifiedProduct; quantity: number }[]) => {
+    setCartItems(next);
+    // Loaded items may predate the current delivery location; re-run the
+    // location check so stale baskets don't get priced for the wrong place.
+    await loadCartData();
+  };
+
   const handleClearCart = async () => {
     Alert.alert('Clear Cart', 'Empty the optimized basket?', [
       { text: 'Cancel', style: 'cancel' },
@@ -281,6 +291,7 @@ export default function CartScreen() {
         } catch {}
 
         const proceedToOpen = async () => {
+          lists.recordOrder(cartItems, 'blinkit').catch(() => {});
           try {
             await Linking.openURL(share.url);
           } catch (e) {
@@ -341,6 +352,7 @@ export default function CartScreen() {
       }
 
       const proceedToWebview = () => {
+        lists.recordOrder(cartItems, 'swiggy').catch(() => {});
         const swiggyCartB64 = swiggyResult.writePayload ? btoaUnicode(JSON.stringify(swiggyResult.writePayload)) : '';
         router.push({
           pathname: '/webview',
@@ -430,6 +442,13 @@ export default function CartScreen() {
             <Text style={styles.title}>Optimized Basket Comparison</Text>
             <Text style={styles.subtitle}>{cartItems.length} item{cartItems.length === 1 ? '' : 's'} · live checkout bills</Text>
           </View>
+          <TouchableOpacity
+            onPress={() => setListsOpen(true)}
+            style={styles.listsBtn}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Bookmark size={16} color={colors.accentPrimary} />
+          </TouchableOpacity>
           {cartItems.length > 0 && (
             <TouchableOpacity
               onPress={handleClearCart}
@@ -447,6 +466,10 @@ export default function CartScreen() {
           <Text style={styles.emptyEmoji}>🛒</Text>
           <Text style={styles.emptyStateTitle}>Your basket is empty</Text>
           <Text style={styles.emptyStateSub}>Add products from Search — every item gets auto-matched across apps with live fees.</Text>
+          <TouchableOpacity style={styles.emptyListsBtn} onPress={() => setListsOpen(true)}>
+            <Bookmark size={14} color={colors.accentPrimary} />
+            <Text style={styles.emptyListsText}>Saved lists & buy again</Text>
+          </TouchableOpacity>
         </View>
       ) : (
         <View>
@@ -977,6 +1000,12 @@ export default function CartScreen() {
           )}
         </View>
       )}
+      <SavedListsModal
+        visible={listsOpen}
+        onClose={() => setListsOpen(false)}
+        cartItems={cartItems}
+        onCartChanged={handleCartChangedByLists}
+      />
     </ScrollView>
   );
 }
@@ -1075,6 +1104,33 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
     marginLeft: 6,
+  },
+  listsBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(99, 102, 241, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(99, 102, 241, 0.3)',
+  },
+  emptyListsBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 10,
+    backgroundColor: 'rgba(99, 102, 241, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(99, 102, 241, 0.3)',
+  },
+  emptyListsText: {
+    fontFamily: fonts.heading,
+    fontSize: 12.5,
+    color: colors.accentPrimary,
   },
   clearBtn: {
     width: 34,
