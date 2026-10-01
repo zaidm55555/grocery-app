@@ -42,6 +42,7 @@ example
 /ios
 /android
 
-# graphify local cache
+# graphify local cache and backups
 graphify-out/cache/
 graphify-out/manifest.json
+graphify-out/????-??-??/

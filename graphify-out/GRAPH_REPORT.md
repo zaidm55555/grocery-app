@@ -1,21 +1,23 @@
 # Graph Report - grocey app  (2026-10-01)
 
 ## Corpus Check
-- cluster-only mode — file stats not available
+- 40 files · ~80,736 words
+- Verdict: corpus is large enough that graph structure adds value.
+- Unclassified: 4 file(s) not represented in the graph (top: (none) 3, .css 1)
 
 ## Summary
-- 342 nodes · 700 edges · 16 communities (15 shown, 1 thin omitted)
+- 352 nodes · 708 edges · 16 communities (12 shown, 4 thin omitted)
 - Extraction: 100% EXTRACTED · 0% INFERRED · 0% AMBIGUOUS · INFERRED: 2 edges (avg confidence: 0.85)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `207e8b23`
+- Built from commit: `e6b839e0`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
 - index.tsx
-- api.ts
+- cart.tsx
 - expo
 - SwiggyBridgeWebView.tsx
 - dependencies
@@ -25,10 +27,10 @@
 - reset-project.js
 - tsconfig.json
 - scripts
-- app/_layout.tsx
-- devDependencies
-- variationImage
-- eslint.config.js
+- Expo HAS CHANGED
+- rules/graphify.md
+- api.ts
+- workflows/graphify.md
 - declarations.d.ts
 
 ## God Nodes (most connected - your core abstractions)
@@ -50,50 +52,50 @@
   src/components/VariantPickerModal.tsx → src/services/api.ts
 - `CartCalculation` --references--> `Platform`  [EXTRACTED]
   src/services/api.ts → src/services/storage.ts
+- `SearchScreen()` --calls--> `getProductOverallMax()`  [EXTRACTED]
+  src/app/(tabs)/index.tsx → src/services/api.ts
 - `SearchScreen()` --calls--> `resolvePlatformProduct()`  [EXTRACTED]
   src/app/(tabs)/index.tsx → src/services/api.ts
-- `SearchScreen()` --calls--> `pickBestMatch()`  [EXTRACTED]
-  src/app/(tabs)/index.tsx → src/utils/matcher.ts
 
 ## Import Cycles
 - None detected.
 
-## Communities (16 total, 1 thin omitted)
+## Communities (16 total, 4 thin omitted)
 
 ### Community 0 - "index.tsx"
 Cohesion: 0.08
-Nodes (53): expo-linear-gradient, expo-location, expo-router, lucide-react-native, react, react-native, VariantRowItem, LogoTile() (+45 more)
+Nodes (54): expo-linear-gradient, expo-location, lucide-react-native, react, VariantRowItem, LogoTile(), ProductCard, ProductCardProps (+46 more)
 
-### Community 1 - "api.ts"
-Cohesion: 0.08
-Nodes (53): @react-native-async-storage/async-storage, btoaUnicode(), CartScreen(), LogoTile(), s_row, styles, AddressCacheEntry, api (+45 more)
+### Community 1 - "cart.tsx"
+Cohesion: 0.14
+Nodes (28): @react-native-async-storage/async-storage, btoaUnicode(), CartScreen(), LogoTile(), s_row, styles, CartCalculation, getProductOverallMax() (+20 more)
 
 ### Community 2 - "expo"
 Cohesion: 0.05
 Nodes (36): backgroundColor, backgroundImage, foregroundImage, adaptiveIcon, icon, package, predictiveBackGestureEnabled, projectId (+28 more)
 
 ### Community 3 - "SwiggyBridgeWebView.tsx"
-Cohesion: 0.11
-Nodes (30): react-native-webview, RootLayout(), buildSwiggyOpenCartScript(), styles, WebViewScreen(), COPY, styles, SwiggyBridgeWebView() (+22 more)
+Cohesion: 0.14
+Nodes (23): COPY, styles, SwiggyBridgeWebView(), BridgeResponse, dispatch(), handleSwiggyBridgeMessage(), handleSwiggyBridgeResponse(), Injector (+15 more)
 
 ### Community 4 - "dependencies"
 Cohesion: 0.06
 Nodes (32): dependencies, expo, expo-clipboard, expo-constants, expo-device, expo-font, @expo-google-fonts/inter, @expo-google-fonts/outfit (+24 more)
 
 ### Community 5 - "package.json"
-Cohesion: 0.08
-Nodes (24): main, name, private, version, expo, expo-clipboard, expo-constants, expo-device (+16 more)
+Cohesion: 0.05
+Nodes (42): { defineConfig }, expoConfig, devDependencies, eslint, eslint-config-expo, @expo/ngrok, @types/react, typescript (+34 more)
 
 ### Community 6 - "blinkitBridge.ts"
-Cohesion: 0.17
-Nodes (19): BlinkitBridgeHandle, BlinkitBridgeWebView, styles, BlinkitBridgeResponse, dispatch(), getBlinkitPageStorage(), handleBlinkitBridgeMessage(), handleBlinkitLocalStorage() (+11 more)
+Cohesion: 0.12
+Nodes (27): react-native, react-native-webview, buildSwiggyOpenCartScript(), styles, WebViewScreen(), BlinkitBridgeHandle, BlinkitBridgeWebView, styles (+19 more)
 
 ### Community 7 - "matcher.ts"
-Cohesion: 0.25
-Nodes (15): BestMatch, MatchableItem, matchScore(), nameSimilarity(), priceSanity(), sizeScore(), tokenSet(), familyKey() (+7 more)
+Cohesion: 0.24
+Nodes (16): BestMatch, MatchableItem, matchScore(), nameSimilarity(), pickBestMatch(), priceSanity(), sizeScore(), tokenSet() (+8 more)
 
 ### Community 8 - "reset-project.js"
-Cohesion: 0.17
+Cohesion: 0.14
 Nodes (7): exampleDirPath, fs, oldDirs, path, readline, rl, root
 
 ### Community 9 - "tsconfig.json"
@@ -104,41 +106,29 @@ Nodes (7): expo/tsconfig.base, compilerOptions, paths, strict, extends, include,
 Cohesion: 0.29
 Nodes (7): scripts, android, ios, lint, reset-project, start, web
 
-### Community 11 - "app/_layout.tsx"
-Cohesion: 0.29
-Nodes (6): expo-font, @expo-google-fonts/inter, @expo-google-fonts/outfit, expo-splash-screen, expo-status-bar, react-native-safe-area-context
-
-### Community 12 - "devDependencies"
-Cohesion: 0.33
-Nodes (6): devDependencies, eslint, eslint-config-expo, @expo/ngrok, @types/react, typescript
-
-### Community 13 - "variationImage"
-Cohesion: 0.40
-Nodes (6): deepSwiggyImage(), imageUrlFrom(), suspiciousImageUrl(), variationImage(), isVideo(), mediaRef()
-
-### Community 14 - "eslint.config.js"
-Cohesion: 0.40
-Nodes (4): { defineConfig }, expoConfig, eslint, eslint-config-expo
+### Community 13 - "api.ts"
+Cohesion: 0.12
+Nodes (26): AddressCacheEntry, asNum(), BillFees, debugScanSwiggyStock(), walk(), deepSwiggyImage(), extractStockCount(), extractSwiggySearchProducts() (+18 more)
 
 ## Knowledge Gaps
-- **150 isolated node(s):** `StoreFilter`, `PlatformTheme`, `AddressSyncState`, `LocationResetListener`, `SyncListener` (+145 more)
-  These have ≤1 connection - possible missing edges. (Counts symbols only; 160 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
-- **1 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **153 isolated node(s):** `graphify`, `Workflow: graphify`, `graphify`, `StoreFilter`, `PlatformTheme` (+148 more)
+  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 166 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
+- **4 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `dependencies` connect `dependencies` to `package.json`?**
-  _High betweenness centrality (0.142) - this node is a cross-community bridge._
-- **Why does `@react-native-async-storage/async-storage` connect `api.ts` to `index.tsx`, `SwiggyBridgeWebView.tsx`, `package.json`, `blinkitBridge.ts`?**
-  _High betweenness centrality (0.110) - this node is a cross-community bridge._
-- **Why does `react` connect `index.tsx` to `api.ts`, `SwiggyBridgeWebView.tsx`, `package.json`, `blinkitBridge.ts`, `app/_layout.tsx`?**
-  _High betweenness centrality (0.042) - this node is a cross-community bridge._
-- **What connects `StoreFilter`, `PlatformTheme`, `AddressSyncState` to the rest of the system?**
-  _150 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _High betweenness centrality (0.134) - this node is a cross-community bridge._
+- **Why does `@react-native-async-storage/async-storage` connect `cart.tsx` to `index.tsx`, `api.ts`, `package.json`, `blinkitBridge.ts`?**
+  _High betweenness centrality (0.104) - this node is a cross-community bridge._
+- **Why does `react` connect `index.tsx` to `cart.tsx`, `SwiggyBridgeWebView.tsx`, `package.json`, `blinkitBridge.ts`?**
+  _High betweenness centrality (0.040) - this node is a cross-community bridge._
+- **What connects `graphify`, `Workflow: graphify`, `graphify` to the rest of the system?**
+  _153 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `index.tsx` be split into smaller, more focused modules?**
-  _Cohesion score 0.07932310946589106 - nodes in this community are weakly interconnected._
-- **Should `api.ts` be split into smaller, more focused modules?**
-  _Cohesion score 0.07759562841530054 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.07837301587301587 - nodes in this community are weakly interconnected._
+- **Should `cart.tsx` be split into smaller, more focused modules?**
+  _Cohesion score 0.13978494623655913 - nodes in this community are weakly interconnected._
 - **Should `expo` be split into smaller, more focused modules?**
   _Cohesion score 0.05405405405405406 - nodes in this community are weakly interconnected._
