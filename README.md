@@ -54,3 +54,18 @@ Join our community of developers creating universal apps.
 
 - [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
 - [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+
+## Testing
+
+Unit tests run on Jest (`jest-expo` preset) and live next to the code in `__tests__/` folders.
+
+```bash
+npm test              # run everything
+npm run test:watch    # re-run on change
+npm run test:coverage # with coverage report
+```
+
+When adding a feature, add a `*.test.ts(x)` beside it. Network, AsyncStorage (in-memory) and
+`expo-location` are mocked, so tests are deterministic and need no device. Shared product/bill
+builders live in `src/services/__tests__/fixtures.ts`. The matcher's regression fixtures
+(`src/utils/__tests__/matcher.test.ts`) replace the old `scripts/matcher-fixtures.ts`.

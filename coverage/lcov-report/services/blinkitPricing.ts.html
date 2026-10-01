@@ -1,0 +1,1513 @@
+
+<!doctype html>
+<html lang="en">
+
+<head>
+    <title>Code coverage report for services/blinkitPricing.ts</title>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="../prettify.css" />
+    <link rel="stylesheet" href="../base.css" />
+    <link rel="shortcut icon" type="image/x-icon" href="../favicon.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style type='text/css'>
+        .coverage-summary .sorter {
+            background-image: url(../sort-arrow-sprite.png);
+        }
+    </style>
+</head>
+    
+<body>
+<div class='wrapper'>
+    <div class='pad1'>
+        <h1><a href="../index.html">All files</a> / <a href="index.html">services</a> blinkitPricing.ts</h1>
+        <div class='clearfix'>
+            
+            <div class='fl pad1y space-right2'>
+                <span class="strong">76.53% </span>
+                <span class="quiet">Statements</span>
+                <span class='fraction'>199/260</span>
+            </div>
+        
+            
+            <div class='fl pad1y space-right2'>
+                <span class="strong">59.66% </span>
+                <span class="quiet">Branches</span>
+                <span class='fraction'>176/295</span>
+            </div>
+        
+            
+            <div class='fl pad1y space-right2'>
+                <span class="strong">89.47% </span>
+                <span class="quiet">Functions</span>
+                <span class='fraction'>17/19</span>
+            </div>
+        
+            
+            <div class='fl pad1y space-right2'>
+                <span class="strong">83.64% </span>
+                <span class="quiet">Lines</span>
+                <span class='fraction'>179/214</span>
+            </div>
+        
+            
+        </div>
+        <p class="quiet">
+            Press <em>n</em> or <em>j</em> to go to the next uncovered block, <em>b</em>, <em>p</em> or <em>k</em> for the previous block.
+        </p>
+        <template id="filterTemplate">
+            <div class="quiet">
+                Filter:
+                <input type="search" id="fileSearch">
+            </div>
+        </template>
+    </div>
+    <div class='status-line medium'></div>
+    <pre><table class="coverage">
+<tr><td class="line-count quiet"><a name='L1'></a><a href='#L1'>1</a>
+<a name='L2'></a><a href='#L2'>2</a>
+<a name='L3'></a><a href='#L3'>3</a>
+<a name='L4'></a><a href='#L4'>4</a>
+<a name='L5'></a><a href='#L5'>5</a>
+<a name='L6'></a><a href='#L6'>6</a>
+<a name='L7'></a><a href='#L7'>7</a>
+<a name='L8'></a><a href='#L8'>8</a>
+<a name='L9'></a><a href='#L9'>9</a>
+<a name='L10'></a><a href='#L10'>10</a>
+<a name='L11'></a><a href='#L11'>11</a>
+<a name='L12'></a><a href='#L12'>12</a>
+<a name='L13'></a><a href='#L13'>13</a>
+<a name='L14'></a><a href='#L14'>14</a>
+<a name='L15'></a><a href='#L15'>15</a>
+<a name='L16'></a><a href='#L16'>16</a>
+<a name='L17'></a><a href='#L17'>17</a>
+<a name='L18'></a><a href='#L18'>18</a>
+<a name='L19'></a><a href='#L19'>19</a>
+<a name='L20'></a><a href='#L20'>20</a>
+<a name='L21'></a><a href='#L21'>21</a>
+<a name='L22'></a><a href='#L22'>22</a>
+<a name='L23'></a><a href='#L23'>23</a>
+<a name='L24'></a><a href='#L24'>24</a>
+<a name='L25'></a><a href='#L25'>25</a>
+<a name='L26'></a><a href='#L26'>26</a>
+<a name='L27'></a><a href='#L27'>27</a>
+<a name='L28'></a><a href='#L28'>28</a>
+<a name='L29'></a><a href='#L29'>29</a>
+<a name='L30'></a><a href='#L30'>30</a>
+<a name='L31'></a><a href='#L31'>31</a>
+<a name='L32'></a><a href='#L32'>32</a>
+<a name='L33'></a><a href='#L33'>33</a>
+<a name='L34'></a><a href='#L34'>34</a>
+<a name='L35'></a><a href='#L35'>35</a>
+<a name='L36'></a><a href='#L36'>36</a>
+<a name='L37'></a><a href='#L37'>37</a>
+<a name='L38'></a><a href='#L38'>38</a>
+<a name='L39'></a><a href='#L39'>39</a>
+<a name='L40'></a><a href='#L40'>40</a>
+<a name='L41'></a><a href='#L41'>41</a>
+<a name='L42'></a><a href='#L42'>42</a>
+<a name='L43'></a><a href='#L43'>43</a>
+<a name='L44'></a><a href='#L44'>44</a>
+<a name='L45'></a><a href='#L45'>45</a>
+<a name='L46'></a><a href='#L46'>46</a>
+<a name='L47'></a><a href='#L47'>47</a>
+<a name='L48'></a><a href='#L48'>48</a>
+<a name='L49'></a><a href='#L49'>49</a>
+<a name='L50'></a><a href='#L50'>50</a>
+<a name='L51'></a><a href='#L51'>51</a>
+<a name='L52'></a><a href='#L52'>52</a>
+<a name='L53'></a><a href='#L53'>53</a>
+<a name='L54'></a><a href='#L54'>54</a>
+<a name='L55'></a><a href='#L55'>55</a>
+<a name='L56'></a><a href='#L56'>56</a>
+<a name='L57'></a><a href='#L57'>57</a>
+<a name='L58'></a><a href='#L58'>58</a>
+<a name='L59'></a><a href='#L59'>59</a>
+<a name='L60'></a><a href='#L60'>60</a>
+<a name='L61'></a><a href='#L61'>61</a>
+<a name='L62'></a><a href='#L62'>62</a>
+<a name='L63'></a><a href='#L63'>63</a>
+<a name='L64'></a><a href='#L64'>64</a>
+<a name='L65'></a><a href='#L65'>65</a>
+<a name='L66'></a><a href='#L66'>66</a>
+<a name='L67'></a><a href='#L67'>67</a>
+<a name='L68'></a><a href='#L68'>68</a>
+<a name='L69'></a><a href='#L69'>69</a>
+<a name='L70'></a><a href='#L70'>70</a>
+<a name='L71'></a><a href='#L71'>71</a>
+<a name='L72'></a><a href='#L72'>72</a>
+<a name='L73'></a><a href='#L73'>73</a>
+<a name='L74'></a><a href='#L74'>74</a>
+<a name='L75'></a><a href='#L75'>75</a>
+<a name='L76'></a><a href='#L76'>76</a>
+<a name='L77'></a><a href='#L77'>77</a>
+<a name='L78'></a><a href='#L78'>78</a>
+<a name='L79'></a><a href='#L79'>79</a>
+<a name='L80'></a><a href='#L80'>80</a>
+<a name='L81'></a><a href='#L81'>81</a>
+<a name='L82'></a><a href='#L82'>82</a>
+<a name='L83'></a><a href='#L83'>83</a>
+<a name='L84'></a><a href='#L84'>84</a>
+<a name='L85'></a><a href='#L85'>85</a>
+<a name='L86'></a><a href='#L86'>86</a>
+<a name='L87'></a><a href='#L87'>87</a>
+<a name='L88'></a><a href='#L88'>88</a>
+<a name='L89'></a><a href='#L89'>89</a>
+<a name='L90'></a><a href='#L90'>90</a>
+<a name='L91'></a><a href='#L91'>91</a>
+<a name='L92'></a><a href='#L92'>92</a>
+<a name='L93'></a><a href='#L93'>93</a>
+<a name='L94'></a><a href='#L94'>94</a>
+<a name='L95'></a><a href='#L95'>95</a>
+<a name='L96'></a><a href='#L96'>96</a>
+<a name='L97'></a><a href='#L97'>97</a>
+<a name='L98'></a><a href='#L98'>98</a>
+<a name='L99'></a><a href='#L99'>99</a>
+<a name='L100'></a><a href='#L100'>100</a>
+<a name='L101'></a><a href='#L101'>101</a>
+<a name='L102'></a><a href='#L102'>102</a>
+<a name='L103'></a><a href='#L103'>103</a>
+<a name='L104'></a><a href='#L104'>104</a>
+<a name='L105'></a><a href='#L105'>105</a>
+<a name='L106'></a><a href='#L106'>106</a>
+<a name='L107'></a><a href='#L107'>107</a>
+<a name='L108'></a><a href='#L108'>108</a>
+<a name='L109'></a><a href='#L109'>109</a>
+<a name='L110'></a><a href='#L110'>110</a>
+<a name='L111'></a><a href='#L111'>111</a>
+<a name='L112'></a><a href='#L112'>112</a>
+<a name='L113'></a><a href='#L113'>113</a>
+<a name='L114'></a><a href='#L114'>114</a>
+<a name='L115'></a><a href='#L115'>115</a>
+<a name='L116'></a><a href='#L116'>116</a>
+<a name='L117'></a><a href='#L117'>117</a>
+<a name='L118'></a><a href='#L118'>118</a>
+<a name='L119'></a><a href='#L119'>119</a>
+<a name='L120'></a><a href='#L120'>120</a>
+<a name='L121'></a><a href='#L121'>121</a>
+<a name='L122'></a><a href='#L122'>122</a>
+<a name='L123'></a><a href='#L123'>123</a>
+<a name='L124'></a><a href='#L124'>124</a>
+<a name='L125'></a><a href='#L125'>125</a>
+<a name='L126'></a><a href='#L126'>126</a>
+<a name='L127'></a><a href='#L127'>127</a>
+<a name='L128'></a><a href='#L128'>128</a>
+<a name='L129'></a><a href='#L129'>129</a>
+<a name='L130'></a><a href='#L130'>130</a>
+<a name='L131'></a><a href='#L131'>131</a>
+<a name='L132'></a><a href='#L132'>132</a>
+<a name='L133'></a><a href='#L133'>133</a>
+<a name='L134'></a><a href='#L134'>134</a>
+<a name='L135'></a><a href='#L135'>135</a>
+<a name='L136'></a><a href='#L136'>136</a>
+<a name='L137'></a><a href='#L137'>137</a>
+<a name='L138'></a><a href='#L138'>138</a>
+<a name='L139'></a><a href='#L139'>139</a>
+<a name='L140'></a><a href='#L140'>140</a>
+<a name='L141'></a><a href='#L141'>141</a>
+<a name='L142'></a><a href='#L142'>142</a>
+<a name='L143'></a><a href='#L143'>143</a>
+<a name='L144'></a><a href='#L144'>144</a>
+<a name='L145'></a><a href='#L145'>145</a>
+<a name='L146'></a><a href='#L146'>146</a>
+<a name='L147'></a><a href='#L147'>147</a>
+<a name='L148'></a><a href='#L148'>148</a>
+<a name='L149'></a><a href='#L149'>149</a>
+<a name='L150'></a><a href='#L150'>150</a>
+<a name='L151'></a><a href='#L151'>151</a>
+<a name='L152'></a><a href='#L152'>152</a>
+<a name='L153'></a><a href='#L153'>153</a>
+<a name='L154'></a><a href='#L154'>154</a>
+<a name='L155'></a><a href='#L155'>155</a>
+<a name='L156'></a><a href='#L156'>156</a>
+<a name='L157'></a><a href='#L157'>157</a>
+<a name='L158'></a><a href='#L158'>158</a>
+<a name='L159'></a><a href='#L159'>159</a>
+<a name='L160'></a><a href='#L160'>160</a>
+<a name='L161'></a><a href='#L161'>161</a>
+<a name='L162'></a><a href='#L162'>162</a>
+<a name='L163'></a><a href='#L163'>163</a>
+<a name='L164'></a><a href='#L164'>164</a>
+<a name='L165'></a><a href='#L165'>165</a>
+<a name='L166'></a><a href='#L166'>166</a>
+<a name='L167'></a><a href='#L167'>167</a>
+<a name='L168'></a><a href='#L168'>168</a>
+<a name='L169'></a><a href='#L169'>169</a>
+<a name='L170'></a><a href='#L170'>170</a>
+<a name='L171'></a><a href='#L171'>171</a>
+<a name='L172'></a><a href='#L172'>172</a>
+<a name='L173'></a><a href='#L173'>173</a>
+<a name='L174'></a><a href='#L174'>174</a>
+<a name='L175'></a><a href='#L175'>175</a>
+<a name='L176'></a><a href='#L176'>176</a>
+<a name='L177'></a><a href='#L177'>177</a>
+<a name='L178'></a><a href='#L178'>178</a>
+<a name='L179'></a><a href='#L179'>179</a>
+<a name='L180'></a><a href='#L180'>180</a>
+<a name='L181'></a><a href='#L181'>181</a>
+<a name='L182'></a><a href='#L182'>182</a>
+<a name='L183'></a><a href='#L183'>183</a>
+<a name='L184'></a><a href='#L184'>184</a>
+<a name='L185'></a><a href='#L185'>185</a>
+<a name='L186'></a><a href='#L186'>186</a>
+<a name='L187'></a><a href='#L187'>187</a>
+<a name='L188'></a><a href='#L188'>188</a>
+<a name='L189'></a><a href='#L189'>189</a>
+<a name='L190'></a><a href='#L190'>190</a>
+<a name='L191'></a><a href='#L191'>191</a>
+<a name='L192'></a><a href='#L192'>192</a>
+<a name='L193'></a><a href='#L193'>193</a>
+<a name='L194'></a><a href='#L194'>194</a>
+<a name='L195'></a><a href='#L195'>195</a>
+<a name='L196'></a><a href='#L196'>196</a>
+<a name='L197'></a><a href='#L197'>197</a>
+<a name='L198'></a><a href='#L198'>198</a>
+<a name='L199'></a><a href='#L199'>199</a>
+<a name='L200'></a><a href='#L200'>200</a>
+<a name='L201'></a><a href='#L201'>201</a>
+<a name='L202'></a><a href='#L202'>202</a>
+<a name='L203'></a><a href='#L203'>203</a>
+<a name='L204'></a><a href='#L204'>204</a>
+<a name='L205'></a><a href='#L205'>205</a>
+<a name='L206'></a><a href='#L206'>206</a>
+<a name='L207'></a><a href='#L207'>207</a>
+<a name='L208'></a><a href='#L208'>208</a>
+<a name='L209'></a><a href='#L209'>209</a>
+<a name='L210'></a><a href='#L210'>210</a>
+<a name='L211'></a><a href='#L211'>211</a>
+<a name='L212'></a><a href='#L212'>212</a>
+<a name='L213'></a><a href='#L213'>213</a>
+<a name='L214'></a><a href='#L214'>214</a>
+<a name='L215'></a><a href='#L215'>215</a>
+<a name='L216'></a><a href='#L216'>216</a>
+<a name='L217'></a><a href='#L217'>217</a>
+<a name='L218'></a><a href='#L218'>218</a>
+<a name='L219'></a><a href='#L219'>219</a>
+<a name='L220'></a><a href='#L220'>220</a>
+<a name='L221'></a><a href='#L221'>221</a>
+<a name='L222'></a><a href='#L222'>222</a>
+<a name='L223'></a><a href='#L223'>223</a>
+<a name='L224'></a><a href='#L224'>224</a>
+<a name='L225'></a><a href='#L225'>225</a>
+<a name='L226'></a><a href='#L226'>226</a>
+<a name='L227'></a><a href='#L227'>227</a>
+<a name='L228'></a><a href='#L228'>228</a>
+<a name='L229'></a><a href='#L229'>229</a>
+<a name='L230'></a><a href='#L230'>230</a>
+<a name='L231'></a><a href='#L231'>231</a>
+<a name='L232'></a><a href='#L232'>232</a>
+<a name='L233'></a><a href='#L233'>233</a>
+<a name='L234'></a><a href='#L234'>234</a>
+<a name='L235'></a><a href='#L235'>235</a>
+<a name='L236'></a><a href='#L236'>236</a>
+<a name='L237'></a><a href='#L237'>237</a>
+<a name='L238'></a><a href='#L238'>238</a>
+<a name='L239'></a><a href='#L239'>239</a>
+<a name='L240'></a><a href='#L240'>240</a>
+<a name='L241'></a><a href='#L241'>241</a>
+<a name='L242'></a><a href='#L242'>242</a>
+<a name='L243'></a><a href='#L243'>243</a>
+<a name='L244'></a><a href='#L244'>244</a>
+<a name='L245'></a><a href='#L245'>245</a>
+<a name='L246'></a><a href='#L246'>246</a>
+<a name='L247'></a><a href='#L247'>247</a>
+<a name='L248'></a><a href='#L248'>248</a>
+<a name='L249'></a><a href='#L249'>249</a>
+<a name='L250'></a><a href='#L250'>250</a>
+<a name='L251'></a><a href='#L251'>251</a>
+<a name='L252'></a><a href='#L252'>252</a>
+<a name='L253'></a><a href='#L253'>253</a>
+<a name='L254'></a><a href='#L254'>254</a>
+<a name='L255'></a><a href='#L255'>255</a>
+<a name='L256'></a><a href='#L256'>256</a>
+<a name='L257'></a><a href='#L257'>257</a>
+<a name='L258'></a><a href='#L258'>258</a>
+<a name='L259'></a><a href='#L259'>259</a>
+<a name='L260'></a><a href='#L260'>260</a>
+<a name='L261'></a><a href='#L261'>261</a>
+<a name='L262'></a><a href='#L262'>262</a>
+<a name='L263'></a><a href='#L263'>263</a>
+<a name='L264'></a><a href='#L264'>264</a>
+<a name='L265'></a><a href='#L265'>265</a>
+<a name='L266'></a><a href='#L266'>266</a>
+<a name='L267'></a><a href='#L267'>267</a>
+<a name='L268'></a><a href='#L268'>268</a>
+<a name='L269'></a><a href='#L269'>269</a>
+<a name='L270'></a><a href='#L270'>270</a>
+<a name='L271'></a><a href='#L271'>271</a>
+<a name='L272'></a><a href='#L272'>272</a>
+<a name='L273'></a><a href='#L273'>273</a>
+<a name='L274'></a><a href='#L274'>274</a>
+<a name='L275'></a><a href='#L275'>275</a>
+<a name='L276'></a><a href='#L276'>276</a>
+<a name='L277'></a><a href='#L277'>277</a>
+<a name='L278'></a><a href='#L278'>278</a>
+<a name='L279'></a><a href='#L279'>279</a>
+<a name='L280'></a><a href='#L280'>280</a>
+<a name='L281'></a><a href='#L281'>281</a>
+<a name='L282'></a><a href='#L282'>282</a>
+<a name='L283'></a><a href='#L283'>283</a>
+<a name='L284'></a><a href='#L284'>284</a>
+<a name='L285'></a><a href='#L285'>285</a>
+<a name='L286'></a><a href='#L286'>286</a>
+<a name='L287'></a><a href='#L287'>287</a>
+<a name='L288'></a><a href='#L288'>288</a>
+<a name='L289'></a><a href='#L289'>289</a>
+<a name='L290'></a><a href='#L290'>290</a>
+<a name='L291'></a><a href='#L291'>291</a>
+<a name='L292'></a><a href='#L292'>292</a>
+<a name='L293'></a><a href='#L293'>293</a>
+<a name='L294'></a><a href='#L294'>294</a>
+<a name='L295'></a><a href='#L295'>295</a>
+<a name='L296'></a><a href='#L296'>296</a>
+<a name='L297'></a><a href='#L297'>297</a>
+<a name='L298'></a><a href='#L298'>298</a>
+<a name='L299'></a><a href='#L299'>299</a>
+<a name='L300'></a><a href='#L300'>300</a>
+<a name='L301'></a><a href='#L301'>301</a>
+<a name='L302'></a><a href='#L302'>302</a>
+<a name='L303'></a><a href='#L303'>303</a>
+<a name='L304'></a><a href='#L304'>304</a>
+<a name='L305'></a><a href='#L305'>305</a>
+<a name='L306'></a><a href='#L306'>306</a>
+<a name='L307'></a><a href='#L307'>307</a>
+<a name='L308'></a><a href='#L308'>308</a>
+<a name='L309'></a><a href='#L309'>309</a>
+<a name='L310'></a><a href='#L310'>310</a>
+<a name='L311'></a><a href='#L311'>311</a>
+<a name='L312'></a><a href='#L312'>312</a>
+<a name='L313'></a><a href='#L313'>313</a>
+<a name='L314'></a><a href='#L314'>314</a>
+<a name='L315'></a><a href='#L315'>315</a>
+<a name='L316'></a><a href='#L316'>316</a>
+<a name='L317'></a><a href='#L317'>317</a>
+<a name='L318'></a><a href='#L318'>318</a>
+<a name='L319'></a><a href='#L319'>319</a>
+<a name='L320'></a><a href='#L320'>320</a>
+<a name='L321'></a><a href='#L321'>321</a>
+<a name='L322'></a><a href='#L322'>322</a>
+<a name='L323'></a><a href='#L323'>323</a>
+<a name='L324'></a><a href='#L324'>324</a>
+<a name='L325'></a><a href='#L325'>325</a>
+<a name='L326'></a><a href='#L326'>326</a>
+<a name='L327'></a><a href='#L327'>327</a>
+<a name='L328'></a><a href='#L328'>328</a>
+<a name='L329'></a><a href='#L329'>329</a>
+<a name='L330'></a><a href='#L330'>330</a>
+<a name='L331'></a><a href='#L331'>331</a>
+<a name='L332'></a><a href='#L332'>332</a>
+<a name='L333'></a><a href='#L333'>333</a>
+<a name='L334'></a><a href='#L334'>334</a>
+<a name='L335'></a><a href='#L335'>335</a>
+<a name='L336'></a><a href='#L336'>336</a>
+<a name='L337'></a><a href='#L337'>337</a>
+<a name='L338'></a><a href='#L338'>338</a>
+<a name='L339'></a><a href='#L339'>339</a>
+<a name='L340'></a><a href='#L340'>340</a>
+<a name='L341'></a><a href='#L341'>341</a>
+<a name='L342'></a><a href='#L342'>342</a>
+<a name='L343'></a><a href='#L343'>343</a>
+<a name='L344'></a><a href='#L344'>344</a>
+<a name='L345'></a><a href='#L345'>345</a>
+<a name='L346'></a><a href='#L346'>346</a>
+<a name='L347'></a><a href='#L347'>347</a>
+<a name='L348'></a><a href='#L348'>348</a>
+<a name='L349'></a><a href='#L349'>349</a>
+<a name='L350'></a><a href='#L350'>350</a>
+<a name='L351'></a><a href='#L351'>351</a>
+<a name='L352'></a><a href='#L352'>352</a>
+<a name='L353'></a><a href='#L353'>353</a>
+<a name='L354'></a><a href='#L354'>354</a>
+<a name='L355'></a><a href='#L355'>355</a>
+<a name='L356'></a><a href='#L356'>356</a>
+<a name='L357'></a><a href='#L357'>357</a>
+<a name='L358'></a><a href='#L358'>358</a>
+<a name='L359'></a><a href='#L359'>359</a>
+<a name='L360'></a><a href='#L360'>360</a>
+<a name='L361'></a><a href='#L361'>361</a>
+<a name='L362'></a><a href='#L362'>362</a>
+<a name='L363'></a><a href='#L363'>363</a>
+<a name='L364'></a><a href='#L364'>364</a>
+<a name='L365'></a><a href='#L365'>365</a>
+<a name='L366'></a><a href='#L366'>366</a>
+<a name='L367'></a><a href='#L367'>367</a>
+<a name='L368'></a><a href='#L368'>368</a>
+<a name='L369'></a><a href='#L369'>369</a>
+<a name='L370'></a><a href='#L370'>370</a>
+<a name='L371'></a><a href='#L371'>371</a>
+<a name='L372'></a><a href='#L372'>372</a>
+<a name='L373'></a><a href='#L373'>373</a>
+<a name='L374'></a><a href='#L374'>374</a>
+<a name='L375'></a><a href='#L375'>375</a>
+<a name='L376'></a><a href='#L376'>376</a>
+<a name='L377'></a><a href='#L377'>377</a>
+<a name='L378'></a><a href='#L378'>378</a>
+<a name='L379'></a><a href='#L379'>379</a>
+<a name='L380'></a><a href='#L380'>380</a>
+<a name='L381'></a><a href='#L381'>381</a>
+<a name='L382'></a><a href='#L382'>382</a>
+<a name='L383'></a><a href='#L383'>383</a>
+<a name='L384'></a><a href='#L384'>384</a>
+<a name='L385'></a><a href='#L385'>385</a>
+<a name='L386'></a><a href='#L386'>386</a>
+<a name='L387'></a><a href='#L387'>387</a>
+<a name='L388'></a><a href='#L388'>388</a>
+<a name='L389'></a><a href='#L389'>389</a>
+<a name='L390'></a><a href='#L390'>390</a>
+<a name='L391'></a><a href='#L391'>391</a>
+<a name='L392'></a><a href='#L392'>392</a>
+<a name='L393'></a><a href='#L393'>393</a>
+<a name='L394'></a><a href='#L394'>394</a>
+<a name='L395'></a><a href='#L395'>395</a>
+<a name='L396'></a><a href='#L396'>396</a>
+<a name='L397'></a><a href='#L397'>397</a>
+<a name='L398'></a><a href='#L398'>398</a>
+<a name='L399'></a><a href='#L399'>399</a>
+<a name='L400'></a><a href='#L400'>400</a>
+<a name='L401'></a><a href='#L401'>401</a>
+<a name='L402'></a><a href='#L402'>402</a>
+<a name='L403'></a><a href='#L403'>403</a>
+<a name='L404'></a><a href='#L404'>404</a>
+<a name='L405'></a><a href='#L405'>405</a>
+<a name='L406'></a><a href='#L406'>406</a>
+<a name='L407'></a><a href='#L407'>407</a>
+<a name='L408'></a><a href='#L408'>408</a>
+<a name='L409'></a><a href='#L409'>409</a>
+<a name='L410'></a><a href='#L410'>410</a>
+<a name='L411'></a><a href='#L411'>411</a>
+<a name='L412'></a><a href='#L412'>412</a>
+<a name='L413'></a><a href='#L413'>413</a>
+<a name='L414'></a><a href='#L414'>414</a>
+<a name='L415'></a><a href='#L415'>415</a>
+<a name='L416'></a><a href='#L416'>416</a>
+<a name='L417'></a><a href='#L417'>417</a>
+<a name='L418'></a><a href='#L418'>418</a>
+<a name='L419'></a><a href='#L419'>419</a>
+<a name='L420'></a><a href='#L420'>420</a>
+<a name='L421'></a><a href='#L421'>421</a>
+<a name='L422'></a><a href='#L422'>422</a>
+<a name='L423'></a><a href='#L423'>423</a>
+<a name='L424'></a><a href='#L424'>424</a>
+<a name='L425'></a><a href='#L425'>425</a>
+<a name='L426'></a><a href='#L426'>426</a>
+<a name='L427'></a><a href='#L427'>427</a>
+<a name='L428'></a><a href='#L428'>428</a>
+<a name='L429'></a><a href='#L429'>429</a>
+<a name='L430'></a><a href='#L430'>430</a>
+<a name='L431'></a><a href='#L431'>431</a>
+<a name='L432'></a><a href='#L432'>432</a>
+<a name='L433'></a><a href='#L433'>433</a>
+<a name='L434'></a><a href='#L434'>434</a>
+<a name='L435'></a><a href='#L435'>435</a>
+<a name='L436'></a><a href='#L436'>436</a>
+<a name='L437'></a><a href='#L437'>437</a>
+<a name='L438'></a><a href='#L438'>438</a>
+<a name='L439'></a><a href='#L439'>439</a>
+<a name='L440'></a><a href='#L440'>440</a>
+<a name='L441'></a><a href='#L441'>441</a>
+<a name='L442'></a><a href='#L442'>442</a>
+<a name='L443'></a><a href='#L443'>443</a>
+<a name='L444'></a><a href='#L444'>444</a>
+<a name='L445'></a><a href='#L445'>445</a>
+<a name='L446'></a><a href='#L446'>446</a>
+<a name='L447'></a><a href='#L447'>447</a>
+<a name='L448'></a><a href='#L448'>448</a>
+<a name='L449'></a><a href='#L449'>449</a>
+<a name='L450'></a><a href='#L450'>450</a>
+<a name='L451'></a><a href='#L451'>451</a>
+<a name='L452'></a><a href='#L452'>452</a>
+<a name='L453'></a><a href='#L453'>453</a>
+<a name='L454'></a><a href='#L454'>454</a>
+<a name='L455'></a><a href='#L455'>455</a>
+<a name='L456'></a><a href='#L456'>456</a>
+<a name='L457'></a><a href='#L457'>457</a>
+<a name='L458'></a><a href='#L458'>458</a>
+<a name='L459'></a><a href='#L459'>459</a>
+<a name='L460'></a><a href='#L460'>460</a>
+<a name='L461'></a><a href='#L461'>461</a>
+<a name='L462'></a><a href='#L462'>462</a>
+<a name='L463'></a><a href='#L463'>463</a>
+<a name='L464'></a><a href='#L464'>464</a>
+<a name='L465'></a><a href='#L465'>465</a>
+<a name='L466'></a><a href='#L466'>466</a>
+<a name='L467'></a><a href='#L467'>467</a>
+<a name='L468'></a><a href='#L468'>468</a>
+<a name='L469'></a><a href='#L469'>469</a>
+<a name='L470'></a><a href='#L470'>470</a>
+<a name='L471'></a><a href='#L471'>471</a>
+<a name='L472'></a><a href='#L472'>472</a>
+<a name='L473'></a><a href='#L473'>473</a>
+<a name='L474'></a><a href='#L474'>474</a>
+<a name='L475'></a><a href='#L475'>475</a>
+<a name='L476'></a><a href='#L476'>476</a>
+<a name='L477'></a><a href='#L477'>477</a></td><td class="line-coverage quiet"><span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">6x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">6x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">6x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">6x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">6x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">12x</span>
+<span class="cline-any cline-yes">12x</span>
+<span class="cline-any cline-yes">12x</span>
+<span class="cline-any cline-yes">12x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">12x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">9x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">7x</span>
+<span class="cline-any cline-yes">7x</span>
+<span class="cline-any cline-yes">7x</span>
+<span class="cline-any cline-yes">7x</span>
+<span class="cline-any cline-yes">7x</span>
+<span class="cline-any cline-yes">7x</span>
+<span class="cline-any cline-yes">7x</span>
+<span class="cline-any cline-yes">7x</span>
+<span class="cline-any cline-yes">7x</span>
+<span class="cline-any cline-yes">7x</span>
+<span class="cline-any cline-yes">7x</span>
+<span class="cline-any cline-yes">7x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">7x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">7x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">124x</span>
+<span class="cline-any cline-yes">124x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-yes">5x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">5x</span>
+<span class="cline-any cline-yes">5x</span>
+<span class="cline-any cline-yes">5x</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">5x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-yes">3x</span>
+<span class="cline-any cline-yes">3x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-yes">6x</span>
+<span class="cline-any cline-yes">6x</span>
+<span class="cline-any cline-yes">6x</span>
+<span class="cline-any cline-yes">6x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-yes">5x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">5x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">3x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">3x</span>
+<span class="cline-any cline-yes">3x</span>
+<span class="cline-any cline-yes">3x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">24x</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">3x</span>
+<span class="cline-any cline-yes">3x</span>
+<span class="cline-any cline-yes">3x</span>
+<span class="cline-any cline-yes">3x</span>
+<span class="cline-any cline-yes">3x</span>
+<span class="cline-any cline-yes">3x</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span></td><td class="text"><pre class="prettyprint lang-js">// Blinkit live-bill pricing, split out of ApiService.calculateCart.
+//
+// Flow: PUT the user's persistent cart first (that is the cart the site itself
+// prices, and it lands in the right fee cohort); only when no cart id is known
+// or the PUT fails do we fall back to a fresh POST /v5/carts quote, then to a
+// direct (non-bridge) POST. Dependencies are injected to avoid a runtime import
+// cycle with api.ts.
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { requestViaBlinkitBridge, getBlinkitPageStorage } from './blinkitBridge';
+import type { UnifiedProduct } from './api';
+&nbsp;
+type CartLine = { product: UnifiedProduct; quantity: number };
+&nbsp;
+export interface BlinkitBillFees {
+  subtotal: number | null;
+  deliveryFee: number | null;
+  handlingFee: number | null;
+  smallCartFee: number | null;
+  surgeFee: number | null;
+  surgeLabel?: string | null;
+  tax: number | null;
+  total: number | null;
+  freeDeliveryGap?: number | null;
+}
+&nbsp;
+export interface BlinkitPricingDeps {
+  getClosestBlinkitAddress(lat: number, lng: number): Promise&lt;any | null&gt;;
+  fetchWithTimeout(url: string, options: RequestInit, timeout?: number): Promise&lt;Response&gt;;
+  parseBlinkitBill(json: any): BlinkitBillFees;
+  getItemPlatformLimit(product: UnifiedProduct | null | undefined): number | undefined;
+  resolvePlatformProduct(item: CartLine, platform: 'blinkit'): CartLine | null;
+}
+&nbsp;
+export interface BlinkitPricingInput {
+  items: CartLine[];
+  platformItems: CartLine[];
+  subtotal: number;
+  token: string;
+  gpsLat: number;
+  gpsLng: number;
+  simulateNoAddress: boolean;
+  // Filled in-place with per-product stock limits / billed quantities.
+  platformItemLimits: Record&lt;string, number&gt;;
+  platformItemQuantities: Record&lt;string, number&gt;;
+}
+&nbsp;
+export interface BlinkitPricingResult {
+  subtotal: number;
+  deliveryFee: number;
+  handlingFee: number;
+  smallCartFee: number;
+  surgeFee: number;
+  surgeLabel?: string;
+  freeDeliveryGap?: number;
+  tax: number;
+  total: number;
+  liveBill: boolean;
+  outOfStockProductIds: string[];
+  inStockProductIds: string[];
+}
+&nbsp;
+const BLINKIT_APP_VERSION = '52434333';
+&nbsp;
+// The gateway validates AppVersion as a case-sensitive whitelist, so every
+// plausible header-name variant is emitted.
+const APP_VERSION_HEADERS = {
+  'AppVersion': BLINKIT_APP_VERSION,
+  'appversion': BLINKIT_APP_VERSION,
+  'app_version': BLINKIT_APP_VERSION,
+  'x-app-version': BLINKIT_APP_VERSION,
+};
+&nbsp;
+const CARTS_URL = 'https://blinkit.com/v5/carts';
+&nbsp;
+function parseJson(text: string): any {
+  try { return JSON.parse(text); } catch { <span class="cstat-no" title="statement not covered" >return null; </span>}
+}
+&nbsp;
+function cartIdFrom(json: any): number {
+  const n = Number(
+    json?.cart_id ?? json?.data?.cart_id ??
+    json?.cart_data?.id ?? json?.data?.cart_data?.id ?? NaN
+  );
+  return isFinite(n) &amp;&amp; n ? n : NaN;
+}
+&nbsp;
+// Cheap, local lookup of the user's persistent cart id: the hidden page's own
+// localStorage first, then what we stored on a previous run.
+async function cachedCartId(): Promise&lt;number&gt; {
+  const pageCartRaw = getBlinkitPageStorage('cart');
+  <span class="missing-if-branch" title="if path not taken" >I</span>if (pageCartRaw) {
+    const pc = <span class="cstat-no" title="statement not covered" >parseJson(pageCartRaw);</span>
+    const n = <span class="cstat-no" title="statement not covered" >Number(pc?.id ?? pc?.cart_id ?? pc?.cl_id ?? pc?.cartId ?? NaN);</span>
+<span class="cstat-no" title="statement not covered" >    if (isFinite(n) &amp;&amp; n) <span class="cstat-no" title="statement not covered" >return n;</span></span>
+  }
+  const stored = await AsyncStorage.getItem('@blinkit_cart_id');
+  const n = stored ? Number(stored) : NaN;
+  return isFinite(n) &amp;&amp; n ? n : NaN;
+}
+&nbsp;
+async function getOrCreate(key: string, make: () =&gt; string): Promise&lt;string&gt; {
+  let v = await AsyncStorage.getItem(key);
+  <span class="missing-if-branch" title="else path not taken" >E</span>if (!v) {
+    v = make();
+    await AsyncStorage.setItem(key, v);
+  }
+  return v;
+}
+&nbsp;
+const randomId = () =&gt; Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
+&nbsp;
+async function resolveAddress(
+  deps: BlinkitPricingDeps, gpsLat: number, gpsLng: number
+): Promise&lt;{ addrNum: number; lat: number; lng: number }&gt; {
+  let addrNum = NaN;
+  let lat = gpsLat;
+  let lng = gpsLng;
+  try {
+    const closest = await deps.getClosestBlinkitAddress(gpsLat, gpsLng);
+    if (closest &amp;&amp; closest.id) {
+      addrNum = Number(closest.id);
+      const aLat = closest.latitude || <span class="branch-1 cbranch-no" title="branch not covered" >closest.lat;</span>
+      const aLng = closest.longitude || <span class="branch-1 cbranch-no" title="branch not covered" >closest.lon </span>|| <span class="branch-2 cbranch-no" title="branch not covered" >closest.lng;</span>
+      <span class="missing-if-branch" title="else path not taken" >E</span>if (aLat &amp;&amp; aLng) {
+        lat = Number(aLat);
+        lng = Number(aLng);
+      }
+      await Promise.all([
+        AsyncStorage.setItem('@blinkit_address_id', String(closest.id)),
+        AsyncStorage.setItem('@blinkit_address_name', closest.address || <span class="branch-1 cbranch-no" title="branch not covered" >closest.text </span>|| <span class="branch-2 cbranch-no" title="branch not covered" >'')</span>,
+        ...(aLat &amp;&amp; aLng ? [
+          AsyncStorage.setItem('@blinkit_lat', String(aLat)),
+          AsyncStorage.setItem('@blinkit_lng', String(aLng)),
+        ] : <span class="branch-1 cbranch-no" title="branch not covered" >[])</span>,
+      ]);
+    } else <span class="missing-if-branch" title="else path not taken" >E</span>{
+<span class="cstat-no" title="statement not covered" >      await Promise.all(['@blinkit_address_id', '@blinkit_address_name', '@blinkit_lat', '@blinkit_lng']</span>
+        .map(<span class="fstat-no" title="function not covered" >k </span>=&gt; <span class="cstat-no" title="statement not covered" >AsyncStorage.removeItem(k))</span>);
+    }
+  } catch {
+    const addrRaw = <span class="cstat-no" title="statement not covered" >await AsyncStorage.getItem('@blinkit_address_id');</span>
+<span class="cstat-no" title="statement not covered" >    if (addrRaw) <span class="cstat-no" title="statement not covered" >addrNum = Number(addrRaw);</span></span>
+  }
+  return { addrNum, lat, lng };
+}
+&nbsp;
+export async function priceBlinkitCart(
+  input: BlinkitPricingInput,
+  deps: BlinkitPricingDeps
+): Promise&lt;BlinkitPricingResult&gt; {
+  const { items, platformItems, token, gpsLat, gpsLng, simulateNoAddress, platformItemLimits, platformItemQuantities } = input;
+  const { resolvePlatformProduct, getItemPlatformLimit } = deps;
+&nbsp;
+  let subtotal = input.subtotal;
+  let deliveryFee = 0;
+  let handlingFee = 0;
+  let smallCartFee = 0;
+  let surgeFee = 0;
+  let freeDeliveryGap: number | undefined;
+  let surgeLabel: string | undefined;
+  let tax = 0;
+  let total = subtotal;
+  let liveBill = false;
+  const outOfStockProductIds: string[] = [];
+  const inStockProductIds: string[] = [];
+&nbsp;
+  const slimItems = platformItems.map((ci) =&gt; {
+    const lim = getItemPlatformLimit(ci.product);
+    const q = (typeof lim === 'number' &amp;&amp; <span class="branch-1 cbranch-no" title="branch not covered" >lim &gt; 0)</span> ? <span class="branch-0 cbranch-no" title="branch not covered" >Math.min(ci.quantity, lim) </span>: ci.quantity;
+    return {
+      product_id: String(ci.product.originalId || <span class="branch-1 cbranch-no" title="branch not covered" >ci.product.id.replace('blinkit-', ''))</span>,
+      quantity: q
+    };
+  });
+&nbsp;
+  let deviceId = await getOrCreate('@blinkit_device_id', () =&gt; 'web-' + randomId());
+  if (simulateNoAddress) deviceId = 'sim-' + randomId();
+  // The site's own cookie jar decides its fee arm — prefer the device id
+  // embedded in those cookies over ours.
+  const siteCookies = simulateNoAddress ? '' : ((await AsyncStorage.getItem('@blinkit_cookies')) || '');
+  const devCookieM = siteCookies.match(/(?:^|;\s*)(?:device_id|deviceId)=([^;]+)/);
+  <span class="missing-if-branch" title="if path not taken" >I</span>if (devCookieM) <span class="cstat-no" title="statement not covered" >deviceId = decodeURIComponent(devCookieM[1]);</span>
+  const atCookieM = siteCookies.match(/(?:^|;\s*)gr_1_accessToken=([^;]+)/);
+  const siteAccessToken = atCookieM ? <span class="branch-0 cbranch-no" title="branch not covered" >decodeURIComponent(atCookieM[1]) </span>: '';
+&nbsp;
+  // Address lookup (cached after the first call) and the persistent cart id
+  // are independent, so resolve them together.
+  const [addr, knownCartId] = await Promise.all([
+    simulateNoAddress ? Promise.resolve({ addrNum: NaN, lat: gpsLat, lng: gpsLng }) : resolveAddress(deps, gpsLat, gpsLng),
+    cachedCartId(),
+  ]);
+  const { addrNum, lat: blLat, lng: blLng } = addr;
+&nbsp;
+  const cartsBody = JSON.stringify({
+    items: slimItems,
+    ...(isFinite(addrNum) &amp;&amp; addrNum &amp;&amp; !simulateNoAddress ? { address_id: addrNum } : {}),
+    promo_codes: ['']
+  });
+&nbsp;
+  const geo = { 'lat': String(blLat), 'lon': String(blLng) };
+&nbsp;
+  // PUT /v5/carts/{id}: prices the user's persistent cart. Mirrors the site's
+  // own PUT headers: access_token is the URL-decoded gr_1_accessToken cookie,
+  // session_uuid is stable per install, platform is mobile_web.
+  const putCart = async (cartId: number): Promise&lt;any | null&gt; =&gt; {
+    await AsyncStorage.setItem('@blinkit_cart_id', String(cartId));
+    const sessionUuid = await getOrCreate('@blinkit_session_uuid', () =&gt;
+      'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) =&gt; {
+        const r = (Math.random() * 16) | 0;
+        return (c === 'x' ? r : (r &amp; 0x3) | 0x8).toString(16);
+      }));
+    const putRes = await requestViaBlinkitBridge(`${CARTS_URL}/${cartId}`, 'PUT', cartsBody, {
+      'app_client': 'consumer_web',
+      'auth_key': token,
+      ...(siteAccessToken ? <span class="branch-0 cbranch-no" title="branch not covered" >{ 'access_token': siteAccessToken } </span>: {}),
+      'session_uuid': sessionUuid,
+      'platform': 'mobile_web',
+      'qd_sdk_request': 'true',
+      'web_app_version': '1008010016',
+      'x-age-consent-granted': 'false',
+      ...geo,
+      ...APP_VERSION_HEADERS,
+    });
+    if (putRes &amp;&amp; putRes.status === 200) return parseJson(putRes.text);
+    <span class="missing-if-branch" title="else path not taken" >E</span>if (putRes &amp;&amp; (putRes.status === 404 || <span class="branch-2 cbranch-no" title="branch not covered" >putRes.status === 410)</span>) {
+      await AsyncStorage.removeItem('@blinkit_cart_id');
+    }
+    return null;
+  };
+&nbsp;
+  // Fresh-cart POST quote (ephemeral, no persistent id). Retries on 429 — fresh
+  // installs often hit rate limits because address APIs + cart POST fire together.
+  const postCart = async (): Promise&lt;any | null&gt; =&gt; {
+    const headers = {
+      'app_client': 'consumer_web',
+      'auth_key': token,
+      ...geo,
+      'access_token': siteAccessToken,
+      'Content-Type': 'application/json',
+      ...APP_VERSION_HEADERS,
+    };
+    let res = await requestViaBlinkitBridge(CARTS_URL, 'POST', cartsBody, headers);
+    for (const backoff of [2000, 3000]) {
+      <span class="missing-if-branch" title="else path not taken" >E</span>if (!res || res.status !== 429) break;
+<span class="cstat-no" title="statement not covered" >      await new Promise(<span class="fstat-no" title="function not covered" >r </span>=&gt; <span class="cstat-no" title="statement not covered" >setTimeout(r, backoff))</span>;</span>
+<span class="cstat-no" title="statement not covered" >      res = await requestViaBlinkitBridge(CARTS_URL, 'POST', cartsBody, headers);</span>
+    }
+    return res &amp;&amp; res.status === 200 ? parseJson(res.text) : null;
+  };
+&nbsp;
+  // Ask the site's session which cart is currently active.
+  const fetchActiveCartId = async (): Promise&lt;number&gt; =&gt; {
+    const got = await requestViaBlinkitBridge(CARTS_URL, 'GET', '', {
+      'app_client': 'consumer_web',
+      'auth_key': token,
+      ...geo,
+      ...APP_VERSION_HEADERS,
+    });
+    return got &amp;&amp; <span class="branch-1 cbranch-no" title="branch not covered" >got.status === 200 </span>? <span class="branch-0 cbranch-no" title="branch not covered" >cartIdFrom(parseJson(got.text)) </span>: NaN;
+  };
+&nbsp;
+  // 1. Known persistent cart → price it directly (one round trip).
+  let resJson: any = null;
+  let triedCartId = NaN;
+  if (knownCartId) {
+    triedCartId = knownCartId;
+    resJson = await putCart(knownCartId);
+  }
+&nbsp;
+  // 2. Otherwise (or if the PUT failed) fall back to a POST quote, then use any
+  //    cart id it reveals to PUT-price the persistent cart. The POST is skipped
+  //    when simulating a no-address session so the server sees no address context.
+  if (!resJson) {
+    const posted = simulateNoAddress ? null : await postCart();
+    resJson = posted;
+    const freshId = cartIdFrom(posted) || (knownCartId ? NaN : await fetchActiveCartId());
+    if (freshId &amp;&amp; freshId !== triedCartId) {
+      const put = await putCart(freshId);
+      <span class="missing-if-branch" title="else path not taken" >E</span>if (put) resJson = put;
+    }
+  }
+&nbsp;
+  // 3. Last resort: direct (non-bridge) POST.
+  if (!resJson) {
+    const response = await deps.fetchWithTimeout(CARTS_URL, {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json, text/plain, */*',
+        'app_client': 'consumer_web',
+        'auth_key': simulateNoAddress ? '' : token,
+        ...geo,
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1',
+        'DeviceID': deviceId,
+        'device_id': deviceId,
+        'deviceid': deviceId,
+        'x-device-id': deviceId,
+        ...APP_VERSION_HEADERS,
+        ...(!simulateNoAddress &amp;&amp; siteCookies ? <span class="branch-0 cbranch-no" title="branch not covered" >{ 'Cookie': siteCookies } </span>: {})
+      },
+      body: cartsBody
+    }, 6000);
+    if (response.ok) resJson = await response.json();
+  }
+&nbsp;
+  if (resJson) {
+    const fees = deps.parseBlinkitBill(resJson);
+    <span class="missing-if-branch" title="else path not taken" >E</span>if (fees.subtotal !== null) subtotal = fees.subtotal;
+    if (fees.deliveryFee !== null) deliveryFee = fees.deliveryFee;
+    if (fees.handlingFee !== null) handlingFee = fees.handlingFee;
+    <span class="missing-if-branch" title="else path not taken" >E</span>if (fees.smallCartFee !== null) smallCartFee = fees.smallCartFee;
+    <span class="missing-if-branch" title="if path not taken" >I</span>if (fees.surgeFee) <span class="cstat-no" title="statement not covered" >surgeFee = fees.surgeFee;</span>
+    <span class="missing-if-branch" title="if path not taken" >I</span>if (fees.surgeLabel) <span class="cstat-no" title="statement not covered" >surgeLabel = fees.surgeLabel;</span>
+    freeDeliveryGap = fees.freeDeliveryGap ?? undefined;
+    <span class="missing-if-branch" title="if path not taken" >I</span>if (fees.tax !== null) <span class="cstat-no" title="statement not covered" >tax = fees.tax;</span>
+    <span class="missing-if-branch" title="else path not taken" >E</span>if (fees.total !== null) {
+      total = fees.total;
+      liveBill = true;
+      <span class="missing-if-branch" title="if path not taken" >I</span>if (fees.subtotal === null) {
+        const otherCharges = <span class="cstat-no" title="statement not covered" >(fees.deliveryFee ?? 0) + (fees.handlingFee ?? 0) + (fees.smallCartFee ?? 0) + (fees.surgeFee ?? 0) + (fees.tax ?? 0);</span>
+<span class="cstat-no" title="statement not covered" >        if (fees.total &gt;= otherCharges) {</span>
+<span class="cstat-no" title="statement not covered" >          subtotal = fees.total - otherCharges;</span>
+        }
+      }
+    }
+&nbsp;
+    // Extract Blinkit stock statuses
+    const returnedActiveBlinkitPids = new Set&lt;string&gt;();
+    const returnedOosBlinkitPids = new Set&lt;string&gt;();
+&nbsp;
+    const extractBlinkitItemsList = (json: any): any[] =&gt; {
+      const list: any[] = [];
+      const cd = json?.cart_data || <span class="branch-1 cbranch-no" title="branch not covered" >json?.data </span>|| <span class="branch-2 cbranch-no" title="branch not covered" >json;</span>
+      <span class="missing-if-branch" title="else path not taken" >E</span>if (Array.isArray(cd?.items)) list.push(...cd.items);
+      <span class="missing-if-branch" title="if path not taken" >I</span>if (Array.isArray(cd?.cart_items)) <span class="cstat-no" title="statement not covered" >list.push(...cd.cart_items);</span>
+      <span class="missing-if-branch" title="if path not taken" >I</span>if (Array.isArray(json?.items)) <span class="cstat-no" title="statement not covered" >list.push(...json.items);</span>
+      <span class="missing-if-branch" title="if path not taken" >I</span>if (Array.isArray(cd?.shipments)) {
+<span class="cstat-no" title="statement not covered" >        for (const s of cd.shipments) {</span>
+<span class="cstat-no" title="statement not covered" >          if (Array.isArray(s?.items)) <span class="cstat-no" title="statement not covered" >list.push(...s.items);</span></span>
+<span class="cstat-no" title="statement not covered" >          if (Array.isArray(s?.cart_items)) <span class="cstat-no" title="statement not covered" >list.push(...s.cart_items);</span></span>
+<span class="cstat-no" title="statement not covered" >          if (Array.isArray(s?.products)) <span class="cstat-no" title="statement not covered" >list.push(...s.products);</span></span>
+        }
+      }
+      return list;
+    };
+&nbsp;
+    const getBlinkitPids = (item: any): string[] =&gt; {
+      const ids: string[] = [];
+      <span class="missing-if-branch" title="else path not taken" >E</span>if (item?.product_id) ids.push(String(item.product_id));
+      <span class="missing-if-branch" title="if path not taken" >I</span>if (item?.id) <span class="cstat-no" title="statement not covered" >ids.push(String(item.id));</span>
+      <span class="missing-if-branch" title="if path not taken" >I</span>if (item?.merchant_product_id) <span class="cstat-no" title="statement not covered" >ids.push(String(item.merchant_product_id));</span>
+      <span class="missing-if-branch" title="if path not taken" >I</span>if (item?.product?.id) <span class="cstat-no" title="statement not covered" >ids.push(String(item.product.id));</span>
+      <span class="missing-if-branch" title="if path not taken" >I</span>if (item?.product?.product_id) <span class="cstat-no" title="statement not covered" >ids.push(String(item.product.product_id));</span>
+      <span class="missing-if-branch" title="if path not taken" >I</span>if (item?.item_id) <span class="cstat-no" title="statement not covered" >ids.push(String(item.item_id));</span>
+      return ids;
+    };
+&nbsp;
+    const allBlinkitItems = extractBlinkitItemsList(resJson);
+    for (const it of allBlinkitItems) {
+      const pids = getBlinkitPids(it);
+      const isOos = it.in_stock === false ||
+                    it.is_available === false ||
+                    it.available === false ||
+                    it.out_of_stock === true ||
+                    it.is_oos === true ||
+                    it.status === 'OUT_OF_STOCK' ||
+                    it.status === 'OOS' ||
+                    (typeof it.inventory?.stock === 'number' &amp;&amp; <span class="branch-8 cbranch-no" title="branch not covered" >it.inventory.stock &lt;= 0)</span> ||
+                    (typeof it.stock === 'number' &amp;&amp; <span class="branch-10 cbranch-no" title="branch not covered" >it.stock &lt;= 0)</span> ||
+                    (typeof it.quantity === 'number' &amp;&amp; it.quantity &lt;= 0);
+&nbsp;
+      let billedQty: number | undefined = undefined;
+      if (typeof it.quantity === 'number' &amp;&amp; it.quantity &gt; 0) billedQty = it.quantity;
+&nbsp;
+      let stockNum: number | undefined = undefined;
+      if (typeof it.inventory === 'number' &amp;&amp; it.inventory &gt;= 0) stockNum = it.inventory;
+      else <span class="missing-if-branch" title="if path not taken" >I</span>if (typeof it.inventory?.stock === 'number' &amp;&amp; <span class="branch-1 cbranch-no" title="branch not covered" >it.inventory.stock &gt;= 0)</span> <span class="cstat-no" title="statement not covered" >stockNum = it.inventory.stock;</span>
+      else <span class="missing-if-branch" title="if path not taken" >I</span>if (typeof it.stock === 'number' &amp;&amp; <span class="branch-1 cbranch-no" title="branch not covered" >it.stock &gt;= 0)</span> <span class="cstat-no" title="statement not covered" >stockNum = it.stock;</span>
+      else <span class="missing-if-branch" title="if path not taken" >I</span>if (typeof it.available_units === 'number' &amp;&amp; <span class="branch-1 cbranch-no" title="branch not covered" >it.available_units &gt;= 0)</span> <span class="cstat-no" title="statement not covered" >stockNum = it.available_units;</span>
+      else <span class="missing-if-branch" title="if path not taken" >I</span>if (typeof it.available_quantity === 'number' &amp;&amp; <span class="branch-1 cbranch-no" title="branch not covered" >it.available_quantity &gt;= 0)</span> <span class="cstat-no" title="statement not covered" >stockNum = it.available_quantity;</span>
+&nbsp;
+      let maxQ: number | undefined = undefined;
+      <span class="missing-if-branch" title="if path not taken" >I</span>if (typeof it.max_quantity === 'number' &amp;&amp; <span class="branch-1 cbranch-no" title="branch not covered" >it.max_quantity &gt; 0)</span> <span class="cstat-no" title="statement not covered" >maxQ = it.max_quantity;</span>
+      else <span class="missing-if-branch" title="if path not taken" >I</span>if (typeof it.purchase_limit === 'number' &amp;&amp; <span class="branch-1 cbranch-no" title="branch not covered" >it.purchase_limit &gt; 0)</span> <span class="cstat-no" title="statement not covered" >maxQ = it.purchase_limit;</span>
+&nbsp;
+      const reqItem = items.find(ci =&gt; {
+        const resolved = resolvePlatformProduct(ci, 'blinkit');
+        <span class="missing-if-branch" title="if path not taken" >I</span>if (!resolved) <span class="cstat-no" title="statement not covered" >return false;</span>
+        const pid = String(resolved.product.originalId || <span class="branch-1 cbranch-no" title="branch not covered" >resolved.product.productId </span>|| <span class="branch-2 cbranch-no" title="branch not covered" >resolved.product.id.replace('blinkit-', ''))</span>;
+        return pids.includes(pid) || <span class="branch-1 cbranch-no" title="branch not covered" >pids.includes(String(resolved.product.id));</span>
+      });
+      const reqQty = reqItem?.quantity;
+&nbsp;
+      let effLimit: number | undefined = undefined;
+      <span class="missing-if-branch" title="if path not taken" >I</span>if (stockNum !== undefined &amp;&amp; maxQ !== undefined) {
+<span class="cstat-no" title="statement not covered" >        effLimit = Math.min(stockNum, maxQ);</span>
+      } else if (stockNum !== undefined) {
+        effLimit = stockNum;
+      } else <span class="missing-if-branch" title="if path not taken" >I</span>if (maxQ !== undefined) {
+<span class="cstat-no" title="statement not covered" >        effLimit = maxQ;</span>
+      } else <span class="missing-if-branch" title="if path not taken" >I</span>if (billedQty !== undefined &amp;&amp; <span class="branch-1 cbranch-no" title="branch not covered" >reqQty !== undefined </span>&amp;&amp; <span class="branch-2 cbranch-no" title="branch not covered" >billedQty &lt; reqQty)</span> {
+<span class="cstat-no" title="statement not covered" >        effLimit = billedQty;</span>
+      }
+&nbsp;
+      for (const pid of pids) {
+        if (isOos) {
+          returnedOosBlinkitPids.add(pid);
+          platformItemLimits[pid] = 0;
+        } else {
+          returnedActiveBlinkitPids.add(pid);
+          <span class="missing-if-branch" title="else path not taken" >E</span>if (billedQty !== undefined) platformItemQuantities[pid] = billedQty;
+          <span class="missing-if-branch" title="else path not taken" >E</span>if (effLimit !== undefined) platformItemLimits[pid] = effLimit;
+        }
+      }
+    }
+&nbsp;
+    const cd = resJson?.cart_data || <span class="branch-1 cbranch-no" title="branch not covered" >resJson?.data </span>|| <span class="branch-2 cbranch-no" title="branch not covered" >resJson;</span>
+    const oosArrays = [
+      cd?.unavailable_items,
+      cd?.out_of_stock_items,
+      cd?.unserviceable_items,
+      cd?.oos_items,
+      resJson?.unavailable_items,
+      resJson?.out_of_stock_items,
+    ];
+    for (const arr of oosArrays) {
+      <span class="missing-if-branch" title="if path not taken" >I</span>if (Array.isArray(arr)) {
+<span class="cstat-no" title="statement not covered" >        for (const it of arr) {</span>
+<span class="cstat-no" title="statement not covered" >          for (const pid of getBlinkitPids(it)) {</span>
+<span class="cstat-no" title="statement not covered" >            returnedOosBlinkitPids.add(pid);</span>
+<span class="cstat-no" title="statement not covered" >            platformItemLimits[pid] = 0;</span>
+          }
+        }
+      }
+    }
+&nbsp;
+    for (const cartItem of items) {
+      const resolved = resolvePlatformProduct(cartItem, 'blinkit');
+      <span class="missing-if-branch" title="if path not taken" >I</span>if (!resolved) {
+<span class="cstat-no" title="statement not covered" >        outOfStockProductIds.push(cartItem.product.id);</span>
+<span class="cstat-no" title="statement not covered" >        platformItemLimits[cartItem.product.id] = 0;</span>
+<span class="cstat-no" title="statement not covered" >        continue;</span>
+      }
+      const pid = String(resolved.product.originalId || <span class="branch-1 cbranch-no" title="branch not covered" >resolved.product.productId </span>|| <span class="branch-2 cbranch-no" title="branch not covered" >resolved.product.id.replace('blinkit-', ''))</span>;
+      const rawId = String(resolved.product.id);
+&nbsp;
+      if (returnedOosBlinkitPids.has(pid) || returnedOosBlinkitPids.has(rawId)) {
+        outOfStockProductIds.push(cartItem.product.id);
+        platformItemLimits[cartItem.product.id] = 0;
+      } else if (returnedActiveBlinkitPids.has(pid) || <span class="branch-1 cbranch-no" title="branch not covered" >returnedActiveBlinkitPids.has(rawId))</span> {
+        inStockProductIds.push(cartItem.product.id);
+        const lim = platformItemLimits[pid] ?? <span class="branch-1 cbranch-no" title="branch not covered" >platformItemLimits[rawId] </span>?? <span class="branch-2 cbranch-no" title="branch not covered" >getItemPlatformLimit(resolved.product);</span>
+        <span class="missing-if-branch" title="else path not taken" >E</span>if (lim !== undefined) platformItemLimits[cartItem.product.id] = lim;
+        const qty = platformItemQuantities[pid] ?? <span class="branch-1 cbranch-no" title="branch not covered" >platformItemQuantities[rawId];</span>
+        <span class="missing-if-branch" title="else path not taken" >E</span>if (qty !== undefined) platformItemQuantities[cartItem.product.id] = qty;
+      } else <span class="cstat-no" title="statement not covered" ><span class="missing-if-branch" title="else path not taken" >E</span>if (liveBill &amp;&amp; allBlinkitItems.length &gt; 0 &amp;&amp; returnedActiveBlinkitPids.size &gt; 0 &amp;&amp; !returnedActiveBlinkitPids.has(pid)) {</span>
+        // Dropped by Blinkit because unavailable
+<span class="cstat-no" title="statement not covered" >        outOfStockProductIds.push(cartItem.product.id);</span>
+<span class="cstat-no" title="statement not covered" >        platformItemLimits[cartItem.product.id] = 0;</span>
+      } else <span class="cstat-no" title="statement not covered" >if (resolved.product.inStock === false) {</span>
+<span class="cstat-no" title="statement not covered" >        outOfStockProductIds.push(cartItem.product.id);</span>
+<span class="cstat-no" title="statement not covered" >        platformItemLimits[cartItem.product.id] = 0;</span>
+      } else {
+        // Valid bill received without OOS flag = in stock!
+<span class="cstat-no" title="statement not covered" >        inStockProductIds.push(cartItem.product.id);</span>
+        const lim = <span class="cstat-no" title="statement not covered" >getItemPlatformLimit(resolved.product);</span>
+<span class="cstat-no" title="statement not covered" >        if (lim !== undefined) <span class="cstat-no" title="statement not covered" >platformItemLimits[cartItem.product.id] = lim;</span></span>
+      }
+    }
+  }
+&nbsp;
+  return {
+    subtotal, deliveryFee, handlingFee, smallCartFee, surgeFee, surgeLabel,
+    freeDeliveryGap, tax, total, liveBill, outOfStockProductIds, inStockProductIds,
+  };
+}
+&nbsp;</pre></td></tr></table></pre>
+
+                <div class='push'></div><!-- for sticky footer -->
+            </div><!-- /wrapper -->
+            <div class='footer quiet pad2 space-top1 center small'>
+                Code coverage generated by
+                <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
+                at 2026-10-01T14:14:46.186Z
+            </div>
+        <script src="../prettify.js"></script>
+        <script>
+            window.onload = function () {
+                prettyPrint();
+            };
+        </script>
+        <script src="../sorter.js"></script>
+        <script src="../block-navigation.js"></script>
+    </body>
+</html>
+    
