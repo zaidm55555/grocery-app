@@ -4,6 +4,10 @@ jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock'),
 );
 
+// CI runners start with a cold transform cache, so the first render-heavy test
+// in a file can pass 5s without anything being wrong.
+jest.setTimeout(20000);
+
 beforeEach(() => {
   jest.spyOn(console, 'warn').mockImplementation(() => {});
   jest.spyOn(console, 'error').mockImplementation(() => {});
