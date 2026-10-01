@@ -3,7 +3,7 @@ import { StyleSheet, View, Text, TextInput, FlatList, TouchableOpacity, Activity
 import { useFocusEffect, useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Search, MapPin, X, Plus, Minus, ChevronDown, Check, Zap, ShoppingCart, ShoppingBag, LogIn, Link2Off, Compass, ChevronRight } from 'lucide-react-native';
-import { api, UnifiedProduct, PlatformVariant, getProductOverallMax, getItemPlatformLimit, resolvePlatformProduct } from '../../services/api';
+import { api, UnifiedProduct, PlatformVariant, getProductOverallMax, getItemPlatformLimit, getProductPlatformLimit, resolvePlatformProduct } from '../../services/api';
 import { storage, Platform, LocationData } from '../../services/storage';
 import { colors, fonts, platformThemes, PLATFORM_ORDER } from '../../constants/theme';
 import { liveKey, familyKey } from '../../utils/productKey';
@@ -39,6 +39,12 @@ interface ProductCardProps {
   onStepQty: (p: UnifiedProduct, delta: number) => void;
 }
 
+// Quantity of a listing in the basket: exact catalog id first, then the
+// platform-scoped normalized-name key (so same-titled listings on the two apps
+// can't overwrite each other).
+const cartQtyFor = (map: Map<string, number>, p: UnifiedProduct): number | undefined =>
+  map.get('id:' + p.id) ?? map.get(p.platform + '|' + liveKey({ name: p.title, unit: p.quantity }));
+
 const ProductCard = React.memo(({
   group,
   cartItemMap,
@@ -50,8 +56,8 @@ const ProductCard = React.memo(({
   const rep = items[0];
   const t = platformThemes[rep.platform];
   const plats = useMemo(() => Array.from(new Set(items.map(i => i.platform))), [items]);
-  const cartedItem = items.find(i => (cartItemMap.get(liveKey({ name: i.title, unit: i.quantity })) || 0) > 0);
-  const qty = cartedItem ? (cartItemMap.get(liveKey({ name: cartedItem.title, unit: cartedItem.quantity })) || 0) : 0;
+  const cartedItem = items.find(i => (cartQtyFor(cartItemMap, i) || 0) > 0);
+  const qty = cartedItem ? (cartQtyFor(cartItemMap, cartedItem) || 0) : 0;
   const inCart = !!cartedItem;
   const cardLimit = getItemPlatformLimit(cartedItem || rep);
   const overall = cartedItem ? getProductOverallMax(cartedItem) : getProductOverallMax(rep);
@@ -497,7 +503,7 @@ export default function SearchScreen() {
 
     if (sameLineIdx > -1) {
       const line = items[sameLineIdx];
-      const prodLimit = getItemPlatformLimit(product);
+      const prodLimit = getItemPlatformLimit(product) ?? getProductPlatformLimit(line.product, product.platform);
       const resolved = resolvePlatformProduct(line, product.platform);
       const storeCurrentQty = resolved ? resolved.quantity : line.quantity;
       const theme = platformThemes[product.platform];
@@ -565,7 +571,7 @@ export default function SearchScreen() {
     const updated = [...items];
     const line = updated[idx];
     if (delta > 0) {
-      const prodLimit = getItemPlatformLimit(product);
+      const prodLimit = getItemPlatformLimit(product) ?? getProductPlatformLimit(line.product, product.platform);
       const resolved = resolvePlatformProduct(line, product.platform);
       const storeCurrentQty = resolved ? resolved.quantity : line.quantity;
       const theme = platformThemes[product.platform];
@@ -590,13 +596,15 @@ export default function SearchScreen() {
   const cartItemMap = useMemo(() => {
     const map = new Map<string, number>();
     for (const ci of cartItems) {
-      const k = liveKey({ name: ci.product.title, unit: ci.product.quantity });
+      const k = ci.product.platform + '|' + liveKey({ name: ci.product.title, unit: ci.product.quantity });
       const mainResolved = resolvePlatformProduct(ci, ci.product.platform);
       map.set(k, mainResolved ? mainResolved.quantity : ci.quantity);
+      map.set('id:' + ci.product.id, mainResolved ? mainResolved.quantity : ci.quantity);
       if (ci.product.platformPrices) {
         for (const [pl, v] of Object.entries(ci.product.platformPrices)) {
           const varResolved = resolvePlatformProduct(ci, pl as Platform);
-          map.set(liveKey({ name: v.title, unit: v.quantity }), varResolved ? varResolved.quantity : ci.quantity);
+          map.set(pl + '|' + liveKey({ name: v.title, unit: v.quantity }), varResolved ? varResolved.quantity : ci.quantity);
+          if (v.id) map.set('id:' + v.id, varResolved ? varResolved.quantity : ci.quantity);
         }
       }
     }
@@ -604,8 +612,7 @@ export default function SearchScreen() {
   }, [cartItems]);
 
   const qtyFor = useCallback((product: UnifiedProduct) => {
-    const k = liveKey({ name: product.title, unit: product.quantity });
-    let q = cartItemMap.get(k);
+    let q = cartQtyFor(cartItemMap, product);
     if (q === undefined) {
       const idx = lineIdxFor(cartItemsRef.current, product);
       if (idx !== -1) {

@@ -7,6 +7,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { Plus, Minus, Trophy, ShieldCheck, Layers, RefreshCw, Trash2, Bookmark, Send, AlertTriangle, MapPinOff, CheckCircle2, AlertCircle, Info } from 'lucide-react-native';
 import { storage, Platform } from '../../services/storage';
 import { api, UnifiedProduct, CartCalculation, resolvePlatformProduct, getProductOverallMax } from '../../services/api';
+import { refreshBasketLines, applyLiveLimits } from '../../services/basketRefresh';
 import { computeBasketVerdict, getPlatformFulfillment, BasketVerdict } from '../../utils/basketVerdict';
 import SavedListsModal from '../../components/SavedListsModal';
 import { lists } from '../../services/lists';
@@ -78,6 +79,19 @@ export default function CartScreen() {
     setLoaded(true);
     setCartItems(cart);
 
+    // Saved lines can be days old: re-validate price/stock/links against the
+    // live catalogs before pricing, so the basket matches what Search shows.
+    // Skipped on a location mismatch (prices there would be for another area).
+    let liveCart = cart;
+    if (cart.length > 0 && !(currentLoc && cartLoc && Math.hypot(currentLoc.latitude - cartLoc.latitude, currentLoc.longitude - cartLoc.longitude) > 0.005) && mismatchFlag !== 'true') {
+      const refreshed = await refreshBasketLines(cart);
+      if (refreshed.changed) {
+        liveCart = refreshed.items;
+        setCartItems(liveCart);
+        await storage.saveCart(liveCart);
+      }
+    }
+
     let isMismatch = mismatchFlag === 'true';
 
     if (cart.length > 0 && currentLoc && cartLoc) {
@@ -105,7 +119,7 @@ export default function CartScreen() {
       return;
     }
 
-    await runCalculations(cart);
+    await runCalculations(liveCart);
   };
 
   useFocusEffect(
@@ -139,7 +153,7 @@ export default function CartScreen() {
     setPendingPlatforms(platformsWithItems);
 
     try {
-      await api.calculateCart(items, (calc) => {
+      const results = await api.calculateCart(items, (calc) => {
         if (isStale()) return;
         setCalculations(prev => {
           const map = new Map(prev.map(c => [c.platform, c]));
@@ -148,11 +162,18 @@ export default function CartScreen() {
         });
         setPendingPlatforms(prev => prev.filter(p => p !== calc.platform));
       });
+      if (isStale()) return;
+      // Persist the live stock limits so Search/Basket stop trusting the stale snapshot.
+      const base = await storage.getCart();
+      const upd = applyLiveLimits(base, results);
+      if (upd.changed) {
+        await storage.saveCart(upd.items);
+        if (!isStale()) setCartItems(upd.items);
+      }
     } catch (err) {
       console.error(err);
       setPendingPlatforms([]);
     }
-    if (isStale()) return;
   };
 
   const handleUpdateQuantity = async (productId: string, delta: number) => {

@@ -14,6 +14,8 @@ const same: [P, P][] = [
   [{ name: 'Coca-Cola Zero', unit: '750 ml', price: 40 }, { name: 'Coca Cola Zero Sugar', unit: '750 ml', price: 40 }],
 ];
 const different: [P, P][] = [
+  [{ name: 'English Oven Pav Bread', unit: '200 g', price: 30 }, { name: 'English Oven Milk Bread', unit: '400 g', price: 45 }],
+  [{ name: 'English Oven Pav Bread', unit: '400 g', price: 40 }, { name: 'English Oven Milk Bread', unit: '400 g', price: 40 }],
   [{ name: 'Amul Butter Salted', unit: '100 g', price: 58 }, { name: 'Amul Butter Unsalted', unit: '100 g', price: 58 }],
   [{ name: 'Amul Toned Milk', unit: '500 ml', price: 30 }, { name: 'Amul Full Cream Milk', unit: '500 ml', price: 36 }],
   [{ name: 'Tata Salt', unit: '1 kg', price: 28 }, { name: 'Aashirvaad Salt', unit: '1 kg', price: 28 }],

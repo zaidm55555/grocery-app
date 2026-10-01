@@ -1,8 +1,8 @@
 import { storage, Platform, LocationData } from './storage';
 import { requestViaSwiggyBridge, requestEvalViaSwiggyBridge } from './swiggyBridge';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { requestViaBlinkitBridge, getBlinkitPageStorage } from './blinkitBridge';
-import { pickBestMatch } from '../utils/matcher';
+import { priceBlinkitCart } from './blinkitPricing';
+import { pickBestMatch, isSameProduct } from '../utils/matcher';
 import { stripSizeToken } from '../utils/productKey';
 
 export interface UnifiedProduct {
@@ -26,6 +26,8 @@ export interface UnifiedProduct {
   // the matcher so one line carries prices from every app (like the desktop
   // optimizer's platformPrices model).
   platformPrices?: Partial<Record<Platform, PlatformVariant>>;
+  // Epoch ms of the last live re-validation of this basket line (see basketRefresh.ts).
+  refreshedAt?: number;
 }
 
 export interface PlatformVariant {
@@ -1289,413 +1291,26 @@ export const api = {
       if (subtotal > 0) {
         try {
           if (platform === 'blinkit' && blinkitToken && gpsCoords) {
-            const slimItems = platformItems.map((ci) => {
-              const lim = getItemPlatformLimit(ci.product);
-              const q = (typeof lim === 'number' && lim > 0) ? Math.min(ci.quantity, lim) : ci.quantity;
-              return {
-                product_id: String(ci.product.originalId || ci.product.id.replace('blinkit-', '')),
-                quantity: q
-              };
+            const r = await priceBlinkitCart({
+              items,
+              platformItems,
+              subtotal,
+              token: blinkitToken,
+              gpsLat,
+              gpsLng,
+              simulateNoAddress,
+              platformItemLimits,
+              platformItemQuantities,
+            }, {
+              getClosestBlinkitAddress: (la, ln) => this.getClosestBlinkitAddress(la, ln),
+              fetchWithTimeout: (u, o, t) => this.fetchWithTimeout(u, o, t),
+              parseBlinkitBill,
+              getItemPlatformLimit,
+              resolvePlatformProduct: (ci) => resolvePlatformProduct(ci, 'blinkit'),
             });
-
-            // /v5/carts lives on blinkit.com and the gateway validates
-            // AppVersion + DeviceID as required (case-sensitive whitelist),
-            // so every plausible header-name variant is emitted — mirrors
-            // blinkitCredHeaders in the reference extension.
-            let deviceId = (await AsyncStorage.getItem('@blinkit_device_id')) || '';
-            if (!deviceId) {
-              deviceId = 'web-' + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
-              await AsyncStorage.setItem('@blinkit_device_id', deviceId);
-            }
-            if (simulateNoAddress) {
-              deviceId = 'sim-' + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
-            }
-            // The site's own cookie jar decides its fee arm — prefer the
-            // device id embedded in those cookies over ours.
-            const siteCookies = simulateNoAddress ? '' : ((await AsyncStorage.getItem('@blinkit_cookies')) || '');
-            const devCookieM = siteCookies.match(/(?:^|;\s*)(?:device_id|deviceId)=([^;]+)/);
-            if (devCookieM) deviceId = decodeURIComponent(devCookieM[1]);
-            const atCookieM = siteCookies.match(/(?:^|;\s*)gr_1_accessToken=([^;]+)/);
-            const siteAccessToken = atCookieM ? decodeURIComponent(atCookieM[1]) : '';
-            const BLINKIT_APP_VERSION = '52434333';
-
-            // Resolve the closest address from saved addresses based on the current GPS location
-            let addrNum: number = NaN;
-            let blLat = gpsLat;
-            let blLng = gpsLng;
-
-            if (!simulateNoAddress && gpsCoords) {
-              try {
-                const closestAddr = await this.getClosestBlinkitAddress(gpsLat, gpsLng);
-                if (closestAddr && closestAddr.id) {
-                  addrNum = Number(closestAddr.id);
-                  await AsyncStorage.setItem('@blinkit_address_id', String(closestAddr.id));
-                  await AsyncStorage.setItem('@blinkit_address_name', closestAddr.address || closestAddr.text || '');
-                  const aLat = closestAddr.latitude || closestAddr.lat;
-                  const aLng = closestAddr.longitude || closestAddr.lon || closestAddr.lng;
-                  if (aLat && aLng) {
-                    blLat = Number(aLat);
-                    blLng = Number(aLng);
-                    await AsyncStorage.setItem('@blinkit_lat', String(aLat));
-                    await AsyncStorage.setItem('@blinkit_lng', String(aLng));
-                  }
-                } else {
-                  await AsyncStorage.removeItem('@blinkit_address_id');
-                  await AsyncStorage.removeItem('@blinkit_address_name');
-                  await AsyncStorage.removeItem('@blinkit_lat');
-                  await AsyncStorage.removeItem('@blinkit_lng');
-                }
-              } catch {
-                const addrRaw = await AsyncStorage.getItem('@blinkit_address_id');
-                if (addrRaw) addrNum = Number(addrRaw);
-              }
-            }
-
-
-            const cartsBody = JSON.stringify({
-              items: slimItems,
-              ...(isFinite(addrNum) && addrNum && !simulateNoAddress ? { address_id: addrNum } : {}),
-              promo_codes: ['']
-            });
-
-            // Preferred path: run INSIDE the hidden blinkit.com page so the
-            // user's full cookie jar (HttpOnly included) prices the bill under
-            // their real experiment arm. Falls back to the direct call below.
-            // When simulateNoAddress is on, skip the bridge entirely so the
-            // server sees no address context (replicates the APK no-address bug).
-            let resJson: any = null;
-            const bridgeHeaders: Record<string, string> = {
-              'app_client': 'consumer_web',
-              'auth_key': blinkitToken,
-              'lat': String(blLat),
-              'lon': String(blLng),
-              'access_token': siteAccessToken,
-              'Content-Type': 'application/json',
-              'AppVersion': BLINKIT_APP_VERSION,
-              'appversion': BLINKIT_APP_VERSION,
-              'app_version': BLINKIT_APP_VERSION,
-              'x-app-version': BLINKIT_APP_VERSION
-            };
-            let bridged = simulateNoAddress ? null : await requestViaBlinkitBridge(
-              'https://blinkit.com/v5/carts',
-              'POST',
-              cartsBody,
-              bridgeHeaders
-            );
-            // Retry on 429 (rate limited) with backoff — fresh APK installs
-            // often hit rate limits because address APIs + cart POST fire together.
-            if (bridged && bridged.status === 429) {
-              await new Promise(r => setTimeout(r, 2000));
-              bridged = await requestViaBlinkitBridge(
-                'https://blinkit.com/v5/carts',
-                'POST',
-                cartsBody,
-                bridgeHeaders
-              );
-            }
-            if (bridged && bridged.status === 429) {
-              await new Promise(r => setTimeout(r, 3000));
-              bridged = await requestViaBlinkitBridge(
-                'https://blinkit.com/v5/carts',
-                'POST',
-                cartsBody,
-                bridgeHeaders
-              );
-            }
-            if (bridged) {
-              if (bridged.status === 200) {
-                try { resJson = JSON.parse(bridged.text); } catch {}
-              }
-            }
-
-            // The site prices its PERSISTENT cart via PUT /v5/carts/{id} —
-            // fresh-cart POSTs land in a different fee cohort than the user's
-            // established cart (observed: dc_25_0/hc_2 vs dc_30_0/hc_12/scc_20).
-            let cartId = Number(
-              resJson?.cart_id ?? resJson?.data?.cart_id ??
-              resJson?.cart_data?.id ?? resJson?.data?.cart_data?.id ?? NaN
-            );
-            if (!isFinite(cartId) || !cartId) {
-              // The hidden page's localStorage 'cart' holds the user's
-              // persistent cart object (incl. its id) — the same cart the
-              // site itself prices via PUT.
-              const pageCartRaw = getBlinkitPageStorage('cart');
-              if (pageCartRaw) {
-                try {
-                  const pc = JSON.parse(pageCartRaw);
-                  cartId = Number(pc?.id ?? pc?.cart_id ?? pc?.cl_id ?? pc?.cartId ?? NaN);
-                } catch {}
-              }
-            }
-            if (!isFinite(cartId) || !cartId) {
-              const storedCart = await AsyncStorage.getItem('@blinkit_cart_id');
-              cartId = storedCart ? Number(storedCart) : NaN;
-            }
-            if (!isFinite(cartId) || !cartId) {
-              // POST quotes are ephemeral (no id) — ask the site's session
-              // which cart is currently active.
-              const got = await requestViaBlinkitBridge('https://blinkit.com/v5/carts', 'GET', '', {
-                'app_client': 'consumer_web',
-                'auth_key': blinkitToken,
-                'lat': String(blLat),
-                'lon': String(blLng),
-                'AppVersion': BLINKIT_APP_VERSION,
-                'appversion': BLINKIT_APP_VERSION,
-                'app_version': BLINKIT_APP_VERSION,
-                'x-app-version': BLINKIT_APP_VERSION
-              });
-              if (got && got.status === 200) {
-                try {
-                  const gj = JSON.parse(got.text);
-                  cartId = Number(
-                    gj?.cart_id ?? gj?.data?.cart_id ??
-                    gj?.cart_data?.id ?? gj?.data?.cart_data?.id ?? NaN
-                  );
-                } catch {}
-              }
-            }
-            if (isFinite(cartId) && cartId) {
-              await AsyncStorage.setItem('@blinkit_cart_id', String(cartId));
-              // Mirror the site's own PUT headers exactly: access_token is the
-              // URL-decoded gr_1_accessToken cookie, session_uuid stable per
-              // install, platform mobile_web.
-              const atM = siteCookies.match(/(?:^|;\s*)gr_1_accessToken=([^;]+)/);
-              const accessToken = atM ? decodeURIComponent(atM[1]) : '';
-              let sessionUuid = await AsyncStorage.getItem('@blinkit_session_uuid');
-              if (!sessionUuid) {
-                sessionUuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-                  const r = (Math.random() * 16) | 0;
-                  return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
-                });
-                await AsyncStorage.setItem('@blinkit_session_uuid', sessionUuid);
-              }
-              const putRes = await requestViaBlinkitBridge(
-                `https://blinkit.com/v5/carts/${cartId}`,
-                'PUT',
-                cartsBody,
-                {
-                  'app_client': 'consumer_web',
-                  'auth_key': blinkitToken,
-                  ...(accessToken ? { 'access_token': accessToken } : {}),
-                  'session_uuid': sessionUuid,
-                  'platform': 'mobile_web',
-                  'qd_sdk_request': 'true',
-                  'web_app_version': '1008010016',
-                  'x-age-consent-granted': 'false',
-                  'lat': String(blLat),
-                  'lon': String(blLng),
-                  'AppVersion': BLINKIT_APP_VERSION,
-                  'appversion': BLINKIT_APP_VERSION,
-                  'app_version': BLINKIT_APP_VERSION,
-                  'x-app-version': BLINKIT_APP_VERSION
-                }
-              );
-              if (putRes && putRes.status === 200) {
-                try {
-                  const putJson = JSON.parse(putRes.text);
-                  resJson = putJson;
-                } catch {}
-              } else {
-                if (putRes && (putRes.status === 404 || putRes.status === 410)) {
-                  await AsyncStorage.removeItem('@blinkit_cart_id');
-                }
-              }
-            }
-
-            if (!resJson) {
-              const response = await this.fetchWithTimeout('https://blinkit.com/v5/carts', {
-                method: 'POST',
-                headers: {
-                  'Accept': 'application/json, text/plain, */*',
-                  'app_client': 'consumer_web',
-                  'auth_key': simulateNoAddress ? '' : blinkitToken,
-                  'lat': String(blLat),
-                  'lon': String(blLng),
-                  'Content-Type': 'application/json',
-                  'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1',
-                  'DeviceID': deviceId,
-                  'device_id': deviceId,
-                  'deviceid': deviceId,
-                  'x-device-id': deviceId,
-                  'AppVersion': BLINKIT_APP_VERSION,
-                  'appversion': BLINKIT_APP_VERSION,
-                  'app_version': BLINKIT_APP_VERSION,
-                  'x-app-version': BLINKIT_APP_VERSION,
-                  ...(!simulateNoAddress && siteCookies ? { 'Cookie': siteCookies } : {})
-                },
-                body: cartsBody
-              }, 6000);
-
-              if (response.ok) {
-                resJson = await response.json();
-              }
-            }
-
-            if (resJson) {
-              const fees = parseBlinkitBill(resJson);
-              if (fees.subtotal !== null) subtotal = fees.subtotal;
-              if (fees.deliveryFee !== null) deliveryFee = fees.deliveryFee;
-              if (fees.handlingFee !== null) handlingFee = fees.handlingFee;
-              if (fees.smallCartFee !== null) smallCartFee = fees.smallCartFee;
-              if (fees.surgeFee) surgeFee = fees.surgeFee;
-              if (fees.surgeLabel) surgeLabel = fees.surgeLabel;
-              freeDeliveryGap = fees.freeDeliveryGap ?? undefined;
-              if (fees.tax !== null) tax = fees.tax;
-              if (fees.total !== null) {
-                total = fees.total;
-                liveBill = true;
-                if (fees.subtotal === null) {
-                  const otherCharges = (fees.deliveryFee ?? 0) + (fees.handlingFee ?? 0) + (fees.smallCartFee ?? 0) + (fees.surgeFee ?? 0) + (fees.tax ?? 0);
-                  if (fees.total >= otherCharges) {
-                    subtotal = fees.total - otherCharges;
-                  }
-                }
-              }
-
-              // Extract Blinkit stock statuses
-              const returnedActiveBlinkitPids = new Set<string>();
-              const returnedOosBlinkitPids = new Set<string>();
-
-              const extractBlinkitItemsList = (json: any): any[] => {
-                const list: any[] = [];
-                const cd = json?.cart_data || json?.data || json;
-                if (Array.isArray(cd?.items)) list.push(...cd.items);
-                if (Array.isArray(cd?.cart_items)) list.push(...cd.cart_items);
-                if (Array.isArray(json?.items)) list.push(...json.items);
-                if (Array.isArray(cd?.shipments)) {
-                  for (const s of cd.shipments) {
-                    if (Array.isArray(s?.items)) list.push(...s.items);
-                    if (Array.isArray(s?.cart_items)) list.push(...s.cart_items);
-                    if (Array.isArray(s?.products)) list.push(...s.products);
-                  }
-                }
-                return list;
-              };
-
-              const getBlinkitPids = (item: any): string[] => {
-                const ids: string[] = [];
-                if (item?.product_id) ids.push(String(item.product_id));
-                if (item?.id) ids.push(String(item.id));
-                if (item?.merchant_product_id) ids.push(String(item.merchant_product_id));
-                if (item?.product?.id) ids.push(String(item.product.id));
-                if (item?.product?.product_id) ids.push(String(item.product.product_id));
-                if (item?.item_id) ids.push(String(item.item_id));
-                return ids;
-              };
-
-              const allBlinkitItems = extractBlinkitItemsList(resJson);
-              for (const it of allBlinkitItems) {
-                const pids = getBlinkitPids(it);
-                const isOos = it.in_stock === false ||
-                              it.is_available === false ||
-                              it.available === false ||
-                              it.out_of_stock === true ||
-                              it.is_oos === true ||
-                              it.status === 'OUT_OF_STOCK' ||
-                              it.status === 'OOS' ||
-                              (typeof it.inventory?.stock === 'number' && it.inventory.stock <= 0) ||
-                              (typeof it.stock === 'number' && it.stock <= 0) ||
-                              (typeof it.quantity === 'number' && it.quantity <= 0);
-
-                let billedQty: number | undefined = undefined;
-                if (typeof it.quantity === 'number' && it.quantity > 0) billedQty = it.quantity;
-
-                let stockNum: number | undefined = undefined;
-                if (typeof it.inventory === 'number' && it.inventory >= 0) stockNum = it.inventory;
-                else if (typeof it.inventory?.stock === 'number' && it.inventory.stock >= 0) stockNum = it.inventory.stock;
-                else if (typeof it.stock === 'number' && it.stock >= 0) stockNum = it.stock;
-                else if (typeof it.available_units === 'number' && it.available_units >= 0) stockNum = it.available_units;
-                else if (typeof it.available_quantity === 'number' && it.available_quantity >= 0) stockNum = it.available_quantity;
-
-                let maxQ: number | undefined = undefined;
-                if (typeof it.max_quantity === 'number' && it.max_quantity > 0) maxQ = it.max_quantity;
-                else if (typeof it.purchase_limit === 'number' && it.purchase_limit > 0) maxQ = it.purchase_limit;
-
-                const reqItem = items.find(ci => {
-                  const resolved = resolvePlatformProduct(ci, 'blinkit');
-                  if (!resolved) return false;
-                  const pid = String(resolved.product.originalId || resolved.product.productId || resolved.product.id.replace('blinkit-', ''));
-                  return pids.includes(pid) || pids.includes(String(resolved.product.id));
-                });
-                const reqQty = reqItem?.quantity;
-
-                let effLimit: number | undefined = undefined;
-                if (stockNum !== undefined && maxQ !== undefined) {
-                  effLimit = Math.min(stockNum, maxQ);
-                } else if (stockNum !== undefined) {
-                  effLimit = stockNum;
-                } else if (maxQ !== undefined) {
-                  effLimit = maxQ;
-                } else if (billedQty !== undefined && reqQty !== undefined && billedQty < reqQty) {
-                  effLimit = billedQty;
-                }
-
-                for (const pid of pids) {
-                  if (isOos) {
-                    returnedOosBlinkitPids.add(pid);
-                    platformItemLimits[pid] = 0;
-                  } else {
-                    returnedActiveBlinkitPids.add(pid);
-                    if (billedQty !== undefined) platformItemQuantities[pid] = billedQty;
-                    if (effLimit !== undefined) platformItemLimits[pid] = effLimit;
-                  }
-                }
-              }
-
-              const cd = resJson?.cart_data || resJson?.data || resJson;
-              const oosArrays = [
-                cd?.unavailable_items,
-                cd?.out_of_stock_items,
-                cd?.unserviceable_items,
-                cd?.oos_items,
-                resJson?.unavailable_items,
-                resJson?.out_of_stock_items,
-              ];
-              for (const arr of oosArrays) {
-                if (Array.isArray(arr)) {
-                  for (const it of arr) {
-                    for (const pid of getBlinkitPids(it)) {
-                      returnedOosBlinkitPids.add(pid);
-                      platformItemLimits[pid] = 0;
-                    }
-                  }
-                }
-              }
-
-              for (const cartItem of items) {
-                const resolved = resolvePlatformProduct(cartItem, 'blinkit');
-                if (!resolved) {
-                  outOfStockProductIds.push(cartItem.product.id);
-                  platformItemLimits[cartItem.product.id] = 0;
-                  continue;
-                }
-                const pid = String(resolved.product.originalId || resolved.product.productId || resolved.product.id.replace('blinkit-', ''));
-                const rawId = String(resolved.product.id);
-
-                if (returnedOosBlinkitPids.has(pid) || returnedOosBlinkitPids.has(rawId)) {
-                  outOfStockProductIds.push(cartItem.product.id);
-                  platformItemLimits[cartItem.product.id] = 0;
-                } else if (returnedActiveBlinkitPids.has(pid) || returnedActiveBlinkitPids.has(rawId)) {
-                  inStockProductIds.push(cartItem.product.id);
-                  const lim = platformItemLimits[pid] ?? platformItemLimits[rawId] ?? getItemPlatformLimit(resolved.product);
-                  if (lim !== undefined) platformItemLimits[cartItem.product.id] = lim;
-                  const qty = platformItemQuantities[pid] ?? platformItemQuantities[rawId];
-                  if (qty !== undefined) platformItemQuantities[cartItem.product.id] = qty;
-                } else if (liveBill && allBlinkitItems.length > 0 && returnedActiveBlinkitPids.size > 0 && !returnedActiveBlinkitPids.has(pid)) {
-                  // Dropped by Blinkit because unavailable
-                  outOfStockProductIds.push(cartItem.product.id);
-                  platformItemLimits[cartItem.product.id] = 0;
-                } else if (resolved.product.inStock === false) {
-                  outOfStockProductIds.push(cartItem.product.id);
-                  platformItemLimits[cartItem.product.id] = 0;
-                } else {
-                  // Valid bill received without OOS flag = in stock!
-                  inStockProductIds.push(cartItem.product.id);
-                  const lim = getItemPlatformLimit(resolved.product);
-                  if (lim !== undefined) platformItemLimits[cartItem.product.id] = lim;
-                }
-              }
-            }
+            ({ subtotal, deliveryFee, handlingFee, smallCartFee, surgeFee, surgeLabel, freeDeliveryGap, tax, total, liveBill } = r);
+            outOfStockProductIds.push(...r.outOfStockProductIds);
+            inStockProductIds.push(...r.inStockProductIds);
           } else if (platform === 'swiggy' && swiggyToken && gpsCoords) {
             // Same flow as the desktop grocery-order-optimizer extension:
             // Resolve delivery address first, discover the dark store matching the user's location,
@@ -1814,7 +1429,7 @@ export const api = {
 
               // Fallback builder: fresh search/v2 per item (concurrent pool).
               const freshSearchBodies = async (): Promise<{ bodies: any[]; oosItemIds: string[]; candidateMap: Map<string, any> }> => {
-                const searchItem = async (title: string, quantity: string, price?: number): Promise<any> => {
+                const searchItem = async (title: string, quantity: string, price?: number, preferId?: string): Promise<any> => {
                   try {
                     const queriesToTry = [title];
                     const stripped = stripSizeToken(title);
@@ -1834,7 +1449,7 @@ export const api = {
                     for (const q of queriesToTry) {
                       const candidates = await this.searchSingle('swiggy', q);
                       if (Array.isArray(candidates) && candidates.length > 0) {
-                        const matched = pickInstamartCandidate(candidates, title, quantity, price);
+                        const matched = pickInstamartCandidate(candidates, title, quantity, price, preferId);
                         if (matched) {
                           const pid = matched.productId || matched.originalId || matched.itemId;
                           const iid = matched.originalId || matched.itemId || matched.productId;
@@ -1865,7 +1480,7 @@ export const api = {
                   const settled = await Promise.all(slice.map(cartItem => {
                     const resolved = resolvePlatformProduct(cartItem, 'swiggy');
                     if (!resolved) return Promise.resolve(null);
-                    return searchItem(resolved.product.title, resolved.product.quantity, resolved.product.price);
+                    return searchItem(resolved.product.title, resolved.product.quantity, resolved.product.price, resolved.product.productId || resolved.product.originalId);
                   }));
                   settled.forEach((r, i) => { searchResults[start + i] = r; });
                 }
@@ -3544,55 +3159,24 @@ export function instamartNormKey(s: any): string {
   return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
 
-// Pick the search-v2 variation that best matches a basket item (name first,
-// Pick the search-v2 variation that best matches a basket item (name first,
-// pack size to break ties) — utilizes pickBestMatch from matcher.ts for
-// token Jaccard similarity, pack-size stripping, and price sanity, with
-// word token overlap & normalized key heuristics as fallback.
-export function pickInstamartCandidate(candidates: any[], name: string, unit: string, price?: number): any | null {
+// Pick the search-v2 variation for a basket item. Exact catalog-id match wins;
+// otherwise only a candidate that is the SAME product (strict name + pack size)
+// is accepted. There is deliberately no loose fallback: returning null (so the
+// item is treated as unavailable) is better than silently linking a different
+// product ("Pav Bread" vs "Milk Bread").
+export function pickInstamartCandidate(candidates: any[], name: string, unit: string, price?: number, preferId?: string): any | null {
   if (!Array.isArray(candidates) || candidates.length === 0) return null;
 
-  // 1. Try pickBestMatch from matcher.ts (comprehensive token Jaccard + pack size + price sanity)
-  const bestMatch = pickBestMatch({ name, title: name, unit, quantity: unit, price }, candidates);
-  if (bestMatch && bestMatch.candidate) {
+  if (preferId) {
+    const exact = candidates.find(c => [c.productId, c.originalId, c.itemId, c.id].some(v => v && String(v) === preferId));
+    if (exact) return exact;
+  }
+
+  const target = { name, title: name, unit, quantity: unit, price };
+  const bestMatch = pickBestMatch(target, candidates);
+  if (bestMatch && bestMatch.candidate && isSameProduct(target, bestMatch.candidate)) {
     return bestMatch.candidate;
   }
-
-  // 2. Token overlap & substring fallback
-  const nn = instamartNormKey(name);
-  const nu = instamartNormKey(unit);
-  const nameTokens = new Set(String(name || '').toLowerCase().split(/[^a-z0-9]+/).filter(t => t.length > 1));
-
-  let best: any = null;
-  let bestScore = 0;
-  for (const c of candidates) {
-    const cTitle = c.name || c.title || '';
-    const cUnit = c.unit || c.quantity || '';
-    const cn = instamartNormKey(cTitle);
-    const cu = instamartNormKey(cUnit);
-    let score = 0;
-    if (cn === nn) score += 30;
-    else if (cn.indexOf(nn) === 0) score += 15;
-    else if (nn.indexOf(cn) === 0) score += 12;
-    else if (cn.indexOf(nn) !== -1 || nn.indexOf(cn) !== -1) score += 10;
-    else {
-      // Check word token overlap
-      const cTokens = new Set(String(cTitle).toLowerCase().split(/[^a-z0-9]+/).filter(t => t.length > 1));
-      let shared = 0;
-      nameTokens.forEach(t => { if (cTokens.has(t)) shared++; });
-      const overlap = nameTokens.size > 0 ? shared / nameTokens.size : 0;
-      if (overlap >= 0.4) {
-        score += Math.round(overlap * 20);
-      }
-    }
-    if (score === 0) continue; // unit alone never makes a match
-    if (nu && cu === nu) score += 12;
-    else if (nu && (cu.indexOf(nu) === 0 || nu.indexOf(cu) === 0)) score += 6;
-    if (score > bestScore) { bestScore = score; best = c; }
-  }
-  if (bestScore >= 5) return best;
-
-  // No loose fallback: a single shared word ("salt") is not enough to call it a match.
   return null;
 }
 

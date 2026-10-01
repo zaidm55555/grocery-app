@@ -7,6 +7,10 @@ import { itemName, itemUnit, stripSizeToken, variantSize } from './productKey';
 const MATCH_THRESHOLD = 0.5;
 // Top pick is flagged ambiguous when the runner-up scores within this margin.
 const AMBIGUOUS_MARGIN = 0.05;
+// Below this name similarity a candidate is never a match, whatever its size/price.
+const MIN_NAME_SIMILARITY = 0.55;
+// Same-product check used to re-validate stored basket links.
+const SAME_PRODUCT_NAME = 0.85;
 
 // Accepts both match targets ({name, unit}) and UnifiedProduct rows ({title, quantity}).
 export interface MatchableItem {
@@ -99,6 +103,9 @@ export function nameSimilarity(a: string | undefined, b: string | undefined): nu
   let sim = total ? shared / total : 0;
   // Different leading token on both sides = different brand ("Tata Salt" vs "Aashirvaad Salt").
   if (weighted && !tb.has(la[0]) && !ta.has(lb[0])) sim *= 0.5;
+  // Each side carries words the other lacks ("Pav Bread" vs "Milk Bread"): that
+  // is two different products, not one listing with extra wording.
+  if (la.some(t => !tb.has(t)) && lb.some(t => !ta.has(t))) sim *= 0.75;
   return sim;
 }
 
@@ -153,10 +160,17 @@ function priceSanity(target: MatchableItem, candidate: MatchableItem, size: numb
 
 export function matchScore(target: MatchableItem, candidate: MatchableItem): number {
   const name = nameSimilarity(itemName(target), itemName(candidate));
-  if (name === 0 || sizeClassConflict(target, candidate)) return 0;
+  if (name < MIN_NAME_SIMILARITY || sizeClassConflict(target, candidate)) return 0;
   const size = sizeScore(target, candidate);
   const price = priceSanity(target, candidate, size);
   return Math.round((name * 0.6 + size * 0.25 + price * 0.15) * 1000) / 1000;
+}
+
+// Strict identity check (not a ranking): is `candidate` the same product as
+// `target`, allowing only wording/spelling differences and ~equal pack size?
+export function isSameProduct(target: MatchableItem, candidate: MatchableItem): boolean {
+  if (sizeClassConflict(target, candidate)) return false;
+  return nameSimilarity(itemName(target), itemName(candidate)) >= SAME_PRODUCT_NAME && sizeScore(target, candidate) >= 0.9;
 }
 
 interface BestMatch<T extends MatchableItem> {
