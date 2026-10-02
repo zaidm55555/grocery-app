@@ -72,6 +72,14 @@
       "src/**/*.{ts,tsx}",
       "!src/**/__tests__/**",
       "!src/**/*.d.ts"
-    ]
+    ],
+    "coverageThreshold": {
+      "global": {
+        "statements": 77,
+        "branches": 65,
+        "functions": 80,
+        "lines": 81
+      }
+    }
   }
 }
