@@ -215,3 +215,34 @@ describe('invalidateAddressSessionCache', () => {
     expect(() => invalidateAddressSessionCache()).not.toThrow();
   });
 });
+
+describe('edge cases: skipped apps and limits', () => {
+  it('resolvePlatformProduct returns null for an app that was skipped (no variant, different source)', () => {
+    expect(resolvePlatformProduct({ product: product(), quantity: 1 }, 'swiggy')).toBeNull();
+  });
+
+  it('getProductOverallMax with a skipped app only reflects the source app', () => {
+    const p = product({ availableStock: 4 });
+    expect(getProductOverallMax(p)).toMatchObject({ maxAllowed: 4, blinkitLimit: 4, swiggyLimit: undefined, isAsymmetric: false });
+  });
+
+  it('getProductOverallMax defaults to 99 with no stock info and is never below 1 when a limit is known', () => {
+    expect(getProductOverallMax(product()).maxAllowed).toBe(99);
+    const zero = product({ availableStock: 0, platformPrices: { swiggy: variant({ availableStock: 0 }) } });
+    expect(getProductOverallMax(zero).maxAllowed).toBe(1);
+  });
+
+  it('getProductOverallMax is asymmetric only when both limits are known and differ', () => {
+    const same = product({ availableStock: 3, platformPrices: { swiggy: variant({ availableStock: 3 }) } });
+    expect(getProductOverallMax(same).isAsymmetric).toBe(false);
+    const oneUnknown = product({ availableStock: 3, platformPrices: { swiggy: variant() } });
+    expect(getProductOverallMax(oneUnknown).isAsymmetric).toBe(false);
+  });
+
+  it('resolvePlatformProduct clamps quantity to a variant stock limit but never to zero', () => {
+    const p = product({ platformPrices: { swiggy: variant({ availableStock: 2 }) } });
+    expect(resolvePlatformProduct({ product: p, quantity: 5 }, 'swiggy')!.quantity).toBe(2);
+    const z = product({ platformPrices: { swiggy: variant({ availableStock: 0 }) } });
+    expect(resolvePlatformProduct({ product: z, quantity: 5 }, 'swiggy')!.quantity).toBe(5);
+  });
+});

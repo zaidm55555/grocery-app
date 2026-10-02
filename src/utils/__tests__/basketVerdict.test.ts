@@ -39,6 +39,43 @@ describe('getPlatformFulfillment', () => {
     expect(f).toMatchObject({ fullLineCount: 1, requestedUnits: 3, fulfilledUnits: 3, unitCoverage: 1 });
   });
 
+  it('does not report a skipped (unmatched) line as out of stock, even if the source listing is OOS', () => {
+    // Source is blinkit; swiggy was skipped so there is no platformPrices.swiggy.
+    const line = { product: product({ inStock: false, availableStock: 0 }), quantity: 1 };
+    const f = getPlatformFulfillment(calc('swiggy', { outOfStockProductIds: ['blinkit-1'] }), [line], []);
+    expect(f.oos).toHaveLength(0);
+    expect(f.unmatched).toHaveLength(1);
+  });
+
+  it('still reports a matched-but-OOS line as oos, not unmatched', () => {
+    const line = both('a', 1, { platformPrices: { swiggy: variant({ id: 'swiggy-a', inStock: false }) } });
+    const f = getPlatformFulfillment(calc('swiggy'), [line], []);
+    expect(f.oos).toHaveLength(1);
+    expect(f.unmatched).toHaveLength(0);
+  });
+
+  it('partitions a mixed basket into full / capped / oos / unmatched', () => {
+    const lines = [
+      both('full', 1),
+      both('cap', 5, { platformPrices: { swiggy: variant({ id: 'swiggy-cap', availableStock: 2 }) } }),
+      both('oos', 1, { platformPrices: { swiggy: variant({ id: 'swiggy-oos', inStock: false }) } }),
+      { product: product({ id: 'blinkit-skipped' }), quantity: 2 },
+    ];
+    const f = getPlatformFulfillment(calc('swiggy'), lines, []);
+    expect(f.fullLineCount).toBe(1);
+    expect(f.capped).toHaveLength(1);
+    expect(f.oos).toHaveLength(1);
+    expect(f.unmatched).toHaveLength(1);
+    expect(f.availableLineCount).toBe(2); // full + capped
+    expect(f.requestedUnits).toBe(9);
+    expect(f.fulfilledUnits).toBe(3); // 1 + 2
+  });
+
+  it('counts a platform that owns the line as matched (source platform)', () => {
+    const f = getPlatformFulfillment(calc('blinkit'), [{ product: product(), quantity: 1 }], []);
+    expect(f.unmatched).toHaveLength(0);
+  });
+
   it('handles an empty basket', () => {
     expect(getPlatformFulfillment(calc('blinkit'), [], []).unitCoverage).toBe(0);
   });
@@ -98,5 +135,19 @@ describe('computeBasketVerdict', () => {
     const v = computeBasketVerdict([calc('blinkit', { total: 1 }), calc('swiggy', { total: 2 })], items);
     expect(v.fulfillment.blinkit?.requestedUnits).toBe(3);
     expect(v.fulfillment.swiggy?.fulfilledUnits).toBe(3);
+  });
+});
+
+describe('computeBasketVerdict with skipped apps', () => {
+  it('does not let a platform win just because the user skipped items on it', () => {
+    // swiggy was skipped for line b: it is cheaper but only covers 1 of 2 units.
+    const lines = [both('a', 1), { product: product({ id: 'blinkit-b' }), quantity: 1 }];
+    const v = computeBasketVerdict([calc('blinkit', { total: 200 }), calc('swiggy', { total: 80 })], lines);
+    expect(v.fulfillment.swiggy!.unmatched).toHaveLength(1);
+    expect(v.fulfillment.swiggy!.oos).toHaveLength(0);
+    expect(v.fulfillment.swiggy!.unitCoverage).toBeCloseTo(0.5);
+    expect(v.winnerKey).toBe('blinkit');
+    expect(v.mostCompleteKeys).toEqual(['blinkit']);
+    expect(v.lowestBillKey).toBe('swiggy');
   });
 });

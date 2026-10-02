@@ -86,6 +86,61 @@ describe('blinkitBridge', () => {
     await expect(p).resolves.toEqual({ status: 201, text: 'hi' });
   });
 
+  it('reports connection only once registered AND ready', () => {
+    const inj = jest.fn();
+    expect(bridge.isBlinkitBridgeConnected()).toBe(false);
+    bridge.registerBlinkitInjector(inj);
+    expect(bridge.isBlinkitBridgeConnected()).toBe(false);
+    bridge.handleBlinkitBridgeMessage(JSON.stringify({ type: 'BL_BRIDGE_READY' }));
+    expect(bridge.isBlinkitBridgeConnected()).toBe(true);
+    bridge.unregisterBlinkitInjector(inj);
+    expect(bridge.isBlinkitBridgeConnected()).toBe(false);
+  });
+
+  it('notifies status subscribers on register, ready and unregister, and stops after unsubscribe', () => {
+    const inj = jest.fn();
+    const listener = jest.fn();
+    const unsubscribe = bridge.subscribeBlinkitBridgeStatus(listener);
+    bridge.registerBlinkitInjector(inj);
+    expect(listener).toHaveBeenCalledTimes(1);
+    bridge.handleBlinkitBridgeMessage(JSON.stringify({ type: 'BL_BRIDGE_READY' }));
+    expect(listener).toHaveBeenCalledTimes(2);
+    bridge.handleBlinkitBridgeMessage(JSON.stringify({ type: 'BL_BRIDGE_READY' })); // duplicate ready: no event
+    expect(listener).toHaveBeenCalledTimes(2);
+    bridge.unregisterBlinkitInjector(inj);
+    expect(listener).toHaveBeenCalledTimes(3);
+    unsubscribe();
+    bridge.registerBlinkitInjector(inj);
+    expect(listener).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not notify when a stale injector is unregistered', () => {
+    const a = jest.fn(); const b = jest.fn();
+    const listener = jest.fn();
+    bridge.registerBlinkitInjector(a);
+    bridge.registerBlinkitInjector(b);
+    bridge.subscribeBlinkitBridgeStatus(listener);
+    bridge.unregisterBlinkitInjector(a);
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it('waitForBlinkitBridge resolves true once registered and false on timeout', async () => {
+    jest.useFakeTimers();
+    const p = bridge.waitForBlinkitBridge(1000);
+    bridge.registerBlinkitInjector(jest.fn());
+    await jest.advanceTimersByTimeAsync(300);
+    await expect(p).resolves.toBe(true);
+    jest.useRealTimers();
+  });
+
+  it('waitForBlinkitBridge resolves false when nothing connects', async () => {
+    jest.useFakeTimers();
+    const p = bridge.waitForBlinkitBridge(500);
+    await jest.advanceTimersByTimeAsync(1000);
+    await expect(p).resolves.toBe(false);
+    jest.useRealTimers();
+  });
+
   it('times out to null after 15s', async () => {
     bridge.registerBlinkitInjector(jest.fn());
     const p = bridge.requestViaBlinkitBridge('/x', 'GET');

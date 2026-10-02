@@ -10,6 +10,7 @@ import { liveKey, familyKey } from '../../utils/productKey';
 import { pickBestMatch } from '../../utils/matcher';
 import MatchModal, { MatchFlowState, MatchTarget, MatchCell } from '../../components/MatchModal';
 import VariantPickerModal from '../../components/VariantPickerModal';
+import { shouldShowBlinkitDirectNote } from '../../utils/stockNotes';
 import { resolveAreaName } from '../../utils/location';
 import { isBlinkitBridgeConnected, subscribeBlinkitBridgeStatus } from '../../services/blinkitBridge';
 import { isAddressSyncing, waitForAddressSync, subscribeAddressSync, syncDeliveryAddresses, subscribeLocationReset } from '../../services/addressSync';
@@ -870,7 +871,7 @@ export default function SearchScreen() {
                         ? 'Showing Instamart results only • Cannot search Blinkit on current location'
                         : 'Tap + to add the exact product — the other app gets auto-matched.'}
                     </Text>
-                    {!!tokens.blinkit && !blinkitBridgeUp && storeFilter !== 'swiggy' && (
+                    {shouldShowBlinkitDirectNote({ blinkitLinked: !!tokens.blinkit, bridgeConnected: blinkitBridgeUp, storeFilter }) && (
                       <Text style={styles.liveHint}>
                         Blinkit bridge isn’t connected — Blinkit results are fetched directly and may come from other stores.
                       </Text>

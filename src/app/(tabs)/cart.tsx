@@ -9,6 +9,7 @@ import { storage, Platform } from '../../services/storage';
 import { api, UnifiedProduct, CartCalculation, resolvePlatformProduct, getProductOverallMax } from '../../services/api';
 import { refreshBasketLines, applyLiveLimits } from '../../services/basketRefresh';
 import { computeBasketVerdict, getPlatformFulfillment, BasketVerdict } from '../../utils/basketVerdict';
+import { getStockFooter, STOCK_BADGE_MAX } from '../../utils/stockNotes';
 import SavedListsModal from '../../components/SavedListsModal';
 import ExportNoticeModal, { ExportNotice } from '../../components/ExportNoticeModal';
 import { createBlinkitShareLink } from '../../services/blinkitExport';
@@ -43,8 +44,6 @@ const EMPTY_VERDICT: BasketVerdict = {
   winnerKey: null, mostCompleteKeys: [], lowestBillKey: null, winnerIsPartial: false, fulfillment: {},
 };
 
-// Stock counts at or below this are surfaced in the basket (badges + footer).
-const STOCK_BADGE_MAX = 15;
 
 export default function CartScreen() {
   const router = useRouter();
@@ -580,21 +579,16 @@ export default function CartScreen() {
                             </Text>
                           </View>
                         ) : (() => {
-                          // One consistent rule: whenever 2+ apps price this line and any
-                          // in-stock app has a low known stock (same ≤15 threshold as the
-                          // per-app badges), list every in-stock app's stock. Apps over
-                          // their stock are amber (they bill fewer units than asked).
-                          const live = variants.filter(v => !v.isOos);
-                          const anyLow = live.some(v => v.platformLimit !== undefined && v.platformLimit <= STOCK_BADGE_MAX);
-                          if (live.length < 2 || !anyLow) return null;
+                          const footer = getStockFooter(variants);
+                          if (!footer) return null;
                           return (
                             <View style={styles.asymmetricStockNotice}>
                               <Info size={11} color={colors.textSecondary} style={{ marginRight: 4 }} />
                               <Text style={styles.asymmetricStockText}>
-                                {live.map((v, i) => (
-                                  <Text key={v.platform} style={v.isCapped ? { color: colors.amber } : undefined}>
+                                {footer.map((e, i) => (
+                                  <Text key={e.platform} style={e.capped ? { color: colors.amber } : undefined}>
                                     {i > 0 ? ' · ' : ''}
-                                    {platformThemes[v.platform].name}: {v.platformLimit !== undefined ? v.platformLimit : 'in stock'}
+                                    {platformThemes[e.platform].name}: {e.limit !== undefined ? e.limit : 'in stock'}
                                   </Text>
                                 ))}
                               </Text>
