@@ -4,12 +4,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { Plus, Minus, Trophy, ShieldCheck, Layers, RefreshCw, Trash2, Bookmark, Send, AlertTriangle, MapPinOff, CheckCircle2, AlertCircle, Info } from 'lucide-react-native';
+import { Plus, Minus, Trophy, ShieldCheck, Layers, RefreshCw, Trash2, Bookmark, Send, AlertTriangle, MapPinOff, CheckCircle2, AlertCircle } from 'lucide-react-native';
 import { storage, Platform } from '../../services/storage';
 import { api, UnifiedProduct, CartCalculation, resolvePlatformProduct, getProductOverallMax } from '../../services/api';
 import { refreshBasketLines, applyLiveLimits } from '../../services/basketRefresh';
 import { computeBasketVerdict, getPlatformFulfillment, BasketVerdict } from '../../utils/basketVerdict';
-import { getStockFooter, STOCK_BADGE_MAX } from '../../utils/stockNotes';
+import { shouldShowStockBadge } from '../../utils/stockNotes';
 import SavedListsModal from '../../components/SavedListsModal';
 import ExportNoticeModal, { ExportNotice } from '../../components/ExportNoticeModal';
 import { createBlinkitShareLink } from '../../services/blinkitExport';
@@ -333,7 +333,7 @@ export default function CartScreen() {
           }
         };
 
-        if (share.outOfStock.length > 0 || share.clamped.length > 0 || share.missing.length > 0) {
+        if (share.outOfStock.length > 0 || share.clamped.length > 0) {
           setExportNotice({
             platform: 'blinkit',
             outOfStock: share.outOfStock,
@@ -382,7 +382,7 @@ export default function CartScreen() {
         });
       };
 
-      if (swiggyResult.outOfStock.length > 0 || swiggyResult.clamped.length > 0 || swiggyResult.missing.length > 0) {
+      if (swiggyResult.outOfStock.length > 0 || swiggyResult.clamped.length > 0) {
         setExportNotice({
           platform: 'swiggy',
           outOfStock: swiggyResult.outOfStock,
@@ -523,7 +523,7 @@ export default function CartScreen() {
                                   <AlertTriangle size={8.5} color={colors.amber} style={{ marginRight: 3 }} />
                                   <Text style={styles.limitBadgeText}>Only {v.platformLimit} in stock</Text>
                                 </View>
-                              ) : v.platformLimit !== undefined && v.platformLimit <= STOCK_BADGE_MAX ? (
+                              ) : shouldShowStockBadge(v.platformLimit, line.quantity) ? (
                                 <View style={styles.stockInfoBadge}>
                                   <CheckCircle2 size={8.5} color={colors.emerald} style={{ marginRight: 3 }} />
                                   <Text style={styles.stockInfoBadgeText}>{v.platformLimit} in stock</Text>
@@ -578,23 +578,7 @@ export default function CartScreen() {
                               Max available stock reached ({overall.maxAllowed} units)
                             </Text>
                           </View>
-                        ) : (() => {
-                          const footer = getStockFooter(variants);
-                          if (!footer) return null;
-                          return (
-                            <View style={styles.asymmetricStockNotice}>
-                              <Info size={11} color={colors.textSecondary} style={{ marginRight: 4 }} />
-                              <Text style={styles.asymmetricStockText}>
-                                {footer.map((e, i) => (
-                                  <Text key={e.platform} style={e.capped ? { color: colors.amber } : undefined}>
-                                    {i > 0 ? ' · ' : ''}
-                                    {platformThemes[e.platform].name}: {e.limit !== undefined ? e.limit : 'in stock'}
-                                  </Text>
-                                ))}
-                              </Text>
-                            </View>
-                          );
-                        })()}
+                        ) : null}
                       </View>
                       <View style={styles.qtyContainer}>
                         <TouchableOpacity style={styles.qtyBtn} onPress={() => handleUpdateQuantity(id, -1)}>
@@ -623,6 +607,9 @@ export default function CartScreen() {
                     <View style={{ flex: 1 }}>
                       <Text style={[styles.lineTitle, isSingleOos && styles.lineTitleOos]} numberOfLines={2}>{line.product.title}</Text>
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
+                        <Text style={[styles.variantApp, { color: isSingleOos ? colors.textMuted : platformThemes[line.product.platform].color }]}>
+                          {platformThemes[line.product.platform].name}
+                        </Text>
                         <Text style={styles.lineUnit}>{line.product.quantity}</Text>
                         {isSingleOos ? (
                           <View style={styles.oosBadge}>
@@ -634,7 +621,7 @@ export default function CartScreen() {
                             <AlertTriangle size={8.5} color={colors.amber} style={{ marginRight: 3 }} />
                             <Text style={styles.limitBadgeText}>Only {singleLimit} in stock</Text>
                           </View>
-                        ) : singleLimit !== undefined && singleLimit <= 15 ? (
+                        ) : shouldShowStockBadge(singleLimit, line.quantity) ? (
                           <View style={styles.stockInfoBadge}>
                             <CheckCircle2 size={8.5} color={colors.emerald} style={{ marginRight: 3 }} />
                             <Text style={styles.stockInfoBadgeText}>{singleLimit} in stock</Text>
@@ -706,6 +693,8 @@ export default function CartScreen() {
                   const isLowestBill = verdict.lowestBillKey === calc.platform;
                   const inStockCount = calc.inStockProductIds ? calc.inStockProductIds.length : calc.items.length;
                   const hasItems = inStockCount > 0 || calc.items.length > 0 || calc.total > 0;
+                  // Real out-of-stock lines only; lines not matched on this app are already flagged on the line.
+                  const oosLineCount = (verdict.fulfillment[calc.platform] ?? getPlatformFulfillment(calc, cartItems, calculations)).oos.length;
                   return (
                     <View key={calc.platform} style={[styles.breakdownCard, isWinner && styles.winnerCard]}>
                       <View style={styles.breakdownHead}>
@@ -956,9 +945,9 @@ export default function CartScreen() {
                           {calc.savings > 0 && (
                             <Text style={styles.savingsLine}>− ₹{calc.savings} saved off MRP on this basket</Text>
                           )}
-                          {calc.outOfStockProductIds && calc.outOfStockProductIds.length > 0 && (
+                          {oosLineCount > 0 && (
                             <Text style={styles.stockExclusionNote}>
-                              * Bill excludes {calc.outOfStockProductIds.length} unavailable item{calc.outOfStockProductIds.length === 1 ? '' : 's'}
+                              * Bill excludes {oosLineCount} unavailable item{oosLineCount === 1 ? '' : 's'}
                             </Text>
                           )}
                         </>
@@ -1006,13 +995,13 @@ export default function CartScreen() {
                                   ? `Exporting to ${t.name}…`
                                   : !hasItems
                                   ? `No items available on ${t.name}`
-                                  : (calc.outOfStockProductIds && calc.outOfStockProductIds.length > 0)
+                                  : oosLineCount > 0
                                   ? `Export Available Items to ${t.name}`
                                   : `Export Basket to ${t.name}`}
                               </Text>
-                              {hasItems && (calc.outOfStockProductIds && calc.outOfStockProductIds.length > 0) && (
+                              {hasItems && oosLineCount > 0 && (
                                 <Text style={[styles.cardExportBtnSubtext, { color: t.textColor }]}>
-                                  {calc.outOfStockProductIds.length} out-of-stock item{calc.outOfStockProductIds.length === 1 ? '' : 's'} will be skipped
+                                  {oosLineCount} out-of-stock item{oosLineCount === 1 ? '' : 's'} will be skipped
                                 </Text>
                               )}
                             </View>
@@ -1701,22 +1690,6 @@ const styles = StyleSheet.create({
     fontFamily: fonts.bodySemiBold,
     fontSize: 10,
     color: colors.amber,
-  },
-  asymmetricStockNotice: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    paddingHorizontal: 8,
-    paddingVertical: 3.5,
-    borderRadius: 7,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    alignSelf: 'flex-start',
-  },
-  asymmetricStockText: {
-    fontFamily: fonts.bodyMedium,
-    fontSize: 10,
-    color: colors.textSecondary,
   },
   inventoryStatusCard: {
     backgroundColor: 'rgba(255, 255, 255, 0.025)',

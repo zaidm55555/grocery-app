@@ -1,56 +1,4 @@
-import { getStockFooter, shouldShowBlinkitDirectNote, STOCK_BADGE_MAX, StockVariant } from '../stockNotes';
-
-const v = (platform: 'blinkit' | 'swiggy', over: Partial<StockVariant> = {}): StockVariant => ({
-  platform, isOos: false, isCapped: false, ...over,
-});
-
-describe('getStockFooter', () => {
-  it('lists every in-stock app when any has low known stock (the 12 vs 3 case)', () => {
-    expect(getStockFooter([v('blinkit', { platformLimit: 12 }), v('swiggy', { platformLimit: 3 })])).toEqual([
-      { platform: 'blinkit', limit: 12, capped: false },
-      { platform: 'swiggy', limit: 3, capped: false },
-    ]);
-  });
-
-  it('shows even when both limits are equal (previously hidden)', () => {
-    expect(getStockFooter([v('blinkit', { platformLimit: 5 }), v('swiggy', { platformLimit: 5 })])).toHaveLength(2);
-  });
-
-  it('shows when only one app has a known limit; unknown one has undefined limit', () => {
-    expect(getStockFooter([v('blinkit', { platformLimit: 4 }), v('swiggy')])).toEqual([
-      { platform: 'blinkit', limit: 4, capped: false },
-      { platform: 'swiggy', limit: undefined, capped: false },
-    ]);
-  });
-
-  it('flags capped apps', () => {
-    const r = getStockFooter([v('blinkit', { platformLimit: 12 }), v('swiggy', { platformLimit: 3, isCapped: true })]);
-    expect(r!.map(e => e.capped)).toEqual([false, true]);
-  });
-
-  it('is hidden when stock is plentiful everywhere', () => {
-    expect(getStockFooter([v('blinkit', { platformLimit: 50 }), v('swiggy', { platformLimit: 99 })])).toBeNull();
-    expect(getStockFooter([v('blinkit'), v('swiggy')])).toBeNull();
-  });
-
-  it('uses the ≤ threshold boundary', () => {
-    expect(getStockFooter([v('blinkit', { platformLimit: STOCK_BADGE_MAX }), v('swiggy')])).not.toBeNull();
-    expect(getStockFooter([v('blinkit', { platformLimit: STOCK_BADGE_MAX + 1 }), v('swiggy')])).toBeNull();
-  });
-
-  it('is hidden for a single priced app', () => {
-    expect(getStockFooter([v('blinkit', { platformLimit: 2 })])).toBeNull();
-    expect(getStockFooter([])).toBeNull();
-  });
-
-  it('excludes out-of-stock apps and hides if that leaves fewer than two', () => {
-    expect(getStockFooter([v('blinkit', { platformLimit: 0, isOos: true }), v('swiggy', { platformLimit: 3 })])).toBeNull();
-  });
-
-  it('ignores a low limit that belongs to an out-of-stock app', () => {
-    expect(getStockFooter([v('blinkit', { platformLimit: 1, isOos: true }), v('swiggy', { platformLimit: 40 })])).toBeNull();
-  });
-});
+import { shouldShowBlinkitDirectNote, shouldShowStockBadge } from '../stockNotes';
 
 describe('shouldShowBlinkitDirectNote', () => {
   const base = { blinkitLinked: true, bridgeConnected: false, storeFilter: 'all' as const };
@@ -66,5 +14,22 @@ describe('shouldShowBlinkitDirectNote', () => {
   });
   it('hides when filtered to Swiggy only', () => {
     expect(shouldShowBlinkitDirectNote({ ...base, storeFilter: 'swiggy' })).toBe(false);
+  });
+});
+
+describe('shouldShowStockBadge', () => {
+  it('shows when fewer than 5 units remain beyond the basket quantity', () => {
+    expect(shouldShowStockBadge(4, 1)).toBe(true);
+    expect(shouldShowStockBadge(25, 21)).toBe(true);
+    expect(shouldShowStockBadge(25, 25)).toBe(true);
+  });
+  it('hides when 5 or more remain', () => {
+    expect(shouldShowStockBadge(25, 1)).toBe(false);
+    expect(shouldShowStockBadge(25, 20)).toBe(false);
+    expect(shouldShowStockBadge(6, 1)).toBe(false);
+  });
+  it('hides when stock is unknown or zero', () => {
+    expect(shouldShowStockBadge(undefined, 99)).toBe(false);
+    expect(shouldShowStockBadge(0, 1)).toBe(false);
   });
 });

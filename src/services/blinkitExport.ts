@@ -75,6 +75,10 @@ async function resolveProductId(
   // 2. Stock limit: check live checkout limits / inventory limits
   const limit = getProductPlatformLimit(line.product, 'blinkit', calculations);
 
+  // No matched Blinkit listing (skipped / not found): the bill lists it as
+  // unavailable, but that is not an out-of-stock condition.
+  if (!v && isCalcOos) return { item: null, notFound: true, outOfStock: false };
+
   if (isCalcOos || isBaseOos || (limit !== undefined && limit <= 0)) {
     return { item: null, notFound: false, outOfStock: true };
   }

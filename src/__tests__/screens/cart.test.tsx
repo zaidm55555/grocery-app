@@ -202,6 +202,29 @@ describe('Cart screen: stock / skipped-app presentation', () => {
     expect(queryByText('OUT OF STOCK')).toBeNull();
   });
 
+  it('does not show the excluded-items note or skipped subtext for a line only unmatched on the app', async () => {
+    await seed([bOnly(), salt()]);
+    setCalcs([
+      liveCalc('blinkit', { inStockProductIds: ['blinkit-1', 'blinkit-2'] }),
+      liveCalc('swiggy', { inStockProductIds: ['blinkit-1'], outOfStockProductIds: ['blinkit-2'] }),
+    ]);
+    const { findByText, queryByText } = await renderCart();
+    await findByText('1 item not matched on Instamart');
+    expect(queryByText(/Bill excludes/)).toBeNull();
+    expect(queryByText(/will be skipped/)).toBeNull();
+    expect(queryByText('Export Available Items to Instamart')).toBeNull();
+    expect(queryByText('Export Basket to Instamart')).toBeTruthy();
+  });
+
+  it('labels a line sold on only one app with that app\'s name', async () => {
+    await seed([bOnly()]);
+    setCalcs([liveCalc('blinkit', { inStockProductIds: ['blinkit-2'] }), liveCalc('swiggy', { inStockProductIds: [] })]);
+    const { findAllByText } = await renderCart();
+    const labels = await findAllByText('Blinkit');
+    // one in the line row, one as the platform card title
+    expect(labels.length).toBeGreaterThanOrEqual(2);
+  });
+
   it('shows a genuinely out-of-stock matched line as out of stock', async () => {
     await seed([salt()]);
     setCalcs([
@@ -212,15 +235,32 @@ describe('Cart screen: stock / skipped-app presentation', () => {
     expect((await findAllByText('OUT OF STOCK')).length).toBeGreaterThan(0);
   });
 
-  it('shows the per-app stock footer for differing limits', async () => {
+  it('shows the green stock badge only when fewer than 5 units remain beyond the basket quantity', async () => {
+    await seed([salt({ availableStock: 25 }, { availableStock: 25 }, 2)]);
+    setCalcs([
+      liveCalc('blinkit', { platformItemLimits: { 'blinkit-1': 25 } }),
+      liveCalc('swiggy', { platformItemLimits: { 'blinkit-1': 25 } }),
+    ]);
+    const first = await renderCart();
+    await first.findAllByText('To pay');
+    expect(first.queryByText('25 in stock')).toBeNull();
+    first.unmount();
+
+    await seed([salt({ availableStock: 25 }, { availableStock: 25 }, 22)]);
+    const second = await renderCart();
+    expect((await second.findAllByText('25 in stock')).length).toBeGreaterThan(0);
+  });
+
+  it('does not show a per-line stock footer', async () => {
     await seed([salt({ availableStock: 12 }, { availableStock: 3 }, 2)]);
     setCalcs([
       liveCalc('blinkit', { platformItemLimits: { 'blinkit-1': 12 } }),
       liveCalc('swiggy', { platformItemLimits: { 'blinkit-1': 3 } }),
     ]);
-    const { findAllByText } = await renderCart();
-    expect((await findAllByText(/Blinkit: 12/)).length).toBeGreaterThan(0);
-    expect((await findAllByText(/Instamart: 3/)).length).toBeGreaterThan(0);
+    const { findAllByText, queryByText } = await renderCart();
+    expect((await findAllByText(/3 in stock/)).length).toBeGreaterThan(0);
+    expect(queryByText(/Blinkit: 12/)).toBeNull();
+    expect(queryByText(/Instamart: 3/)).toBeNull();
   });
 
   it('shows a capped line when swiggy stock is below the requested quantity', async () => {
@@ -406,13 +446,23 @@ describe('Cart screen: export to Swiggy', () => {
   it('shows the pre-export notice for unavailable items, then continues to the webview', async () => {
     await seed([salt()]);
     await storage.saveToken('swiggy', 's');
-    exportSwiggy.mockResolvedValue({ items: [{}], cartUrl: 'u', cartId: null, oldCartId: null, writePayload: null, missing: [{ name: 'Nope' }], outOfStock: [], clamped: [] });
+    exportSwiggy.mockResolvedValue({ items: [{}], cartUrl: 'u', cartId: null, oldCartId: null, writePayload: null, missing: [], outOfStock: [{ name: 'Gone' }], clamped: [] });
     const utils = await renderCart();
     await press(utils);
     expect(await utils.findByText('Before opening Instamart')).toBeTruthy();
     expect(mockPush).not.toHaveBeenCalled();
     fireEvent.press(await utils.findByText(/^Continue/));
     expect(mockPush.mock.calls[0][0].params.cart).toBe('');
+  });
+
+  it('skips the notice when the only unexported items were not matched on the app', async () => {
+    await seed([salt()]);
+    await storage.saveToken('swiggy', 's');
+    exportSwiggy.mockResolvedValue({ items: [{}], cartUrl: 'u', cartId: null, oldCartId: null, writePayload: null, missing: [{ name: 'Nope' }], outOfStock: [], clamped: [] });
+    const utils = await renderCart();
+    await press(utils);
+    await waitFor(() => expect(mockPush).toHaveBeenCalled());
+    expect(utils.queryByText('Before opening Instamart')).toBeNull();
   });
 
   it('explains when nothing can be exported', async () => {

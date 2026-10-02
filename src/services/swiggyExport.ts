@@ -108,6 +108,10 @@ function resolveSwiggyItem(
   // 2. Stock limit: check live checkout limits / inventory limits
   const limit = getProductPlatformLimit(line.product, 'swiggy', calculations);
 
+  // No matched Swiggy listing (skipped / not found): the bill lists it as
+  // unavailable, but that is not an out-of-stock condition.
+  if (!v && isCalcOos) return { body: null, name, unit, notFound: true, outOfStock: false };
+
   if (isCalcOos || isBaseOos || (limit !== undefined && limit <= 0)) {
     return { body: null, name, unit, notFound: false, outOfStock: true };
   }

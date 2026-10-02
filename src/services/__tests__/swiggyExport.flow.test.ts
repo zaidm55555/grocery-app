@@ -167,6 +167,17 @@ describe('exportCartToSwiggy: stock handling', () => {
   });
 });
 
+describe('exportCartToSwiggy: unmatched lines', () => {
+  it('reports a line with no Swiggy match as missing, not out of stock, even if the bill lists it unavailable', async () => {
+    happy();
+    const blinkitOnly = { product: product({ id: 'blinkit-7', title: 'Only on Blinkit' }), quantity: 1 };
+    const r = await exportCartToSwiggy([sline(), blinkitOnly], [calc('swiggy', { outOfStockProductIds: ['blinkit-7'] })]);
+    expect(r!.outOfStock).toEqual([]);
+    expect(r!.missing.map(m => m.name)).toEqual(['Only on Blinkit']);
+    expect(r!.items).toHaveLength(1);
+  });
+});
+
 describe('exportCartToSwiggy: fresh search fallback', () => {
   const blOnly = () => [{ product: product({ id: 'blinkit-7', title: 'Milk', quantity: '1 L' }), quantity: 3 }];
   const searchRouter = (searchBody: any) => route((url, method) => {

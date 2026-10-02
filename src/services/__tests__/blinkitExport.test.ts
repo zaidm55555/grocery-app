@@ -52,6 +52,15 @@ describe('createBlinkitShareLink', () => {
     expect(r!.items).toHaveLength(1);
   });
 
+  it('reports a line with no Blinkit match as missing, not out of stock, even if the bill lists it unavailable', async () => {
+    request.mockResolvedValue({ status: 200, text: '{"url":"https://blinkit.com/share/2"}' });
+    const swiggyOnly = { product: product({ id: 'swiggy-5', platform: 'swiggy', title: 'Only on Instamart' }), quantity: 1 };
+    const r = await createBlinkitShareLink([line(), swiggyOnly], [calc('blinkit', { outOfStockProductIds: ['swiggy-5'] })]);
+    expect(r!.outOfStock).toEqual([]);
+    expect(r!.missing.map(m => m.name)).toEqual(['Only on Instamart']);
+    expect(r!.items).toHaveLength(1);
+  });
+
   it('returns an empty result when nothing could be exported', async () => {
     const r = await createBlinkitShareLink([line({ inStock: false })]);
     expect(r).toMatchObject({ url: '', items: [], total: 0 });
