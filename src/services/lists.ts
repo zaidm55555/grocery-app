@@ -12,16 +12,7 @@ export interface SavedList {
   updatedAt: number;
 }
 
-export interface RecentOrder {
-  id: string;
-  items: CartLine[];
-  platform: 'blinkit' | 'swiggy';
-  orderedAt: number;
-}
-
 const LISTS_KEY = '@saved_lists';
-const RECENT_KEY = '@recent_orders';
-const MAX_RECENT = 5;
 
 async function readJson<T>(key: string): Promise<T[]> {
   try {
@@ -78,18 +69,6 @@ export const lists = {
   async remove(id: string): Promise<void> {
     const all = await readJson<SavedList>(LISTS_KEY);
     await AsyncStorage.setItem(LISTS_KEY, JSON.stringify(all.filter(l => l.id !== id)));
-  },
-
-  getRecent(): Promise<RecentOrder[]> {
-    return readJson<RecentOrder>(RECENT_KEY);
-  },
-
-  async recordOrder(items: CartLine[], platform: 'blinkit' | 'swiggy'): Promise<void> {
-    const snap = snapshot(items);
-    if (snap.length === 0) return;
-    const all = await readJson<RecentOrder>(RECENT_KEY);
-    all.unshift({ id: newId(), items: snap, platform, orderedAt: Date.now() });
-    await AsyncStorage.setItem(RECENT_KEY, JSON.stringify(all.slice(0, MAX_RECENT)));
   },
 
   /** Adds lines to the persisted cart (quantities summed) and returns the new cart. */

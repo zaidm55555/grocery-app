@@ -19,10 +19,9 @@ beforeEach(async () => {
 });
 
 describe('SavedListsModal', () => {
-  it('shows empty states', async () => {
+  it('shows empty state', async () => {
     const { findByText } = setup();
     expect(await findByText(/No saved lists yet/)).toBeTruthy();
-    expect(await findByText(/Baskets you export/)).toBeTruthy();
   });
 
   it('saves the current basket under a name', async () => {
@@ -33,12 +32,10 @@ describe('SavedListsModal', () => {
     expect((await lists.getAll())[0].name).toBe('Weekly');
   });
 
-  it('lists existing saved lists and recent orders', async () => {
+  it('lists existing saved lists', async () => {
     await lists.save('Staples', cart);
-    await lists.recordOrder(cart, 'blinkit');
-    const { findByText, queryByText } = setup();
+    const { findByText } = setup();
     expect(await findByText('Staples')).toBeTruthy();
-    await waitFor(() => expect(queryByText(/Baskets you export/)).toBeNull());
   });
 
   it('asks before loading a list and can add it to the basket', async () => {

@@ -11,7 +11,6 @@ import { refreshBasketLines, applyLiveLimits } from '../../services/basketRefres
 import { computeBasketVerdict, getPlatformFulfillment, BasketVerdict } from '../../utils/basketVerdict';
 import SavedListsModal from '../../components/SavedListsModal';
 import ExportNoticeModal, { ExportNotice } from '../../components/ExportNoticeModal';
-import { lists } from '../../services/lists';
 import { createBlinkitShareLink } from '../../services/blinkitExport';
 import { exportCartToSwiggy } from '../../services/swiggyExport';
 import { colors, fonts, platformThemes, PLATFORM_ORDER } from '../../constants/theme';
@@ -322,7 +321,6 @@ export default function CartScreen() {
         } catch {}
 
         const proceedToOpen = async () => {
-          lists.recordOrder(cartItems, 'blinkit').catch(() => {});
           try {
             await Linking.openURL(share.url);
           } catch (e) {
@@ -375,7 +373,6 @@ export default function CartScreen() {
       }
 
       const proceedToWebview = () => {
-        lists.recordOrder(cartItems, 'swiggy').catch(() => {});
         const swiggyCartB64 = swiggyResult.writePayload ? btoaUnicode(JSON.stringify(swiggyResult.writePayload)) : '';
         router.push({
           pathname: '/webview',

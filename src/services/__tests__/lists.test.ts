@@ -58,18 +58,6 @@ describe('saved lists', () => {
   });
 });
 
-describe('recent orders', () => {
-  it('records newest first, caps at 5, and ignores empty orders', async () => {
-    await lists.recordOrder([line('x', 0)], 'blinkit');
-    expect(await lists.getRecent()).toEqual([]);
-    for (let i = 0; i < 7; i++) await lists.recordOrder([line(`p${i}`)], i % 2 ? 'swiggy' : 'blinkit');
-    const recent = await lists.getRecent();
-    expect(recent).toHaveLength(5);
-    expect(recent[0].items[0].product.id).toBe('p6');
-    expect(recent[0].platform).toBe('blinkit');
-  });
-});
-
 describe('cart operations', () => {
   it('addToCart merges into the persisted cart', async () => {
     await storage.saveCart([line('a', 1)]);

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Modal, View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet, Alert } from 'react-native';
-import { Bookmark, History, Trash2, X, Plus } from 'lucide-react-native';
-import { lists, SavedList, RecentOrder, CartLine } from '../services/lists';
+import { Bookmark, Trash2, X, Plus } from 'lucide-react-native';
+import { lists, SavedList, CartLine } from '../services/lists';
 import { colors, fonts } from '../constants/theme';
 
 interface Props {
@@ -9,7 +9,7 @@ interface Props {
   onClose: () => void;
   /** Current basket, used by "Save current basket". */
   cartItems: CartLine[];
-  /** Called with the new cart after a list/order is loaded into it. */
+  /** Called with the new cart after a list is loaded into it. */
   onCartChanged: (cart: CartLine[]) => void;
 }
 
@@ -26,13 +26,10 @@ const ago = (ts: number) => {
 
 export default function SavedListsModal({ visible, onClose, cartItems, onCartChanged }: Props) {
   const [saved, setSaved] = useState<SavedList[]>([]);
-  const [recent, setRecent] = useState<RecentOrder[]>([]);
   const [name, setName] = useState('');
 
   const refresh = useCallback(async () => {
-    const [l, r] = await Promise.all([lists.getAll(), lists.getRecent()]);
-    setSaved(l);
-    setRecent(r);
+    setSaved(await lists.getAll());
   }, []);
 
   useEffect(() => {
@@ -139,25 +136,6 @@ export default function SavedListsModal({ visible, onClose, cartItems, onCartCha
                   <Trash2 size={15} color={colors.rose} />
                 </TouchableOpacity>
               </View>
-            ))}
-
-            <View style={[styles.sectionHead, { marginTop: 18 }]}>
-              <History size={14} color={colors.textSecondary} />
-              <Text style={styles.sectionLabel}>Recently ordered</Text>
-            </View>
-            {recent.length === 0 ? (
-              <Text style={styles.empty}>Baskets you export to Blinkit or Instamart show up here for one-tap reorder.</Text>
-            ) : recent.map(r => (
-              <TouchableOpacity key={r.id} style={styles.row} onPress={() => load(r.items, 'order')}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.rowTitle} numberOfLines={1}>
-                    {r.items.slice(0, 3).map(i => i.product.title).join(', ')}{r.items.length > 3 ? ` +${r.items.length - 3}` : ''}
-                  </Text>
-                  <Text style={styles.rowSub}>
-                    {r.items.length} item{r.items.length === 1 ? '' : 's'} · {r.platform === 'swiggy' ? 'Instamart' : 'Blinkit'} · {ago(r.orderedAt)}
-                  </Text>
-                </View>
-              </TouchableOpacity>
             ))}
           </ScrollView>
         </View>
