@@ -118,4 +118,72 @@ describe('createBlinkitShareLink', () => {
     const r = await createBlinkitShareLink([line({ originalId: undefined, productId: undefined, id: 'blinkit-x', title: 'Mystery' })]);
     expect(r!.missing.map(m => m.name)).toEqual(['Mystery']);
   });
+
+  describe('live search fallback for lines without a stored Blinkit id', () => {
+    const noId = (over = {}, quantity = 3) => line({ originalId: undefined, productId: undefined, id: 'blinkit-x', title: 'Tata Salt', quantity: '1 kg', ...over }, quantity);
+    const found = (over: any = {}) => ({
+      ok: true,
+      json: async () => ({ layout: [{ data: { name: { text: 'Tata Salt' }, price: '₹28', mrp: '₹30', unit: '1 kg', id: 777, ...over } }] }),
+    }) as any;
+    beforeEach(() => request.mockResolvedValue({ status: 200, text: '{"url":"https://blinkit.com/share/1"}' }));
+
+    it('resolves the id by search and exports it', async () => {
+      jest.spyOn(api, 'fetchWithTimeout').mockResolvedValue(found());
+      const r = await createBlinkitShareLink([noId()]);
+      expect(r!.items[0]).toMatchObject({ product_id: '777', quantity: 3 });
+      expect(r!.missing).toEqual([]);
+    });
+
+    it('treats a search hit with zero stock as out of stock', async () => {
+      jest.spyOn(api, 'fetchWithTimeout').mockResolvedValue(found({ inventory: 0 }));
+      jest.spyOn(require('../api'), 'parseBlinkitProducts').mockReturnValue([{ name: 'Tata Salt', unit: '1 kg', productId: '777', availableStock: 0 }]);
+      const r = await createBlinkitShareLink([noId()]);
+      expect(r!.outOfStock.map(o => o.name)).toEqual(['Tata Salt']);
+      expect(r!.items).toEqual([]);
+    });
+
+    it('clamps to the stock reported by search', async () => {
+      jest.spyOn(api, 'fetchWithTimeout').mockResolvedValue(found());
+      jest.spyOn(require('../api'), 'parseBlinkitProducts').mockReturnValue([{ name: 'Tata Salt', unit: '1 kg', productId: '777', availableStock: 5, maxQuantity: 2 }]);
+      const r = await createBlinkitShareLink([noId()]);
+      expect(r!.items[0].quantity).toBe(2);
+      expect(r!.clamped).toEqual([{ name: 'Tata Salt', requestedQty: 3, exportedQty: 2 }]);
+    });
+
+    it('uses just the available stock or just the max when only one is reported', async () => {
+      const spy = jest.spyOn(api, 'fetchWithTimeout').mockResolvedValue(found());
+      const parse = jest.spyOn(require('../api'), 'parseBlinkitProducts');
+      parse.mockReturnValue([{ name: 'Tata Salt', unit: '1 kg', productId: '777', availableStock: 1 }]);
+      expect((await createBlinkitShareLink([noId()]))!.items[0].quantity).toBe(1);
+      parse.mockReturnValue([{ name: 'Tata Salt', unit: '1 kg', productId: '777', maxQuantity: 2 }]);
+      expect((await createBlinkitShareLink([noId()]))!.items[0].quantity).toBe(2);
+      expect(spy).toHaveBeenCalled();
+    });
+
+    it('reports missing when the search request fails or has no match', async () => {
+      const spy = jest.spyOn(api, 'fetchWithTimeout');
+      spy.mockResolvedValueOnce({ ok: false } as any);
+      expect((await createBlinkitShareLink([noId()]))!.missing).toHaveLength(1);
+      spy.mockRejectedValueOnce(new Error('offline'));
+      expect((await createBlinkitShareLink([noId()]))!.missing).toHaveLength(1);
+    });
+  });
+
+  describe('share url extraction', () => {
+    const urlFor = async (text: string) => {
+      request.mockResolvedValue({ status: 200, text });
+      return (await createBlinkitShareLink([line()]))!.url;
+    };
+    it('prefers a blinkit share/cart url over other urls in the json', async () => {
+      expect(await urlFor(JSON.stringify({ a: 'https://example.com/x', share_url: 'https://blinkit.com/s/good', logo: 'https://blinkit.com/logo.png' })))
+        .toBe('https://blinkit.com/s/good');
+    });
+    it('falls back to scanning plain text for a blinkit url', async () => {
+      expect(await urlFor('see https://other.com/a and https://blinkit.com/share/zz now')).toBe('https://blinkit.com/share/zz');
+      expect(await urlFor('only https://blinkit.com/home here')).toBe('https://blinkit.com/home');
+    });
+    it('returns an empty url when nothing usable is returned', async () => {
+      expect(await urlFor('{"ok":true}')).toBe('');
+    });
+  });
 });
