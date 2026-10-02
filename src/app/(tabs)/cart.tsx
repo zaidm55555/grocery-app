@@ -43,6 +43,9 @@ const EMPTY_VERDICT: BasketVerdict = {
   winnerKey: null, mostCompleteKeys: [], lowestBillKey: null, winnerIsPartial: false, fulfillment: {},
 };
 
+// Stock counts at or below this are surfaced in the basket (badges + footer).
+const STOCK_BADGE_MAX = 15;
+
 export default function CartScreen() {
   const router = useRouter();
   const [cartItems, setCartItems] = useState<{ product: UnifiedProduct; quantity: number }[]>([]);
@@ -521,7 +524,7 @@ export default function CartScreen() {
                                   <AlertTriangle size={8.5} color={colors.amber} style={{ marginRight: 3 }} />
                                   <Text style={styles.limitBadgeText}>Only {v.platformLimit} in stock</Text>
                                 </View>
-                              ) : v.platformLimit !== undefined && v.platformLimit <= 15 ? (
+                              ) : v.platformLimit !== undefined && v.platformLimit <= STOCK_BADGE_MAX ? (
                                 <View style={styles.stockInfoBadge}>
                                   <CheckCircle2 size={8.5} color={colors.emerald} style={{ marginRight: 3 }} />
                                   <Text style={styles.stockInfoBadgeText}>{v.platformLimit} in stock</Text>
@@ -576,16 +579,28 @@ export default function CartScreen() {
                               Max available stock reached ({overall.maxAllowed} units)
                             </Text>
                           </View>
-                        ) : overall.isAsymmetric ? (
-                          <View style={styles.asymmetricStockNotice}>
-                            <Info size={11} color={colors.textSecondary} style={{ marginRight: 4 }} />
-                            <Text style={styles.asymmetricStockText}>
-                              {overall.blinkitLimit !== undefined ? `Blinkit: ${overall.blinkitLimit}` : ''}
-                              {overall.blinkitLimit !== undefined && overall.swiggyLimit !== undefined ? ' · ' : ''}
-                              {overall.swiggyLimit !== undefined ? `Swiggy: ${overall.swiggyLimit}` : ''}
-                            </Text>
-                          </View>
-                        ) : null}
+                        ) : (() => {
+                          // One consistent rule: whenever 2+ apps price this line and any
+                          // in-stock app has a low known stock (same ≤15 threshold as the
+                          // per-app badges), list every in-stock app's stock. Apps over
+                          // their stock are amber (they bill fewer units than asked).
+                          const live = variants.filter(v => !v.isOos);
+                          const anyLow = live.some(v => v.platformLimit !== undefined && v.platformLimit <= STOCK_BADGE_MAX);
+                          if (live.length < 2 || !anyLow) return null;
+                          return (
+                            <View style={styles.asymmetricStockNotice}>
+                              <Info size={11} color={colors.textSecondary} style={{ marginRight: 4 }} />
+                              <Text style={styles.asymmetricStockText}>
+                                {live.map((v, i) => (
+                                  <Text key={v.platform} style={v.isCapped ? { color: colors.amber } : undefined}>
+                                    {i > 0 ? ' · ' : ''}
+                                    {platformThemes[v.platform].name}: {v.platformLimit !== undefined ? v.platformLimit : 'in stock'}
+                                  </Text>
+                                ))}
+                              </Text>
+                            </View>
+                          );
+                        })()}
                       </View>
                       <View style={styles.qtyContainer}>
                         <TouchableOpacity style={styles.qtyBtn} onPress={() => handleUpdateQuantity(id, -1)}>
@@ -758,6 +773,7 @@ export default function CartScreen() {
                       {(() => {
                         const fulfil = verdict.fulfillment[calc.platform] ?? getPlatformFulfillment(calc, cartItems, calculations);
                         const storeOosLines = fulfil.oos.map(o => o.line);
+                        const storeUnmatchedLines = fulfil.unmatched.map(u => u.line);
                         const storeCappedLines = fulfil.capped.map(c => ({ line: c.line, limit: c.limit ?? c.line.quantity }));
                         const inStockCount = fulfil.availableLineCount;
                         const fullyFulfilledCount = fulfil.fullLineCount;
@@ -769,9 +785,9 @@ export default function CartScreen() {
                               <Text style={styles.coverageLabel}>Stock Availability</Text>
                               <Text style={[
                                 styles.coverageValue,
-                                storeOosLines.length === 0 && storeCappedLines.length === 0 ? { color: colors.emerald } : { color: colors.amber }
+                                storeOosLines.length === 0 && storeCappedLines.length === 0 && storeUnmatchedLines.length === 0 ? { color: colors.emerald } : { color: colors.amber }
                               ]}>
-                                {storeOosLines.length === 0 && storeCappedLines.length === 0
+                                {storeOosLines.length === 0 && storeCappedLines.length === 0 && storeUnmatchedLines.length === 0
                                   ? `All ${cartItems.length} items in stock`
                                   : `${inStockCount} of ${cartItems.length} items available`}
                               </Text>
@@ -806,6 +822,30 @@ export default function CartScreen() {
                                     <View key={item.product.id} style={styles.chipOos}>
                                       <Text style={styles.chipTextOos} numberOfLines={1}>
                                         ✕ {item.product.title}
+                                      </Text>
+                                    </View>
+                                  ))}
+                                </View>
+                              </View>
+                            )}
+
+                            {/* Not matched on this app (skipped / not found) — not a stock issue */}
+                            {storeUnmatchedLines.length > 0 && (
+                              <View style={styles.stockAlertCappedBox}>
+                                <View style={styles.stockAlertHeaderRow}>
+                                  <AlertTriangle size={12} color={colors.textMuted} />
+                                  <Text style={styles.stockAlertCappedTitle}>
+                                    {storeUnmatchedLines.length} item{storeUnmatchedLines.length === 1 ? '' : 's'} not matched on {t.name}
+                                  </Text>
+                                </View>
+                                <Text style={styles.stockAlertCappedDesc}>
+                                  Not in this bill — no similar product was picked for this app
+                                </Text>
+                                <View style={styles.stockChipWrap}>
+                                  {storeUnmatchedLines.map(item => (
+                                    <View key={item.product.id} style={styles.chipCapped}>
+                                      <Text style={styles.chipTextCapped} numberOfLines={1}>
+                                        {item.product.title}
                                       </Text>
                                     </View>
                                   ))}

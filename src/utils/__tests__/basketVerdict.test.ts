@@ -8,10 +8,12 @@ const both = (id: string, qty = 1, over = {}) => ({
 });
 
 describe('getPlatformFulfillment', () => {
-  it('marks lines missing on a platform as out of stock', () => {
+  it('marks lines with no match on a platform as unmatched, not out of stock', () => {
     const line = { product: product(), quantity: 2 }; // blinkit only
     const f = getPlatformFulfillment(calc('swiggy'), [line], []);
-    expect(f.lines[0].status).toBe('oos');
+    expect(f.lines[0].status).toBe('unmatched');
+    expect(f.oos).toHaveLength(0);
+    expect(f.unmatched).toHaveLength(1);
     expect(f.fulfilledUnits).toBe(0);
     expect(f.availableLineCount).toBe(0);
     expect(f.unitCoverage).toBe(0);

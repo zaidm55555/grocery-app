@@ -23,8 +23,21 @@ const queue: QueuedRequest[] = [];
 
 const REQUEST_TIMEOUT_MS = 15000;
 
+const statusListeners = new Set<() => void>();
+
+function emitStatus(): void {
+  statusListeners.forEach((l) => l());
+}
+
+// Lets the UI react when the bridge connects/disconnects.
+export function subscribeBlinkitBridgeStatus(fn: () => void): () => void {
+  statusListeners.add(fn);
+  return () => { statusListeners.delete(fn); };
+}
+
 export function registerBlinkitInjector(fn: Injector): void {
   injector = fn;
+  emitStatus();
 }
 
 export function unregisterBlinkitInjector(fn: Injector): void {
@@ -32,6 +45,7 @@ export function unregisterBlinkitInjector(fn: Injector): void {
     injector = null;
     ready = false;
     queue.length = 0;
+    emitStatus();
   }
 }
 
@@ -87,6 +101,7 @@ function dispatch(entry: QueuedRequest): boolean {
 function notifyBlinkitBridgeReady(): void {
   if (ready) return;
   ready = true;
+  emitStatus();
   while (queue.length > 0) {
     const entry = queue.shift()!;
     dispatch(entry);
@@ -119,7 +134,7 @@ export function handleBlinkitBridgeMessage(payload: string): boolean {
 
 // True once the hidden blinkit.com page has registered itself.
 export function isBlinkitBridgeConnected(): boolean {
-  return injector !== null;
+  return injector !== null && ready;
 }
 
 // Polls for the bridge page to connect (it mounts shortly after app start).

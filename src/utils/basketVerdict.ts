@@ -10,7 +10,7 @@ type CartLine = { product: UnifiedProduct; quantity: number };
 
 export interface LineFulfillment {
   line: CartLine;
-  status: 'full' | 'capped' | 'oos';
+  status: 'full' | 'capped' | 'oos' | 'unmatched';
   /** Units this platform can actually supply (0 when out of stock). */
   fulfilledQty: number;
   /** Stock/max-quantity limit when known (only meaningful for 'capped'). */
@@ -20,6 +20,8 @@ export interface LineFulfillment {
 export interface PlatformFulfillment {
   lines: LineFulfillment[];
   oos: LineFulfillment[];
+  /** Lines with no listing matched on this platform (skipped / not found) — not a stock problem. */
+  unmatched: LineFulfillment[];
   capped: LineFulfillment[];
   fullLineCount: number;
   /** Lines the platform can supply at least 1 unit of. */
@@ -43,8 +45,10 @@ export function getPlatformFulfillment(
     const id = line.product.id;
     const resolved = resolvePlatformProduct(line, calc.platform);
     const limit = calc.platformItemLimits?.[id] ?? getProductPlatformLimit(line.product, calc.platform, allCalcs);
+    // No matched listing here (e.g. the user skipped this app for the item):
+    // it can't be supplied, but that's not an out-of-stock condition.
+    if (!resolved) return { line, status: 'unmatched', fulfilledQty: 0 };
     const oos =
-      !resolved ||
       !!calc.outOfStockProductIds?.includes(id) ||
       resolved.product.inStock === false ||
       (limit !== undefined && limit <= 0);
@@ -59,12 +63,14 @@ export function getPlatformFulfillment(
   const fulfilledUnits = lines.reduce((s, l) => s + l.fulfilledQty, 0);
   const oos = lines.filter(l => l.status === 'oos');
   const capped = lines.filter(l => l.status === 'capped');
+  const unmatched = lines.filter(l => l.status === 'unmatched');
   return {
     lines,
     oos,
+    unmatched,
     capped,
-    fullLineCount: lines.length - oos.length - capped.length,
-    availableLineCount: lines.length - oos.length,
+    fullLineCount: lines.length - oos.length - capped.length - unmatched.length,
+    availableLineCount: lines.length - oos.length - unmatched.length,
     requestedUnits,
     fulfilledUnits,
     unitCoverage: requestedUnits > 0 ? fulfilledUnits / requestedUnits : 0,

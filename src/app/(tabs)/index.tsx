@@ -11,6 +11,7 @@ import { pickBestMatch } from '../../utils/matcher';
 import MatchModal, { MatchFlowState, MatchTarget, MatchCell } from '../../components/MatchModal';
 import VariantPickerModal from '../../components/VariantPickerModal';
 import { resolveAreaName } from '../../utils/location';
+import { isBlinkitBridgeConnected, subscribeBlinkitBridgeStatus } from '../../services/blinkitBridge';
 import { isAddressSyncing, waitForAddressSync, subscribeAddressSync, syncDeliveryAddresses, subscribeLocationReset } from '../../services/addressSync';
 
 const QUICK_SEARCHES = ['Milk', 'Bread', 'Eggs', 'Butter', 'Cheese'];
@@ -199,6 +200,11 @@ export default function SearchScreen() {
   cartItemsRef.current = cartItems;
 
   const [addressSyncing, setAddressSyncing] = useState(isAddressSyncing());
+  const [blinkitBridgeUp, setBlinkitBridgeUp] = useState(isBlinkitBridgeConnected());
+  useEffect(() => {
+    setBlinkitBridgeUp(isBlinkitBridgeConnected());
+    return subscribeBlinkitBridgeStatus(() => setBlinkitBridgeUp(isBlinkitBridgeConnected()));
+  }, []);
   const lastLocationRef = useRef<{ latitude: number; longitude: number } | null>(null);
 
   const resetSearchState = useCallback(() => {
@@ -864,6 +870,11 @@ export default function SearchScreen() {
                         ? 'Showing Instamart results only • Cannot search Blinkit on current location'
                         : 'Tap + to add the exact product — the other app gets auto-matched.'}
                     </Text>
+                    {!!tokens.blinkit && !blinkitBridgeUp && storeFilter !== 'swiggy' && (
+                      <Text style={styles.liveHint}>
+                        Blinkit bridge isn’t connected — Blinkit results are fetched directly and may come from other stores.
+                      </Text>
+                    )}
                   </View>
                 </View>
 
