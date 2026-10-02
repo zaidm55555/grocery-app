@@ -281,6 +281,7 @@ export async function priceBlinkitCart(
   }
 
   // 3. Last resort: direct (non-bridge) POST.
+  console.log(resJson ? '[Blinkit] bill via BRIDGE' : '[Blinkit] bill: bridge gave nothing, trying DIRECT');
   if (!resJson) {
     const response = await deps.fetchWithTimeout(CARTS_URL, {
       method: 'POST',

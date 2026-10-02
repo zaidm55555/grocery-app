@@ -1137,6 +1137,9 @@ export const api = {
       };
       const bridgeStatuses: (number | null)[] = [];
       json = await bridgedBlinkitSearch(url, bridgeHeaders, bridgeStatuses);
+      console.log(json
+        ? `[Blinkit] search "${query}" via BRIDGE`
+        : `[Blinkit] search "${query}" via DIRECT fallback (bridge ${isBlinkitBridgeConnected() ? 'connected but returned nothing' : 'not connected'}; statuses: ${bridgeStatuses.length ? bridgeStatuses.join(',') : 'none'})`);
       if (!json) {
         // Direct fallback (bridge unavailable or challenged by Cloudflare). It is
         // answered from a different dark store than the cart, so its stock can be
