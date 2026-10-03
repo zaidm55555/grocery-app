@@ -167,6 +167,31 @@ describe('exportCartToSwiggy: stock handling', () => {
   });
 });
 
+describe('exportCartToSwiggy: two lines sharing one Instamart listing', () => {
+  const shared = (id: string, title: string, quantity: number, sOver: any = {}) => ({
+    product: product({
+      id, title,
+      platformPrices: { swiggy: variant({ id: 'swiggy-5', title: 'Pasteurized Milk', originalId: 'item5', productId: 'prod5', spinId: 'spin5', ...sOver }) },
+    }),
+    quantity,
+  });
+
+  it('exports the shared listing once with the combined quantity', async () => {
+    happy();
+    const r = await exportCartToSwiggy([shared('blinkit-1', 'Toned Milk', 2), shared('blinkit-2', 'Full Cream Milk', 3)]);
+    expect(r!.items).toHaveLength(1);
+    expect(r!.items[0]).toMatchObject({ productId: 'prod5', quantity: 5 });
+  });
+
+  it('clamps the combined quantity to the listing stock and reports it', async () => {
+    happy();
+    const r = await exportCartToSwiggy([shared('blinkit-1', 'Toned Milk', 3, { availableStock: 4 }), shared('blinkit-2', 'Full Cream Milk', 3, { availableStock: 4 })]);
+    expect(r!.items).toHaveLength(1);
+    expect(r!.items[0].quantity).toBe(4);
+    expect(r!.clamped.some(c => c.requestedQty === 6 && c.exportedQty === 4)).toBe(true);
+  });
+});
+
 describe('exportCartToSwiggy: unmatched lines', () => {
   it('reports a line with no Swiggy match as missing, not out of stock, even if the bill lists it unavailable', async () => {
     happy();

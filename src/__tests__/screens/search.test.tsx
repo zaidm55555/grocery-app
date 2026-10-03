@@ -551,3 +551,96 @@ describe('Search screen: auto-match on the other app', () => {
     expect(api.searchSingle).not.toHaveBeenCalled();
   });
 });
+
+describe('Search screen: one Instamart listing shared by two basket lines', () => {
+  const swMilkVariant = { id: 'swiggy-5', title: 'Pasteurized Milk', brand: '', quantity: '500 ml', price: 30, imageUrl: '' };
+  const sharedLine = (id: string, title: string, quantity: number) =>
+    ({ product: { ...bl(id, title, { quantity: '500 ml' }), platformPrices: { swiggy: swMilkVariant } } as any, quantity });
+  const seedShared = async (swOver: Partial<UnifiedProduct> = {}) => {
+    await storage.saveLocation(LOC);
+    await linkBoth();
+    await storage.saveCart([sharedLine('1', 'Toned Milk', 2), sharedLine('2', 'Full Cream Milk', 1)]);
+    respondWith([], [sw('5', 'Pasteurized Milk', { quantity: '500 ml', ...swOver })]);
+  };
+
+  it('shows the total quantity across both lines on the Instamart card', async () => {
+    await seedShared();
+    const u = await renderSearch();
+    await doSearch(u, 'milk');
+    await u.findByText('Pasteurized Milk');
+    expect(u.getByText('3')).toBeTruthy();
+  });
+
+  it('opens a chooser instead of silently bumping one line when + is tapped', async () => {
+    await seedShared();
+    const u = await renderSearch();
+    await doSearch(u, 'milk');
+    await u.findByText('Pasteurized Milk');
+    await act(async () => { fireEvent.press(touchablesBesideText(u, '3')[1]); });
+    const sheet = within(await u.findByTestId('shared-listing-sheet'));
+    expect(sheet.getByText('Shared by 2 basket items')).toBeTruthy();
+    expect(sheet.getByText('Toned Milk')).toBeTruthy();
+    expect(sheet.getByText('Full Cream Milk')).toBeTruthy();
+    expect((await storage.getCart()).map(l => l.quantity)).toEqual([2, 1]); // nothing changed yet
+  });
+
+  it('steps the chosen line only, and the card total follows', async () => {
+    await seedShared();
+    const u = await renderSearch();
+    await doSearch(u, 'milk');
+    await u.findByText('Pasteurized Milk');
+    await act(async () => { fireEvent.press(touchablesBesideText(u, '3')[1]); });
+    const sheet = within(await u.findByTestId('shared-listing-sheet'));
+    await act(async () => { fireEvent.press(sheet.getByTestId('shared-plus-blinkit-2')); });
+    await waitFor(async () => expect((await storage.getCart()).map(l => l.quantity)).toEqual([2, 2]));
+    expect(u.getAllByText('4').length).toBeGreaterThan(0);
+  });
+
+  it('removes only the chosen line when it is stepped down from one', async () => {
+    await seedShared();
+    const u = await renderSearch();
+    await doSearch(u, 'milk');
+    await u.findByText('Pasteurized Milk');
+    await act(async () => { fireEvent.press(touchablesBesideText(u, '3')[0]); }); // −
+    const sheet = within(await u.findByTestId('shared-listing-sheet'));
+    await act(async () => { fireEvent.press(sheet.getByTestId('shared-minus-blinkit-2')); });
+    await waitFor(async () => expect((await storage.getCart()).map(l => l.product.id)).toEqual(['blinkit-1']));
+  });
+
+  it('enforces the shared stock limit across both lines', async () => {
+    await seedShared({ availableStock: 4 });
+    const u = await renderSearch();
+    await doSearch(u, 'milk');
+    await u.findByText('Pasteurized Milk');
+    await act(async () => { fireEvent.press(touchablesBesideText(u, '3')[1]); });
+    const sheet = within(await u.findByTestId('shared-listing-sheet'));
+    await act(async () => { fireEvent.press(sheet.getByTestId('shared-plus-blinkit-1')); }); // 3 → 4, at the limit
+    await waitFor(async () => expect((await storage.getCart()).map(l => l.quantity)).toEqual([3, 1]));
+    await act(async () => { fireEvent.press(sheet.getByTestId('shared-plus-blinkit-2')); }); // would be 5
+    expect(Alert.alert).toHaveBeenCalledWith('Stock Limit Reached', 'Only 4 units available on Instamart.');
+    expect((await storage.getCart()).map(l => l.quantity)).toEqual([3, 1]);
+  });
+
+  it('blocks + on the card itself once the shared total reaches the stock limit', async () => {
+    await seedShared({ availableStock: 3 });
+    const u = await renderSearch();
+    await doSearch(u, 'milk');
+    await u.findByText('Pasteurized Milk');
+    await act(async () => { fireEvent.press(touchablesBesideText(u, '3')[1]); });
+    expect(Alert.alert).toHaveBeenCalledWith('Stock Limit Reached', 'Only 3 units available on Instamart.');
+    expect(u.queryByTestId('shared-listing-sheet')).toBeNull();
+  });
+
+  it('keeps the plain stepper for a listing used by a single line', async () => {
+    await storage.saveLocation(LOC);
+    await linkBoth();
+    await storage.saveCart([sharedLine('1', 'Toned Milk', 2)]);
+    respondWith([], [sw('5', 'Pasteurized Milk', { quantity: '500 ml' })]);
+    const u = await renderSearch();
+    await doSearch(u, 'milk');
+    await u.findByText('Pasteurized Milk');
+    await act(async () => { fireEvent.press(touchablesBesideText(u, '2')[1]); });
+    await waitFor(async () => expect((await storage.getCart())[0].quantity).toBe(3));
+    expect(u.queryByTestId('shared-listing-sheet')).toBeNull();
+  });
+});

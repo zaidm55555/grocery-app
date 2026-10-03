@@ -3,7 +3,7 @@ import { createBlinkitShareLink } from '../blinkitExport';
 import { storage } from '../storage';
 import { api } from '../api';
 import * as bridge from '../blinkitBridge';
-import { product, calc } from './fixtures';
+import { product, calc, variant } from './fixtures';
 
 jest.mock('../blinkitBridge', () => ({
   requestViaBlinkitBridge: jest.fn(),
@@ -59,6 +59,16 @@ describe('createBlinkitShareLink', () => {
     expect(r!.outOfStock).toEqual([]);
     expect(r!.missing.map(m => m.name)).toEqual(['Only on Instamart']);
     expect(r!.items).toHaveLength(1);
+  });
+
+  it('exports a Blinkit listing shared by two basket lines once, with the combined quantity (clamped to stock)', async () => {
+    request.mockResolvedValue({ status: 200, text: '{"url":"https://blinkit.com/share/3"}' });
+    const bl = variant({ id: 'blinkit-9', title: 'Pasteurized Milk', originalId: '9', productId: '9', availableStock: 4 });
+    const sLine = (id: string, title: string, q: number) => ({ product: product({ id, title, platform: 'swiggy', platformPrices: { blinkit: bl } }), quantity: q });
+    const r = await createBlinkitShareLink([sLine('swiggy-1', 'Toned Milk', 3), sLine('swiggy-2', 'Full Cream Milk', 3)]);
+    expect(r!.items).toHaveLength(1);
+    expect(r!.items[0]).toMatchObject({ product_id: '9', quantity: 4 });
+    expect(r!.clamped.some(c => c.requestedQty === 6 && c.exportedQty === 4)).toBe(true);
   });
 
   it('returns an empty result when nothing could be exported', async () => {

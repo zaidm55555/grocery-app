@@ -10,6 +10,8 @@ import { liveKey, familyKey } from '../../utils/productKey';
 import { pickBestMatch } from '../../utils/matcher';
 import MatchModal, { MatchFlowState, MatchTarget, MatchCell } from '../../components/MatchModal';
 import VariantPickerModal from '../../components/VariantPickerModal';
+import SharedListingSheet from '../../components/SharedListingSheet';
+import { lineIdxsForListing, listingQty } from '../../utils/sharedListing';
 import { shouldShowBlinkitDirectNote } from '../../utils/stockNotes';
 import { resolveAreaName } from '../../utils/location';
 import { isBlinkitBridgeConnected, subscribeBlinkitBridgeStatus } from '../../services/blinkitBridge';
@@ -193,6 +195,8 @@ export default function SearchScreen() {
 
   const [matchFlow, setMatchFlow] = useState<MatchFlowState | null>(null);
   const [variantBase, setVariantBase] = useState<UnifiedProduct | null>(null);
+  // A listing that several basket lines were auto-matched to; +/− on it opens a per-line chooser.
+  const [sharedListing, setSharedListing] = useState<UnifiedProduct | null>(null);
   const [matchToast, setMatchToast] = useState<{ platform: Platform; name: string } | null>(null);
 
   const matchFlowRef = useRef<MatchFlowState | null>(null);
@@ -513,6 +517,10 @@ export default function SearchScreen() {
 
   const handleAddToCart = async (product: UnifiedProduct) => {
     const items = cartItemsRef.current;
+    if (lineIdxsForListing(items, product).length > 1) {
+      setSharedListing(product);
+      return;
+    }
     const sameLineIdx = lineIdxFor(items, product);
 
     if (sameLineIdx > -1) {
@@ -578,6 +586,10 @@ export default function SearchScreen() {
 
   const handleStepQty = async (product: UnifiedProduct, delta: number) => {
     const items = cartItemsRef.current;
+    if (lineIdxsForListing(items, product).length > 1) {
+      setSharedListing(product);
+      return;
+    }
     const idx = lineIdxFor(items, product);
     if (idx === -1) return;
     const updated = [...items];
@@ -604,18 +616,49 @@ export default function SearchScreen() {
     await commitCart(updated);
   };
 
+  // +/− on one basket line from the shared-listing sheet. The stock limit is the
+  // listing's, so it is checked against the combined quantity of every line.
+  const handleStepSharedLine = async (lineId: string, delta: number) => {
+    if (!sharedListing) return;
+    const items = cartItemsRef.current;
+    const idx = items.findIndex(ci => ci.product.id === lineId);
+    if (idx === -1) return;
+    const line = items[idx];
+    if (delta > 0) {
+      const prodLimit = getItemPlatformLimit(sharedListing) ?? getProductPlatformLimit(line.product, sharedListing.platform);
+      if (typeof prodLimit === 'number' && prodLimit > 0 && listingQty(items, sharedListing) >= prodLimit) {
+        Alert.alert('Stock Limit Reached', `Only ${prodLimit} unit${prodLimit === 1 ? '' : 's'} available on ${platformThemes[sharedListing.platform].name}.`);
+        return;
+      }
+      const overall = getProductOverallMax(line.product);
+      if (line.quantity >= overall.maxAllowed) {
+        Alert.alert('Stock Limit Reached', `Only ${overall.maxAllowed} unit${overall.maxAllowed === 1 ? '' : 's'} available across stores.`);
+        return;
+      }
+    }
+    const nextQty = line.quantity + delta;
+    const updated = [...items];
+    if (nextQty <= 0) updated.splice(idx, 1);
+    else updated[idx] = { ...line, quantity: nextQty };
+    await commitCart(updated);
+  };
+
   const cartItemMap = useMemo(() => {
+    // Several lines can share one listing (same twin match): quantities add up.
     const map = new Map<string, number>();
+    const add = (k: string, q: number) => map.set(k, (map.get(k) ?? 0) + q);
     for (const ci of cartItems) {
       const k = ci.product.platform + '|' + liveKey({ name: ci.product.title, unit: ci.product.quantity });
       const mainResolved = resolvePlatformProduct(ci, ci.product.platform);
-      map.set(k, mainResolved ? mainResolved.quantity : ci.quantity);
-      map.set('id:' + ci.product.id, mainResolved ? mainResolved.quantity : ci.quantity);
+      const mainQty = mainResolved ? mainResolved.quantity : ci.quantity;
+      add(k, mainQty);
+      add('id:' + ci.product.id, mainQty);
       if (ci.product.platformPrices) {
         for (const [pl, v] of Object.entries(ci.product.platformPrices)) {
           const varResolved = resolvePlatformProduct(ci, pl as Platform);
-          map.set(pl + '|' + liveKey({ name: v.title, unit: v.quantity }), varResolved ? varResolved.quantity : ci.quantity);
-          if (v.id) map.set('id:' + v.id, varResolved ? varResolved.quantity : ci.quantity);
+          const varQty = varResolved ? varResolved.quantity : ci.quantity;
+          add(pl + '|' + liveKey({ name: v.title, unit: v.quantity }), varQty);
+          if (v.id) add('id:' + v.id, varQty);
         }
       }
     }
@@ -625,13 +668,7 @@ export default function SearchScreen() {
   const qtyFor = useCallback((product: UnifiedProduct) => {
     let q = cartQtyFor(cartItemMap, product);
     if (q === undefined) {
-      const idx = lineIdxFor(cartItemsRef.current, product);
-      if (idx !== -1) {
-        const resolved = resolvePlatformProduct(cartItemsRef.current[idx], product.platform);
-        q = resolved ? resolved.quantity : cartItemsRef.current[idx].quantity;
-      } else {
-        q = 0;
-      }
+      q = listingQty(cartItemsRef.current, product);
     }
     const lim = getItemPlatformLimit(product);
     if (typeof lim === 'number' && lim > 0) {
@@ -663,6 +700,23 @@ export default function SearchScreen() {
       minPrice: Math.min(...items.map(i => i.price || Infinity))
     }));
   }, [filteredProducts]);
+
+  // Basket lines behind the shared listing, recomputed from live cart state so the sheet updates as you step.
+  const sharedLines = useMemo(() => {
+    if (!sharedListing) return [];
+    return lineIdxsForListing(cartItems, sharedListing).map(i => {
+      const ci = cartItems[i];
+      const resolved = resolvePlatformProduct(ci, sharedListing.platform);
+      return {
+        id: ci.product.id,
+        title: ci.product.title,
+        quantity: ci.product.quantity,
+        imageUrl: ci.product.imageUrl,
+        platform: ci.product.platform,
+        qty: resolved ? resolved.quantity : ci.quantity,
+      };
+    });
+  }, [cartItems, sharedListing]);
 
   const filterLabel = storeFilter === 'all' ? 'All Stores' : platformThemes[storeFilter].name;
 
@@ -1095,6 +1149,15 @@ export default function SearchScreen() {
         qtyFor={qtyFor}
         onPick={(p) => { setVariantBase(null); handleAddToCart(p); }}
         onClose={() => setVariantBase(null)}
+      />
+
+      <SharedListingSheet
+        visible={!!sharedListing && sharedLines.length > 0}
+        listing={sharedListing}
+        lines={sharedLines}
+        total={sharedListing ? listingQty(cartItems, sharedListing) : 0}
+        onStep={handleStepSharedLine}
+        onClose={() => setSharedListing(null)}
       />
 
       {matchFlow && (

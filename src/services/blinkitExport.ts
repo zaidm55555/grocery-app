@@ -24,6 +24,7 @@ import { requestViaBlinkitBridge } from './blinkitBridge';
 import { storage } from './storage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { pickBestMatch } from '../utils/matcher';
+import { mergeExportItems } from '../utils/sharedListing';
 
 const BLINKIT_APP_VERSION = '52434333';
 
@@ -234,12 +235,14 @@ export async function createBlinkitShareLink(
   const missing: { name: string; quantity: string }[] = [];
   const outOfStock: { name: string; quantity: string }[] = [];
   const clamped: { name: string; requestedQty: number; exportedQty: number }[] = [];
-  const items: BlinkitExportItem[] = [];
+  const rawItems: BlinkitExportItem[] = [];
+  const rawLimits: (number | undefined)[] = [];
 
   for (const line of cart) {
     const { item, notFound, outOfStock: isOos, clampedFrom } = await resolveProductId(line, lat, lng, authKey, calculations);
     if (item) {
-      items.push(item);
+      rawItems.push(item);
+      rawLimits.push(getProductPlatformLimit(line.product, 'blinkit', calculations));
       if (clampedFrom && clampedFrom > item.quantity) {
         clamped.push({ name: item.name, requestedQty: clampedFrom, exportedQty: item.quantity });
       }
@@ -249,6 +252,11 @@ export async function createBlinkitShareLink(
       missing.push({ name: line.product.title, quantity: line.product.quantity });
     }
   }
+
+  // Two basket lines can share one Blinkit listing: send it once, combined.
+  const merged = mergeExportItems(rawItems, i => i.product_id, rawLimits);
+  const items = merged.items;
+  clamped.push(...merged.clamped);
 
   if (items.length === 0) {
     return { url: '', items: [], total: 0, missing, outOfStock, clamped };

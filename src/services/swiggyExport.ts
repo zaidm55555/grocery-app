@@ -37,6 +37,7 @@ import {
   pickInstamartCandidate,
 } from './api';
 import { storage } from './storage';
+import { mergeExportItems } from '../utils/sharedListing';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export interface SwiggyExportItem {
@@ -380,10 +381,19 @@ export async function exportCartToSwiggy(
     }
   }
 
-  const items: SwiggyExportItem[] = [];
+  // Two basket lines can share one Instamart listing: send it once, combined.
+  const keptIdx: number[] = [];
+  const rows: SwiggyExportItem[] = [];
   for (let i = 0; i < resolved.length; i++) {
-    if (resolved[i]) items.push(resolved[i]!);
+    if (resolved[i]) { rows.push(resolved[i]!); keptIdx.push(i); }
   }
+  const mergedRows = mergeExportItems(
+    rows,
+    r => `${r.productId}|${r.itemId}`,
+    keptIdx.map(i => getProductPlatformLimit(cart[i].product, 'swiggy', calculations)),
+  );
+  const items: SwiggyExportItem[] = mergedRows.items;
+  clamped.push(...mergedRows.clamped);
 
   if (items.length === 0) {
     return {
