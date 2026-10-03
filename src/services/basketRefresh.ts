@@ -50,6 +50,7 @@ const toVariant = (live: UnifiedProduct): PlatformVariant => ({
   inStock: live.inStock,
   availableStock: live.availableStock,
   maxQuantity: live.maxQuantity,
+  storeVerified: live.storeVerified,
 });
 
 const unavailable = <T extends PlatformVariant | UnifiedProduct>(v: T): T => ({ ...v, inStock: false, availableStock: 0 });

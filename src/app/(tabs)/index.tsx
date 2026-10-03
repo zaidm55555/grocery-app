@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { StyleSheet, View, Text, TextInput, FlatList, TouchableOpacity, ActivityIndicator, Image, Keyboard, KeyboardAvoidingView, Platform as RNPlatform, Pressable, Modal, Dimensions, Alert } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Search, MapPin, X, Plus, Minus, ChevronDown, Check, Zap, ShoppingCart, ShoppingBag, LogIn, Link2Off, Compass, ChevronRight } from 'lucide-react-native';
+import { Search, MapPin, X, Plus, Minus, ChevronDown, Check, Zap, ShoppingCart, ShoppingBag, LogIn, Link2Off, Compass, ChevronRight, AlertCircle } from 'lucide-react-native';
 import { api, UnifiedProduct, PlatformVariant, getProductOverallMax, getItemPlatformLimit, getProductPlatformLimit, resolvePlatformProduct } from '../../services/api';
 import { storage, Platform, LocationData } from '../../services/storage';
 import { colors, fonts, platformThemes, PLATFORM_ORDER } from '../../constants/theme';
@@ -357,6 +357,7 @@ export default function SearchScreen() {
     inStock: p.inStock,
     availableStock: p.availableStock,
     maxQuantity: p.maxQuantity,
+    storeVerified: p.storeVerified,
   });
 
   const runCellSearch = useCallback(async (tid: string, target: MatchTarget, pid: Platform) => {
@@ -908,6 +909,21 @@ export default function SearchScreen() {
                 </View>
               );
             })}
+
+            {/* Blinkit answered by the direct fallback: not the store the cart uses */}
+            {(storeFilter === 'all' || storeFilter === 'blinkit') && filteredProducts.some(p => p.platform === 'blinkit' && p.storeVerified === false) && (
+              <View style={[styles.platformWarningCard, { borderColor: platformThemes.blinkit.borderColor, backgroundColor: platformThemes.blinkit.bgLight }]}>
+                <AlertCircle size={16} color={colors.amber} />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontFamily: fonts.bodySemiBold, color: colors.amber, fontSize: 12, marginBottom: 2 }}>
+                    Blinkit — may be from another store
+                  </Text>
+                  <Text style={styles.platformWarningText}>
+                    Final price and stock are confirmed at billing.
+                  </Text>
+                </View>
+              </View>
+            )}
 
             {/* Live Header Card when results exist */}
             {filteredProducts.length > 0 && (

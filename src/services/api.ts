@@ -23,6 +23,9 @@ export interface UnifiedProduct {
   inStock?: boolean;
   availableStock?: number;
   maxQuantity?: number;
+  // Blinkit only: false when the listing came from the direct fallback (not the
+  // bridged page the cart uses), so its store, price and stock may differ.
+  storeVerified?: boolean;
   // Auto-match: per-platform representation of the SAME cart line, filled by
   // the matcher so one line carries prices from every app (like the desktop
   // optimizer's platformPrices model).
@@ -46,6 +49,7 @@ export interface PlatformVariant {
   inStock?: boolean;
   availableStock?: number;
   maxQuantity?: number;
+  storeVerified?: boolean;
   // Picked by the user in the match modal rather than chosen by the matcher.
   // Such a pick is often a different-looking product (that is why auto-match
   // found nothing), so a refresh must not discard it as a weak link.
@@ -83,6 +87,7 @@ export function resolvePlatformProduct(item: { product: UnifiedProduct; quantity
         inStock: v.inStock,
         availableStock: v.availableStock,
         maxQuantity: v.maxQuantity,
+        storeVerified: v.storeVerified,
       },
       quantity: effectiveQty
     };
@@ -121,6 +126,9 @@ export interface CartCalculation {
   inStockProductIds?: string[];
   platformItemLimits?: Record<string, number>;
   platformItemQuantities?: Record<string, number>;
+  // Blinkit only: false when the bill was priced by the direct fallback instead
+  // of the bridged page, so it may not reflect the store the cart is on.
+  storeVerified?: boolean;
 }
 
 export function getItemPlatformLimit(product: UnifiedProduct | PlatformVariant | null | undefined): number | undefined {
@@ -1137,6 +1145,7 @@ export const api = {
       };
       const bridgeStatuses: (number | null)[] = [];
       json = await bridgedBlinkitSearch(url, bridgeHeaders, bridgeStatuses);
+      const storeVerified = !!json;
       console.log(json
         ? `[Blinkit] search "${query}" via BRIDGE`
         : `[Blinkit] search "${query}" via DIRECT fallback (bridge ${isBlinkitBridgeConnected() ? 'connected but returned nothing' : 'not connected'}; statuses: ${bridgeStatuses.length ? bridgeStatuses.join(',') : 'none'})`);
@@ -1180,6 +1189,7 @@ export const api = {
         storeId: item.storeId,
         availableStock: item.availableStock,
         maxQuantity: item.maxQuantity,
+        storeVerified,
       }));
     }
 
@@ -1403,6 +1413,7 @@ export const api = {
       let tax = 0;
       let total = subtotal;
       let liveBill = false;
+      let billStoreVerified: boolean | undefined;
       const outOfStockProductIds: string[] = [];
       const inStockProductIds: string[] = [];
 
@@ -1427,6 +1438,7 @@ export const api = {
               resolvePlatformProduct: (ci) => resolvePlatformProduct(ci, 'blinkit'),
             });
             ({ subtotal, deliveryFee, handlingFee, smallCartFee, surgeFee, surgeLabel, freeDeliveryGap, tax, total, liveBill } = r);
+            billStoreVerified = r.viaBridge;
             outOfStockProductIds.push(...r.outOfStockProductIds);
             inStockProductIds.push(...r.inStockProductIds);
           } else if (platform === 'swiggy' && swiggyToken && gpsCoords) {
@@ -2113,6 +2125,7 @@ export const api = {
         inStockProductIds,
         platformItemLimits,
         platformItemQuantities,
+        storeVerified: billStoreVerified,
       };
 
       onPlatformResult?.(calc);

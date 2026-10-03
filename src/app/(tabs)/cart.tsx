@@ -534,6 +534,12 @@ export default function CartScreen() {
                                   <Text style={styles.trophyText}>CHEAPEST</Text>
                                 </View>
                               ) : null}
+                              {!v.isOos && v.platform === 'blinkit' && v.product.storeVerified === false && (
+                                <View style={styles.limitBadge}>
+                                  <AlertTriangle size={8.5} color={colors.amber} style={{ marginRight: 3 }} />
+                                  <Text style={styles.limitBadgeText}>Other store?</Text>
+                                </View>
+                              )}
                             </View>
                             <Text style={[styles.lineTitle, v.isOos && styles.lineTitleOos]} numberOfLines={2}>{v.product.title}</Text>
                             <Text style={styles.lineUnit}>{v.product.quantity}</Text>
@@ -763,6 +769,12 @@ export default function CartScreen() {
 
                         return (
                           <View style={styles.inventoryStatusCard}>
+                            {calc.storeVerified === false && (
+                              <View style={[styles.limitBadge, { alignSelf: 'flex-start', marginBottom: 8 }]}>
+                                <AlertTriangle size={8.5} color={colors.amber} style={{ marginRight: 3 }} />
+                                <Text style={styles.limitBadgeText}>May be from another store — final price and stock may differ</Text>
+                              </View>
+                            )}
                             {/* Stock Coverage Progress Bar */}
                             <View style={styles.coverageRow}>
                               <Text style={styles.coverageLabel}>Stock Availability</Text>

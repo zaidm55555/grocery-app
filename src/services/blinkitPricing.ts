@@ -55,6 +55,8 @@ export interface BlinkitPricingResult {
   tax: number;
   total: number;
   liveBill: boolean;
+  // False when the bill came from the direct (non-bridge) fallback.
+  viaBridge: boolean;
   outOfStockProductIds: string[];
   inStockProductIds: string[];
 }
@@ -281,6 +283,7 @@ export async function priceBlinkitCart(
   }
 
   // 3. Last resort: direct (non-bridge) POST.
+  const viaBridge = !!resJson;
   console.log(resJson ? '[Blinkit] bill via BRIDGE' : '[Blinkit] bill: bridge gave nothing, trying DIRECT');
   if (!resJson) {
     const response = await deps.fetchWithTimeout(CARTS_URL, {
@@ -481,6 +484,6 @@ export async function priceBlinkitCart(
 
   return {
     subtotal, deliveryFee, handlingFee, smallCartFee, surgeFee, surgeLabel,
-    freeDeliveryGap, tax, total, liveBill, outOfStockProductIds, inStockProductIds,
+    freeDeliveryGap, tax, total, liveBill, viaBridge, outOfStockProductIds, inStockProductIds,
   };
 }
