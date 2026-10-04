@@ -5,6 +5,8 @@ jest.mock('../blinkitBridge', () => ({
   requestViaBlinkitBridge: jest.fn(),
   isBlinkitBridgeConnected: jest.fn(() => true),
   waitForBlinkitBridge: jest.fn(async () => true),
+  recoverBlinkitBridge: jest.fn(),
+  waitForBlinkitBridgeReady: jest.fn(async () => false),
 }));
 jest.mock('../swiggyBridge', () => ({
   requestViaSwiggyBridge: jest.fn(),
@@ -31,6 +33,8 @@ beforeEach(async () => {
   bb.isBlinkitBridgeConnected.mockReturnValue(true);
   bb.waitForBlinkitBridge.mockResolvedValue(true);
   bb.requestViaBlinkitBridge.mockReset();
+  bb.recoverBlinkitBridge.mockReset();
+  bb.waitForBlinkitBridgeReady.mockReset().mockResolvedValue(false);
   require('../swiggyBridge').requestViaSwiggyBridge.mockReset().mockResolvedValue(null);
   await AsyncStorage.clear();
   await AsyncStorage.setItem('@blinkit_address_status', JSON.stringify({ status: 'in_range' }));
@@ -103,6 +107,19 @@ describe('Blinkit search', () => {
     const [, opts] = fetchSpy.mock.calls[0] as any;
     expect(opts.method).toBe('POST');
     expect(opts.headers.auth_key).toBe('tok');
+  });
+
+  it('reloads a dead bridge page and retries through it before falling back', async () => {
+    bb.requestViaBlinkitBridge
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ status: 200, text: JSON.stringify(blinkitJson('Bridge Item')) });
+    bb.waitForBlinkitBridgeReady.mockResolvedValue(true);
+    const fetchSpy = jest.spyOn(api, 'fetchWithTimeout');
+    const r = await api.fetchDirectAPI('blinkit', 'curd', 'tok', LOC);
+    expect(bb.recoverBlinkitBridge).toHaveBeenCalled();
+    expect(r[0].title).toBe('Bridge Item');
+    expect(r[0].storeVerified).toBe(true);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('falls back to a direct request on an unparseable bridge body', async () => {

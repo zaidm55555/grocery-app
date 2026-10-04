@@ -2,7 +2,7 @@ import { storage, Platform, LocationData } from './storage';
 import { requestViaSwiggyBridge, requestEvalViaSwiggyBridge } from './swiggyBridge';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { priceBlinkitCart } from './blinkitPricing';
-import { requestViaBlinkitBridge, isBlinkitBridgeConnected, waitForBlinkitBridge } from './blinkitBridge';
+import { requestViaBlinkitBridge, isBlinkitBridgeConnected, waitForBlinkitBridge, recoverBlinkitBridge, waitForBlinkitBridgeReady } from './blinkitBridge';
 import { pickBestMatch, isSameProduct } from '../utils/matcher';
 import { stripSizeToken } from '../utils/productKey';
 
@@ -1145,6 +1145,14 @@ export const api = {
       };
       const bridgeStatuses: (number | null)[] = [];
       json = await bridgedBlinkitSearch(url, bridgeHeaders, bridgeStatuses);
+      // No response at all means the hidden page is dead (e.g. after the app sat
+      // in the background): reload it and retry once before falling back.
+      if (!json && bridgeStatuses[bridgeStatuses.length - 1] === null) {
+        recoverBlinkitBridge();
+        if (await waitForBlinkitBridgeReady(8000)) {
+          json = await bridgedBlinkitSearch(url, bridgeHeaders, bridgeStatuses);
+        }
+      }
       const storeVerified = !!json;
       console.log(json
         ? `[Blinkit] search "${query}" via BRIDGE`

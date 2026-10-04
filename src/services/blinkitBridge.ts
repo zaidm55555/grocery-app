@@ -66,6 +66,31 @@ export function reloadBlinkitBridge(): void {
   if (reloadCallback) reloadCallback();
 }
 
+// The hidden page can die while the app sits in the background (Android freezes
+// or kills its renderer) yet stay "ready" here, so requests only time out. Mark
+// it not ready and reload it; BL_BRIDGE_READY flips it back once it is alive.
+const MIN_RELOAD_GAP_MS = 5000;
+let lastRecoveryAt = 0;
+
+export function recoverBlinkitBridge(): void {
+  if (!injector || Date.now() - lastRecoveryAt < MIN_RELOAD_GAP_MS) return;
+  lastRecoveryAt = Date.now();
+  if (ready) {
+    ready = false;
+    emitStatus();
+  }
+  reloadBlinkitBridge();
+}
+
+// Resolves true once the page reports ready (false on timeout).
+export async function waitForBlinkitBridgeReady(maxMs: number): Promise<boolean> {
+  const deadline = Date.now() + maxMs;
+  while (!(injector && ready) && Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 250));
+  }
+  return !!(injector && ready);
+}
+
 // Full values of interesting localStorage keys relayed by the page
 // ('cart' holds the persistent cart object incl. its id).
 const pageStorage: Record<string, string> = {};
@@ -160,6 +185,7 @@ export async function requestViaBlinkitBridge(
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
       pending.delete(id);
+      recoverBlinkitBridge();
       resolve(null);
     }, REQUEST_TIMEOUT_MS);
     pending.set(id, { resolve, timer });
