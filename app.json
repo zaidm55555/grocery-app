@@ -21,7 +21,7 @@
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png"
       },
-      "package": "com.basketbuddy.app",
+      "package": "com.zaidbhimala.basketbuddy",
       "predictiveBackGestureEnabled": false
     },
     "web": {
