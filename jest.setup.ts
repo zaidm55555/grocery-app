@@ -1,3 +1,6 @@
+// Demo mode is on by default in the app; the existing suites test the live paths.
+process.env.EXPO_PUBLIC_DEMO_MODE = '0';
+
 // Shared Jest setup: in-memory AsyncStorage and quiet console noise from the
 // app's intentional warn/error logging (tests that care spy on it themselves).
 jest.mock('@react-native-async-storage/async-storage', () =>

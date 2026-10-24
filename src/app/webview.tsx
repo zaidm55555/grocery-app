@@ -15,6 +15,20 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 // NOT wipe localStorage/sessionStorage/IndexedDB here — Swiggy's SPA persists
 // auth + app state there, and clearing it crashes hydration into a blank page.
 // No DOM clicking — Swiggy has a real /instamart/cart route.
+const SWIGGY_WALL_RELOAD_SCRIPT = `
+  (function(){
+    setTimeout(function(){
+      try {
+        var text = (document.body && document.body.innerText) || '';
+        if (/instamart\\/cart/.test(location.href) && /Log in to continue shopping/i.test(text)) {
+          var n = Number(sessionStorage.getItem('__goWallRetry') || 0);
+          if (n < 3) { sessionStorage.setItem('__goWallRetry', String(n + 1)); location.reload(); }
+        }
+      } catch (e) {}
+    }, 3500);
+  })(); true;
+`;
+
 function buildSwiggyOpenCartScript(cartUrl: string, cookieStr: string, exportCartB64: string): string {
   const js = `
   (function(){
@@ -791,6 +805,12 @@ export default function WebViewScreen() {
           injectedJavaScript={isExportMode ? undefined : currentMeta.injectScript}
           injectedJavaScriptBeforeContentLoaded={beforeContentScript}
           onMessage={handleMessage}
+          onLoadEnd={() => {
+            if (!isExportMode || platform !== 'swiggy') return;
+            // The cart page's own request can be rate-limited and then render
+            // its login wall over a cart that is really full: reload it (max 3).
+            webViewRef.current?.injectJavaScript(SWIGGY_WALL_RELOAD_SCRIPT);
+          }}
           javaScriptEnabled={true}
           domStorageEnabled={true}
           sharedCookiesEnabled={true}

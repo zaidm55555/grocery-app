@@ -21,6 +21,11 @@ interface BlinkitBridgeHandle {
 
 const BlinkitBridgeWebView = forwardRef<BlinkitBridgeHandle>((_, ref) => {
   const webViewRef = useRef<WebView>(null);
+  // The delivery context the page currently holds (see injectAddress).
+  const lastAppliedRef = useRef('');
+  // False from the moment the page starts loading until its bridge script reports
+  // ready: injecting earlier would call a function that doesn't exist yet.
+  const pageReadyRef = useRef(false);
 
   useImperativeHandle(ref, () => ({
     reload: () => {
@@ -73,8 +78,15 @@ const BlinkitBridgeWebView = forwardRef<BlinkitBridgeHandle>((_, ref) => {
           AsyncStorage.getItem('@blinkit_lat'),
           AsyncStorage.getItem('@blinkit_lng'),
         ]);
-        if (!mounted) return;
+        if (!mounted || !pageReadyRef.current) return;
         if (addrId || (bLat && bLng)) {
+          // Every call makes the page POST three address-select requests to
+          // blinkit.com. Sent every 2s forever, that traffic is what Cloudflare
+          // was challenging the page for: apply the address only when it
+          // changed, or after the page (re)loaded and lost it.
+          const key = `${addrId || ''}|${bLat || ''}|${bLng || ''}`;
+          if (key === lastAppliedRef.current) return;
+          lastAppliedRef.current = key;
           webViewRef.current?.injectJavaScript(
             `window.__blSetDeliveryContext(${JSON.stringify(addrId || '')}, ${JSON.stringify(bLat || '')}, ${JSON.stringify(bLng || '')}); true;`
           );
@@ -102,6 +114,8 @@ const BlinkitBridgeWebView = forwardRef<BlinkitBridgeHandle>((_, ref) => {
     }
     try {
       const msg = JSON.parse(payload);
+      // A (re)loaded page has lost the delivery context: apply it once more.
+      if (msg?.type === 'BL_BRIDGE_READY') { pageReadyRef.current = true; lastAppliedRef.current = ''; }
       if (msg?.type === 'BL_ADDR_RESOLVED') {
         if (msg.addressId) AsyncStorage.setItem('@blinkit_address_id', msg.addressId);
         if (msg.lat && msg.lng) { AsyncStorage.setItem('@blinkit_lat', msg.lat); AsyncStorage.setItem('@blinkit_lng', msg.lng); }
@@ -116,6 +130,7 @@ const BlinkitBridgeWebView = forwardRef<BlinkitBridgeHandle>((_, ref) => {
         ref={webViewRef}
         source={{ uri: 'https://blinkit.com/' }}
         onMessage={handleMessage}
+        onLoadStart={() => { pageReadyRef.current = false; lastAppliedRef.current = ''; }}
         onLoadEnd={() => {
           webViewRef.current?.injectJavaScript(`
             (function(){

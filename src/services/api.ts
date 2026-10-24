@@ -5,6 +5,7 @@ import { priceBlinkitCart } from './blinkitPricing';
 import { requestViaBlinkitBridge, isBlinkitBridgeConnected, waitForBlinkitBridge, recoverBlinkitBridge, waitForBlinkitBridgeReady } from './blinkitBridge';
 import { pickBestMatch, isSameProduct } from '../utils/matcher';
 import { stripSizeToken } from '../utils/productKey';
+import { loadDemoMode, demoSearch, demoCalculate, DEMO_LOCATION, DEMO_BLINKIT_AUTH_KEY, setDemoSwiggyLocation } from './demo';
 
 export interface UnifiedProduct {
   id: string;
@@ -242,7 +243,10 @@ const BLINKIT_SEARCH_CACHE_MS = 60 * 1000;
 const blinkitSearchInflight = new Map<string, Promise<any | null>>();
 const blinkitSearchCache = new Map<string, { at: number; json: any }>();
 let blinkitSearchChain: Promise<unknown> = Promise.resolve();
-const BLINKIT_CHALLENGE_COOLDOWN_MS = 2 * 60 * 1000;
+const BLINKIT_CHALLENGE_COOLDOWN_MS = 45 * 1000;
+// How long a challenged search waits for the reloaded page before giving up.
+const BLINKIT_CHALLENGE_RELOAD_WAIT_MS = 25 * 1000;
+const BLINKIT_CHALLENGE_RETRIES = 3;
 let blinkitBridgeSearchBlockedUntil = 0;
 
 function bridgedBlinkitSearch(url: string, headers: Record<string, string>, statuses: (number | null)[]): Promise<any | null> {
@@ -258,7 +262,8 @@ function bridgedBlinkitSearch(url: string, headers: Record<string, string>, stat
 
   const run = blinkitSearchChain.then(async () => {
     let rateLimitWaits = 0;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    let challengeRetries = 0;
+    for (let attempt = 0; attempt < 3 + BLINKIT_CHALLENGE_RETRIES; attempt++) {
       const res = await requestViaBlinkitBridge(url, 'POST', JSON.stringify({}), headers);
       statuses.push(res ? res.status : null);
       if (!res) break;
@@ -273,9 +278,30 @@ function bridgedBlinkitSearch(url: string, headers: Record<string, string>, stat
       // it and reloading the hidden page didn't clear it either.
       const challenged = (res.status === 429 || res.status === 403) && /just a moment|enable javascript and cookies/i.test(res.text);
       if (challenged) {
+        // Reloading the page is a real navigation, which lets the WebView run
+        // Cloudflare's JS check itself (it cleared within ~40s in practice).
+        // The page reports "ready" before that check has finished, so after the
+        // reload retry a few times, spaced out, through the same page: the
+        // result then still comes from the cart's store. Only if it stays
+        // challenged, back off and let the caller fall back.
+        if (challengeRetries < BLINKIT_CHALLENGE_RETRIES) {
+          console.warn(`[Blinkit] search challenged by Cloudflare (HTTP ${res.status}); ${challengeRetries === 0 ? 'reloading the page' : 'waiting for it to clear'} (retry ${challengeRetries + 1}/${BLINKIT_CHALLENGE_RETRIES})`);
+          if (challengeRetries === 0) {
+            recoverBlinkitBridge();
+            if (!(await waitForBlinkitBridgeReady(BLINKIT_CHALLENGE_RELOAD_WAIT_MS))) {
+              blinkitBridgeSearchBlockedUntil = Date.now() + BLINKIT_CHALLENGE_COOLDOWN_MS;
+              break;
+            }
+          } else {
+            await new Promise(r => setTimeout(r, 3000 * challengeRetries));
+          }
+          challengeRetries++;
+          continue;
+        }
         blinkitBridgeSearchBlockedUntil = Date.now() + BLINKIT_CHALLENGE_COOLDOWN_MS;
         break;
       }
+      if (res.status !== 429) console.warn(`[Blinkit] search HTTP ${res.status}: ${String(res.text).slice(0, 120).replace(/\s+/g, ' ')}`);
       if (res.status === 429 && rateLimitWaits < 2) {
         await new Promise(r => setTimeout(r, rateLimitWaits++ === 0 ? 2000 : 4000));
         continue;
@@ -289,6 +315,14 @@ function bridgedBlinkitSearch(url: string, headers: Record<string, string>, stat
   blinkitSearchChain = run.then(() => new Promise(r => setTimeout(r, BLINKIT_SEARCH_GAP_MS)), () => undefined);
   return run;
 }
+
+// A failed address request (Cloudflare block, timeout, 5xx) says nothing about
+// the account, so it must never be saved as "no address". getBlinkitAddresses
+// flags its last outcome here; getClosestBlinkitAddress reads it right after.
+let blinkitAddressFetchFailed = false;
+// "no_address" is re-checked after this long (a real answer is stable, but a
+// wrong one must heal quickly instead of locking Blinkit search out for a day).
+const BLINKIT_NO_ADDRESS_TTL_MS = 2 * 60 * 1000;
 
 export interface AddressCacheEntry {
   lat: number;
@@ -319,6 +353,7 @@ export const api = {
   async getBlinkitAddresses(lat: number, lng: number): Promise<any[]> {
     const token = await storage.getToken('blinkit');
     if (!token) return [];
+    blinkitAddressFetchFailed = false;
 
     const url = `https://blinkit.com/v4/address?cur_lat=${lat}&cur_lon=${lng}`;
     try {
@@ -337,6 +372,7 @@ export const api = {
       });
 
       if (!response.ok) {
+        blinkitAddressFetchFailed = true;
         return [];
       }
 
@@ -347,6 +383,7 @@ export const api = {
       }
       return Array.isArray(list) ? list : [];
     } catch {
+      blinkitAddressFetchFailed = true;
       return [];
     }
   },
@@ -365,7 +402,8 @@ export const api = {
     // 1. Check in-memory session cache first (instant 0ms)
     if (!force && blinkitAddressSessionCache) {
       const d = distanceKm(lat, lng, blinkitAddressSessionCache.lat, blinkitAddressSessionCache.lng);
-      if (d < 1) {
+      const expired = blinkitAddressSessionCache.status === 'no_address' && Date.now() - blinkitAddressSessionCache.at > BLINKIT_NO_ADDRESS_TTL_MS;
+      if (d < 1 && !expired) {
         if (blinkitAddressSessionCache.status === 'in_range') {
           return blinkitAddressSessionCache.address;
         }
@@ -380,7 +418,8 @@ export const api = {
         const raw = await AsyncStorage.getItem(CACHE_KEY);
         if (raw) {
           const cached: AddressCacheEntry = JSON.parse(raw);
-          const fresh = typeof cached.at === 'number' && Date.now() - cached.at < 24 * 3600 * 1000;
+          const ttl = cached.status === 'no_address' ? BLINKIT_NO_ADDRESS_TTL_MS : 24 * 3600 * 1000;
+          const fresh = typeof cached.at === 'number' && Date.now() - cached.at < ttl;
           const nearby = typeof cached.lat === 'number' && typeof cached.lng === 'number' && distanceKm(lat, lng, cached.lat, cached.lng) < 1;
           if (fresh && nearby) {
             blinkitAddressSessionCache = cached;
@@ -409,7 +448,18 @@ export const api = {
     }
 
     // 3. Network fetch (only executed on initial app sync or when GPS location changed)
+    blinkitAddressFetchFailed = false;
     const addresses = await this.getBlinkitAddresses(lat, lng);
+    if (addresses.length === 0 && blinkitAddressFetchFailed) {
+      // The request itself failed: remember nothing, and drop any "no address"
+      // answer an earlier failure left behind so search isn't blocked by it.
+      if (blinkitAddressSessionCache?.status === 'no_address') blinkitAddressSessionCache = null;
+      try {
+        const raw = await AsyncStorage.getItem('@blinkit_address_status');
+        if (raw && JSON.parse(raw)?.status === 'no_address') await AsyncStorage.removeItem('@blinkit_address_status');
+      } catch {}
+      return null;
+    }
     if (addresses.length === 0) {
       const entry: AddressCacheEntry = {
         lat,
@@ -1050,6 +1100,14 @@ export const api = {
 
   async search(query: string, onPlatformResults?: (platform: Platform, results: UnifiedProduct[], error?: string) => void): Promise<UnifiedProduct[]> {
     const platforms: Platform[] = ['blinkit', 'swiggy'];
+    if (await loadDemoMode()) {
+      const all = await Promise.all(platforms.map(async (platform) => {
+        const results = await this.searchDemoLive(platform, query);
+        onPlatformResults?.(platform, results);
+        return results;
+      }));
+      return all.flat();
+    }
     const searchPromises = platforms.map(async (platform) => {
       const token = await storage.getToken(platform);
       const location = await storage.getLocation();
@@ -1078,7 +1136,28 @@ export const api = {
     return allResults.flat();
   },
 
+  // Demo search: the real store search at the fixed demo location, no login;
+  // falls back to the hardcoded catalog when the store can't answer.
+  async searchDemoLive(platform: Platform, query: string): Promise<UnifiedProduct[]> {
+    const token = platform === 'blinkit' ? DEMO_BLINKIT_AUTH_KEY : '';
+    if (platform === 'swiggy') await setDemoSwiggyLocation().catch(() => {});
+    // The Instamart page may still be warming up on the first search: retry
+    // once before falling back to the hardcoded items.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const live = await this.fetchDirectAPI(platform, query, token, DEMO_LOCATION, true);
+        if (live.length > 0) return live;
+        console.warn(`[Demo] live ${platform} search for "${query}" returned no products (attempt ${attempt + 1})`);
+      } catch (e: any) {
+        console.warn(`[Demo] live ${platform} search for "${query}" failed (attempt ${attempt + 1}): ${e?.message || e}`);
+      }
+      if (attempt === 0) await new Promise((r) => setTimeout(r, 2500));
+    }
+    return demoSearch(platform, query);
+  },
+
   async searchSingle(platform: Platform, query: string): Promise<UnifiedProduct[]> {
+    if (await loadDemoMode()) return this.searchDemoLive(platform, query);
     const token = await storage.getToken(platform);
     if (!token) return [];
     const location = await storage.getLocation();
@@ -1089,7 +1168,7 @@ export const api = {
     }
   },
 
-  async fetchDirectAPI(platform: Platform, query: string, token: string, location: LocationData | null): Promise<UnifiedProduct[]> {
+  async fetchDirectAPI(platform: Platform, query: string, token: string, location: LocationData | null, demo = false): Promise<UnifiedProduct[]> {
     if (!location) return [];
     const lat = location.latitude;
     const lng = location.longitude;
@@ -1100,14 +1179,18 @@ export const api = {
       // dark store (merchant) from the coordinates. Reading them before the
       // address was resolved sent the first search from raw GPS, so search and
       // cart could land on different stores and disagree on stock.
-      let bStatusRaw = await AsyncStorage.getItem('@blinkit_address_status');
-      if (!bStatusRaw) {
+      let bStatusRaw = demo ? null : await AsyncStorage.getItem('@blinkit_address_status');
+      // A stored "no_address" may be left over from a failed lookup: re-check it
+      // (rate-limited by the TTL inside getClosestBlinkitAddress).
+      let staleNoAddress = false;
+      try { staleNoAddress = !!bStatusRaw && JSON.parse(bStatusRaw)?.status === 'no_address'; } catch {}
+      if ((!bStatusRaw || staleNoAddress) && !demo) {
         await this.getClosestBlinkitAddress(lat, lng);
         bStatusRaw = await AsyncStorage.getItem('@blinkit_address_status');
       }
       let bLat = lat;
       let bLng = lng;
-      try {
+      if (!demo) try {
         const savedBLat = await AsyncStorage.getItem('@blinkit_lat');
         const savedBLng = await AsyncStorage.getItem('@blinkit_lng');
         if (savedBLat && savedBLng && Number.isFinite(Number(savedBLat)) && Number.isFinite(Number(savedBLng))) {
@@ -1145,13 +1228,23 @@ export const api = {
       };
       const bridgeStatuses: (number | null)[] = [];
       json = await bridgedBlinkitSearch(url, bridgeHeaders, bridgeStatuses);
-      // No response at all means the hidden page is dead (e.g. after the app sat
-      // in the background): reload it and retry once before falling back.
-      if (!json && bridgeStatuses[bridgeStatuses.length - 1] === null) {
-        recoverBlinkitBridge();
-        if (await waitForBlinkitBridgeReady(8000)) {
-          json = await bridgedBlinkitSearch(url, bridgeHeaders, bridgeStatuses);
+      // Retry the bridge once before falling back: a dead page is reloaded and
+      // waited for, a rate limit is waited out. A direct request (below) is
+      // answered by a different dark store than the cart's, so it is only the
+      // last resort and its results are flagged storeVerified: false.
+      for (let attempt = 0; !json && attempt < 1 && Date.now() >= blinkitBridgeSearchBlockedUntil; attempt++) {
+        const last = bridgeStatuses[bridgeStatuses.length - 1];
+        if (last === null || !isBlinkitBridgeConnected()) {
+          // No response at all: the hidden page is dead (e.g. the app sat in
+          // the background). Reload it and wait for it to come back.
+          recoverBlinkitBridge();
+          if (!(await waitForBlinkitBridgeReady(8000))) break;
+        } else if (last === 429) {
+          await new Promise(r => setTimeout(r, 4000));
+        } else {
+          break; // an HTTP error from the page itself: retrying won't change it
         }
+        json = await bridgedBlinkitSearch(url, bridgeHeaders, bridgeStatuses);
       }
       const storeVerified = !!json;
       console.log(json
@@ -1202,8 +1295,10 @@ export const api = {
     }
 
     if (platform === 'swiggy') {
-      const delivery = await this.resolveSwiggyDeliveryAddress(lat, lng);
-      const sStatusRaw = await AsyncStorage.getItem('@swiggy_address_status');
+      const delivery = demo
+        ? { id: 'demo', name: null, location: { latitude: lat, longitude: lng } }
+        : await this.resolveSwiggyDeliveryAddress(lat, lng);
+      const sStatusRaw = demo ? null : await AsyncStorage.getItem('@swiggy_address_status');
       const sStatus = sStatusRaw ? JSON.parse(sStatusRaw) : null;
 
       // If user is out of range (>35km) or has no address, do not return results
@@ -1378,6 +1473,12 @@ export const api = {
     targetPlatform?: Platform
   ): Promise<CartCalculation[]> {
     const platforms: Platform[] = targetPlatform ? [targetPlatform] : ['blinkit', 'swiggy'];
+
+    if (await loadDemoMode()) {
+      const calcs = demoCalculate(items, platforms, resolvePlatformProduct);
+      calcs.forEach((c) => onPlatformResult?.(c));
+      return calcs;
+    }
 
     const simulateNoAddress = (await AsyncStorage.getItem('@blinkit_simulate_no_address')) === '1';
 

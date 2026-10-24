@@ -41,6 +41,17 @@ beforeEach(async () => {
 });
 
 describe('Blinkit search', () => {
+  it('re-checks a stale no_address status and searches once the address lookup works again', async () => {
+    await AsyncStorage.setItem('@blinkit_address_status', JSON.stringify({ status: 'no_address' }));
+    await AsyncStorage.setItem('@blinkit_address_cache', JSON.stringify({ lat: LOC.latitude, lng: LOC.longitude, status: 'no_address', address: null, at: Date.now() - 60 * 60 * 1000 }));
+    await require('../storage').storage.saveToken('blinkit', 'tok');
+    const addrResp = resp({ addresses: [{ id: 'h', latitude: String(LOC.latitude), longitude: String(LOC.longitude) }] });
+    jest.spyOn(api, 'fetchWithTimeout').mockResolvedValue(addrResp as any);
+    bb.requestViaBlinkitBridge.mockResolvedValue({ status: 200, text: JSON.stringify(blinkitJson()) });
+    const r = await api.fetchDirectAPI('blinkit', 'butter', 'tok', LOC);
+    expect(r).toHaveLength(1);
+  });
+
   it('searches through the bridge and maps products', async () => {
     bb.requestViaBlinkitBridge.mockResolvedValue({ status: 200, text: JSON.stringify(blinkitJson()) });
     const r = await api.fetchDirectAPI('blinkit', 'butter', 'tok', LOC);
@@ -99,11 +110,12 @@ describe('Blinkit search', () => {
     expect(bb.requestViaBlinkitBridge).toHaveBeenCalledTimes(1);
   });
 
-  it('falls back to a direct request when the bridge returns nothing', async () => {
+  it('falls back to a direct request when the bridge returns nothing, flagged as an unverified store', async () => {
     bb.requestViaBlinkitBridge.mockResolvedValue(null);
     const fetchSpy = jest.spyOn(api, 'fetchWithTimeout').mockResolvedValue(resp(blinkitJson('Direct Item')) as any);
     const r = await api.fetchDirectAPI('blinkit', 'rice', 'tok', LOC);
     expect(r[0].title).toBe('Direct Item');
+    expect(r[0].storeVerified).toBe(false);
     const [, opts] = fetchSpy.mock.calls[0] as any;
     expect(opts.method).toBe('POST');
     expect(opts.headers.auth_key).toBe('tok');
@@ -140,9 +152,55 @@ describe('Blinkit search', () => {
     const fetchSpy = jest.spyOn(api, 'fetchWithTimeout').mockResolvedValue(resp(blinkitJson()) as any);
     await api.fetchDirectAPI('blinkit', 'sugar', 'tok', LOC);
     expect(bb.requestViaBlinkitBridge).toHaveBeenCalledTimes(1); // no retries on a challenge
+    expect(bb.recoverBlinkitBridge).toHaveBeenCalled(); // page reloaded to clear the challenge
     await api.fetchDirectAPI('blinkit', 'tea', 'tok', LOC);
     expect(bb.requestViaBlinkitBridge).toHaveBeenCalledTimes(1); // cooldown: bridge skipped
     expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('after a Cloudflare challenge, reloads the page and retries through it (right store) when it comes back', async () => {
+    bb.requestViaBlinkitBridge
+      .mockResolvedValueOnce({ status: 429, text: 'Just a moment...' })
+      .mockResolvedValueOnce({ status: 200, text: JSON.stringify(blinkitJson('Bridge Item')) });
+    bb.waitForBlinkitBridgeReady.mockResolvedValue(true);
+    const fetchSpy = jest.spyOn(api, 'fetchWithTimeout');
+    const r = await api.fetchDirectAPI('blinkit', 'paneer', 'tok', LOC);
+    expect(bb.recoverBlinkitBridge).toHaveBeenCalled();
+    expect(r[0].title).toBe('Bridge Item');
+    expect(r[0].storeVerified).toBe(true);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('keeps retrying, spaced out, while the reloaded page is still challenged, then succeeds', async () => {
+    jest.useFakeTimers();
+    bb.requestViaBlinkitBridge
+      .mockResolvedValueOnce({ status: 429, text: 'Just a moment...' })
+      .mockResolvedValueOnce({ status: 429, text: 'Just a moment...' })
+      .mockResolvedValueOnce({ status: 200, text: JSON.stringify(blinkitJson('Bridge Item')) });
+    bb.waitForBlinkitBridgeReady.mockResolvedValue(true);
+    const p = api.fetchDirectAPI('blinkit', 'curd2', 'tok', LOC);
+    await jest.advanceTimersByTimeAsync(5000);
+    const r = await p;
+    expect(r[0].storeVerified).toBe(true);
+    expect(bb.requestViaBlinkitBridge).toHaveBeenCalledTimes(3);
+    expect(bb.recoverBlinkitBridge).toHaveBeenCalledTimes(1); // reloaded once, then just waited
+    jest.useRealTimers();
+  });
+
+  it('a page that stays challenged falls back and starts the cooldown', async () => {
+    jest.useFakeTimers();
+    bb.requestViaBlinkitBridge.mockResolvedValue({ status: 429, text: 'Just a moment...' });
+    bb.waitForBlinkitBridgeReady.mockResolvedValue(true);
+    const fetchSpy = jest.spyOn(api, 'fetchWithTimeout').mockResolvedValue(resp(blinkitJson()) as any);
+    const p = api.fetchDirectAPI('blinkit', 'ghee', 'tok', LOC);
+    await jest.advanceTimersByTimeAsync(30000);
+    const r = await p;
+    expect(bb.requestViaBlinkitBridge).toHaveBeenCalledTimes(4); // first try + 3 retries
+    expect(r[0].storeVerified).toBe(false);
+    await api.fetchDirectAPI('blinkit', 'jam', 'tok', LOC);
+    expect(bb.requestViaBlinkitBridge).toHaveBeenCalledTimes(4); // cooldown: bridge skipped
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    jest.useRealTimers();
   });
 
   it('does not retry non-429 errors on the bridge', async () => {

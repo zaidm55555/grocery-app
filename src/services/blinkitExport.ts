@@ -19,6 +19,7 @@
 // Origin/Cookie/TLS context (HttpOnly cookies decide the session; the gateway
 // rejects worker-side requests otherwise).
 
+import { loadDemoMode, DEMO_BLINKIT_AUTH_KEY, DEMO_LOCATION } from './demo';
 import { api, parseBlinkitProducts, UnifiedProduct, resolvePlatformProduct, CartCalculation, getProductPlatformLimit } from './api';
 import { requestViaBlinkitBridge } from './blinkitBridge';
 import { storage } from './storage';
@@ -224,10 +225,11 @@ export async function createBlinkitShareLink(
   cart: { product: UnifiedProduct; quantity: number }[],
   calculations?: CartCalculation[]
 ): Promise<BlinkitShareResult | null> {
-  const authKey = await storage.getToken('blinkit');
+  const demo = await loadDemoMode();
+  const authKey = (await storage.getToken('blinkit')) || (demo ? DEMO_BLINKIT_AUTH_KEY : null);
   if (!authKey) return null;
 
-  const location = await storage.getLocation();
+  const location = (await storage.getLocation()) || (demo ? DEMO_LOCATION : null);
   if (!location) return null;
   const lat = location.latitude;
   const lng = location.longitude;

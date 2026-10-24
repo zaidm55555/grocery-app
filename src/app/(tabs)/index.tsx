@@ -4,6 +4,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Search, MapPin, X, Plus, Minus, ChevronDown, Check, Zap, ShoppingCart, ShoppingBag, LogIn, Link2Off, Compass, ChevronRight, AlertCircle } from 'lucide-react-native';
 import { api, UnifiedProduct, PlatformVariant, getProductOverallMax, getItemPlatformLimit, getProductPlatformLimit, resolvePlatformProduct } from '../../services/api';
+import { isDemoMode, loadDemoMode, DEMO_LOCATION } from '../../services/demo';
 import { storage, Platform, LocationData } from '../../services/storage';
 import { colors, fonts, platformThemes, PLATFORM_ORDER } from '../../constants/theme';
 import { liveKey, familyKey } from '../../utils/productKey';
@@ -255,8 +256,9 @@ export default function SearchScreen() {
       storage.getLocation(),
       storage.getCart(),
     ]);
-    setTokens({ blinkit: blinkitToken, swiggy: swiggyToken });
-    setLocation(userLoc);
+    const demo = await loadDemoMode();
+    setTokens(demo ? { blinkit: 'demo', swiggy: 'demo' } : { blinkit: blinkitToken, swiggy: swiggyToken });
+    setLocation(demo && !userLoc ? DEMO_LOCATION : userLoc);
     setCartItems(cart);
 
     if (userLoc && typeof userLoc.latitude === 'number' && typeof userLoc.longitude === 'number') {
@@ -291,8 +293,9 @@ export default function SearchScreen() {
 
   const performSearch = async (searchTerm: string) => {
     if (!searchTerm.trim()) return;
+    await loadDemoMode();
     Keyboard.dismiss();
-    if (!location) {
+    if (!location && !isDemoMode()) {
       setProducts([]);
       return;
     }
@@ -425,7 +428,8 @@ export default function SearchScreen() {
 
     // Only auto-match apps that actually have a linked session — otherwise
     // every search would come back empty and always report "no match".
-    const linkChecks = await Promise.all(candidates.map(async pl => [pl, !!(await storage.getToken(pl))] as const));
+    const demo = await loadDemoMode();
+    const linkChecks = await Promise.all(candidates.map(async pl => [pl, demo || !!(await storage.getToken(pl))] as const));
     const others = linkChecks.filter(([, linked]) => linked).map(([pl]) => pl);
     if (others.length === 0) return;
 

@@ -1,9 +1,10 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { StyleSheet, View, Text, ScrollView, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
+import { StyleSheet, View, Text, ScrollView, TouchableOpacity, ActivityIndicator, Alert, Switch } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { MapPin, Link2, Link2Off, Compass, Trash2, CheckCircle2 } from 'lucide-react-native';
 import * as Location from 'expo-location';
 import { storage, Platform, LocationData } from '../../services/storage';
+import { isDemoMode, loadDemoMode, setDemoMode } from '../../services/demo';
 import { colors, fonts, platformThemes } from '../../constants/theme';
 import { resolveAreaName, getFastLocation } from '../../utils/location';
 import { syncDeliveryAddresses, subscribeAddressSync, notifyLocationReset } from '../../services/addressSync';
@@ -16,6 +17,8 @@ export default function ProfileScreen() {
   });
   const [location, setLocation] = useState<LocationData | null>(null);
   const [locLoading, setLocLoading] = useState(false);
+  const [demo, setDemo] = useState(isDemoMode());
+  useEffect(() => { loadDemoMode().then(setDemo); }, []);
 
   const loadData = async () => {
     const blinkitToken = await storage.getToken('blinkit');
@@ -187,6 +190,14 @@ export default function ProfileScreen() {
             </>
           )}
         </TouchableOpacity>
+      </View>
+
+      <View style={[styles.platformCard, { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }]}>
+        <View style={{ flex: 1, paddingRight: 12 }}>
+          <Text style={styles.sectionTitle}>Demo mode</Text>
+          <Text style={{ fontFamily: fonts.body, color: colors.textSecondary }}>Sample products and fees, no logins needed.</Text>
+        </View>
+        <Switch value={demo} onValueChange={(v) => { setDemo(v); setDemoMode(v); }} />
       </View>
 
       {/* Platform Cards */}

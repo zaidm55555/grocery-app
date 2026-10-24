@@ -130,6 +130,44 @@ describe('api.getClosestBlinkitAddress', () => {
     expect(spy).toHaveBeenCalledTimes(2);
   });
 
+  describe('a failed address request is not "no address"', () => {
+    it('records nothing and clears a stale no_address status when the request fails', async () => {
+      await AsyncStorage.setItem('@blinkit_address_status', JSON.stringify({ status: 'no_address' }));
+      jest.spyOn(api, 'fetchWithTimeout').mockResolvedValue(json({}, false));
+      expect(await api.getClosestBlinkitAddress(HERE.lat, HERE.lng)).toBeNull();
+      expect(await AsyncStorage.getItem('@blinkit_address_cache')).toBeNull();
+      expect(await status()).toBeNull();
+    });
+
+    it('does not cache a network error, so the next call asks again', async () => {
+      const spy = jest.spyOn(api, 'fetchWithTimeout').mockRejectedValueOnce(new Error('offline'));
+      await api.getClosestBlinkitAddress(HERE.lat, HERE.lng);
+      spy.mockResolvedValueOnce(json({ addresses: [addr('home', 22.3, 73.1)] }));
+      expect((await api.getClosestBlinkitAddress(HERE.lat, HERE.lng))?.id).toBe('home');
+      expect(await status()).toMatchObject({ status: 'in_range' });
+    });
+
+    it('a genuinely empty address list is still recorded as no_address', async () => {
+      jest.spyOn(api, 'fetchWithTimeout').mockResolvedValue(json({ addresses: [] }));
+      expect(await api.getClosestBlinkitAddress(HERE.lat, HERE.lng)).toBeNull();
+      expect(await status()).toEqual({ status: 'no_address' });
+    });
+
+    it('re-checks an old no_address cache entry instead of trusting it for a day', async () => {
+      await AsyncStorage.setItem('@blinkit_address_cache', JSON.stringify({ lat: 22.3, lng: 73.1, status: 'no_address', address: null, at: Date.now() - 10 * 60 * 1000 }));
+      const spy = jest.spyOn(api, 'fetchWithTimeout').mockResolvedValue(json({ addresses: [addr('home', 22.3, 73.1)] }));
+      expect((await api.getClosestBlinkitAddress(HERE.lat, HERE.lng))?.id).toBe('home');
+      expect(spy).toHaveBeenCalledTimes(1);
+    });
+
+    it('still trusts a recent no_address entry (no request)', async () => {
+      await AsyncStorage.setItem('@blinkit_address_cache', JSON.stringify({ lat: 22.3, lng: 73.1, status: 'no_address', address: null, at: Date.now() - 10 * 1000 }));
+      const spy = jest.spyOn(api, 'fetchWithTimeout');
+      expect(await api.getClosestBlinkitAddress(HERE.lat, HERE.lng)).toBeNull();
+      expect(spy).not.toHaveBeenCalled();
+    });
+  });
+
   describe('persistent cache (fresh app session)', () => {
     const seed = (entry: any) => AsyncStorage.setItem('@blinkit_address_cache', JSON.stringify(entry));
 

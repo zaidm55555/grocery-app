@@ -25,6 +25,7 @@
 // page-context injection is only to satisfy the Origin/Cookie checks, never to
 // touch the DOM.
 
+import { loadDemoMode, DEMO_LOCATION, setDemoSwiggyLocation } from './demo';
 import {
   api,
   UnifiedProduct,
@@ -121,10 +122,13 @@ function resolveSwiggyItem(
   const qty = (typeof limit === 'number' && limit > 0) ? Math.min(requestedQty, limit) : requestedQty;
   const clampedFrom = qty < requestedQty ? requestedQty : undefined;
 
-  const productId = base?.productId || base?.originalId;
+  // Hardcoded demo items carry made-up ids: leave them unresolved so the
+  // export finds the real Instamart listing by name.
+  const isFakeId = String(base?.productId || base?.originalId || '').startsWith('demo-');
+  const productId = isFakeId ? undefined : base?.productId || base?.originalId;
   // itemId = the variation/product id pair from Swiggy's own catalog — the
   // auto-match stores it as originalId (mirrors buildBody in api.ts).
-  const itemId = base?.originalId || base?.productId;
+  const itemId = isFakeId ? undefined : base?.originalId || base?.productId;
 
   if (productId && itemId) {
     return {
@@ -272,13 +276,17 @@ export async function exportCartToSwiggy(
   cart: { product: UnifiedProduct; quantity: number }[],
   calculations?: CartCalculation[]
 ): Promise<SwiggyExportResult | null> {
+  const demo = await loadDemoMode();
+  // Demo mode exports as a guest: the bridge page's own cookies carry the cart
+  // and Swiggy asks for login at its checkout.
   const token = await storage.getToken('swiggy');
-  if (!token) return null;
+  if (!token && !demo) return null;
 
-  const location = await storage.getLocation();
+  const location = demo ? DEMO_LOCATION : await storage.getLocation();
   if (!location) return null;
   const lat = location.latitude;
   const lng = location.longitude;
+  if (demo) await setDemoSwiggyLocation().catch(() => {});
 
   // Resolve items: fast-path stored IDs first, then fresh search.
   const missing: { name: string; quantity: string }[] = [];
@@ -310,7 +318,9 @@ export async function exportCartToSwiggy(
     }
   });
 
-  const delivery = await api.resolveSwiggyDeliveryAddress(lat, lng);
+  let delivery = demo ? null : await api.resolveSwiggyDeliveryAddress(lat, lng);
+  // Demo mode: no saved address, so use the demo coordinates as-is.
+  if (demo) delivery = { id: 'demo', name: null, location: { latitude: lat, longitude: lng } };
   if (!delivery || !delivery.id) {
     throw new Error('Instamart delivery is currently not available in this area.');
   }
@@ -323,10 +333,31 @@ export async function exportCartToSwiggy(
   let deliveryType = 'INSTANT';
 
   if (resolved.some(Boolean) || unresolvedNames.length > 0) {
-    const disc = await discoverStore(targetLat, targetLng);
+    let disc = await discoverStore(targetLat, targetLng);
+    // Demo mode runs on a cold guest page: store discovery can time out on the
+    // first try, which would skip the cart write entirely. Retry it.
+    for (let attempt = 0; demo && !disc.storeInfo?.storeId && attempt < 2; attempt++) {
+      await new Promise((r) => setTimeout(r, 2000));
+      await setDemoSwiggyLocation().catch(() => {});
+      disc = await discoverStore(targetLat, targetLng);
+    }
     storeInfo = disc.storeInfo;
     shipmentIdV2 = disc.shipmentIdV2;
     deliveryType = disc.deliveryType;
+
+    // The items were found by search in one store: write them to that same
+    // store, or the cart marks them unavailable.
+    if (demo) {
+      const counts = new Map<string, number>();
+      for (const line of cart) {
+        const sid = resolvePlatformProduct(line, 'swiggy')?.product.storeId;
+        if (sid) counts.set(String(sid), (counts.get(String(sid)) || 0) + 1);
+      }
+      const searchStore = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+      if (searchStore && storeInfo?.storeId !== searchStore) {
+        storeInfo = { layoutId: '', ...(storeInfo || {}), storeId: searchStore, primaryStoreId: searchStore, secondaryStoreId: searchStore } as SwiggyStoreInfo;
+      }
+    }
   }
 
   const resolvedStoreId = storeInfo?.storeId || storeInfo?.primaryStoreId || '';
@@ -417,6 +448,7 @@ export async function exportCartToSwiggy(
     oldCartId = json?.data?.data?.cartId || '';
   } catch {}
 
+  const commit = async () => {
   // Clear the old cart (tolerated on failure — the write still replaces it).
   if (items.length > 0) {
     try {
@@ -490,6 +522,12 @@ export async function exportCartToSwiggy(
       }
     }
     postOk = postRes && postRes.ok;
+    // Swiggy rate-limits with HTTP 200 and {"statusCode":429} in the body.
+    try {
+      const bodyStatus = JSON.parse(postResText)?.statusCode;
+      if (typeof bodyStatus === 'number' && bodyStatus >= 400) postOk = false;
+    } catch {}
+    console.log(`[SwiggyExport] POST ${postRes?.status}: ${postResText.slice(0, 200)}`);
 
     if (postOk && postResText) {
       try {
@@ -509,14 +547,38 @@ export async function exportCartToSwiggy(
       const cart = json?.data?.data;
       const committed = (cart?.items || []).map((it: any) => ({
         productId: String(it.productId),
+        itemId: String(it.itemId ?? it.spinId ?? ''),
         quantity: Number(it.quantity),
       }));
-      const want = items.map((i) => ({ productId: String(i.productId), quantity: Number(i.quantity) }));
-      verified = want.length === committed.length && want.every((w) =>
-        committed.some((c: any) => c.productId === w.productId && c.quantity === w.quantity)
-      );
+      if (demo) {
+        // Guest sessions can echo ids differently: match on either id.
+        verified = items.length > 0 && items.every((w) =>
+          committed.some((c: any) => c.productId === String(w.productId) || c.itemId === String(w.itemId) || c.itemId === String(w.productId))
+        );
+      } else {
+        const want = items.map((i) => ({ productId: String(i.productId), quantity: Number(i.quantity) }));
+        verified = want.length === committed.length && want.every((w) =>
+          committed.some((c: any) => c.productId === w.productId && c.quantity === w.quantity)
+        );
+      }
     } catch {}
   }
+  return { postOk, newCartId, postBodyObj, verified };
+  };
+
+  let { postOk, newCartId, postBodyObj, verified } = await commit();
+  // Demo mode: the guest page is flaky right after load, so retry until the
+  // server confirms the cart holds what we wrote.
+  // Swiggy rate-limits rapid cart writes, so back off between attempts.
+  // Only a failed write is retried: another attempt clears the cart first, so
+  // it must never run over a write that succeeded.
+  for (const waitMs of demo ? [4000, 8000, 15000] : []) {
+    if (postOk) break;
+    await new Promise((r) => setTimeout(r, waitMs));
+    await setDemoSwiggyLocation().catch(() => {});
+    ({ postOk, newCartId, postBodyObj, verified } = await commit());
+  }
+  console.log(`[SwiggyExport] store=${resolvedStoreId} items=${items.length} written=${postOk} verified=${verified}`);
 
   const cartUrl = `https://www.swiggy.com/instamart/cart?goCartSync=${Date.now()}`;
 

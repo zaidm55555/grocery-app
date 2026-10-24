@@ -14,6 +14,7 @@ import SavedListsModal from '../../components/SavedListsModal';
 import ExportNoticeModal, { ExportNotice } from '../../components/ExportNoticeModal';
 import { createBlinkitShareLink } from '../../services/blinkitExport';
 import { exportCartToSwiggy } from '../../services/swiggyExport';
+import { loadDemoMode } from '../../services/demo';
 import { colors, fonts, platformThemes, PLATFORM_ORDER } from '../../constants/theme';
 
 function LogoTile({ platform, size = 26 }: { platform: Platform; size?: number }) {
@@ -47,6 +48,7 @@ const EMPTY_VERDICT: BasketVerdict = {
 
 export default function CartScreen() {
   const router = useRouter();
+  const [demoMode, setDemoModeState] = useState(false);
   const [cartItems, setCartItems] = useState<{ product: UnifiedProduct; quantity: number }[]>([]);
   const [calculations, setCalculations] = useState<CartCalculation[]>([]);
   // Platforms whose live bill is still being fetched — rendered as skeleton
@@ -126,9 +128,12 @@ export default function CartScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      let live = true;
+      loadDemoMode().then((d) => { if (live) setDemoModeState(d); });
       // Intentionally run once per focus with the latest cart — re-adding
       // loadCartData here would re-subscribe on every render.
       loadCartData();
+      return () => { live = false; };
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [])
   );
@@ -270,7 +275,7 @@ export default function CartScreen() {
     if (exporting || cartItems.length === 0) return;
     const display = platform === 'swiggy' ? 'Swiggy' : 'Blinkit';
     const linked = await storage.getToken(platform);
-    if (!linked) {
+    if (!linked && !(await loadDemoMode())) {
       Alert.alert(`${display} not linked`, `Link your ${display} account in the Accounts tab first, then export your basket.`, [
         { text: 'OK' }
       ]);
@@ -375,7 +380,10 @@ export default function CartScreen() {
       }
 
       const proceedToWebview = () => {
-        const swiggyCartB64 = swiggyResult.writePayload ? btoaUnicode(JSON.stringify(swiggyResult.writePayload)) : '';
+        // Demo mode: the guest cart is already written and verified, and the page
+        // repeating the write only gets rate-limited into an empty cart.
+        const skipPageWrite = demoMode && swiggyResult.verified;
+        const swiggyCartB64 = swiggyResult.writePayload && !skipPageWrite ? btoaUnicode(JSON.stringify(swiggyResult.writePayload)) : '';
         router.push({
           pathname: '/webview',
           params: { platform: 'swiggy', mode: 'export', url: swiggyResult.cartUrl, cartId: swiggyResult.cartId || '', oldCartId: swiggyResult.oldCartId || '', cart: swiggyCartB64 }
@@ -449,6 +457,16 @@ export default function CartScreen() {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      {demoMode && (
+        <View style={styles.unfetchedWarningBox}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.unfetchedWarningTitle}>Demo mode: prices may be inaccurate</Text>
+            <Text style={styles.unfetchedWarningText}>
+              Delivery, handling and other fees here are sample values. Log in to Blinkit and Swiggy in Profile for accurate pricing.
+            </Text>
+          </View>
+        </View>
+      )}
       {/* Header */}
       <View style={styles.header}>
         <View style={styles.headerRow}>
