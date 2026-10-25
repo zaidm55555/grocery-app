@@ -1,6 +1,7 @@
 {
   "cli": {
-    "version": ">= 22.0.0"
+    "version": ">= 22.0.0",
+    "appVersionSource": "remote"
   },
   "build": {
     "production": {
@@ -35,6 +36,19 @@
       },
       "distribution": "internal",
       "channel": "simulator"
+    },
+    "play": {
+      "android": {
+        "buildType": "app-bundle",
+        "env": {
+          "NODE_ENV": "production"
+        }
+      },
+      "autoIncrement": true,
+      "channel": "production"
     }
+  },
+  "submit": {
+    "production": {}
   }
 }
