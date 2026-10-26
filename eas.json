@@ -15,7 +15,8 @@
       "ios": {
         "simulator": false
       },
-      "channel": "production"
+      "channel": "production",
+      "environment": "production"
     },
     "preview": {
       "android": {
@@ -25,7 +26,8 @@
         "simulator": false
       },
       "distribution": "internal",
-      "channel": "preview"
+      "channel": "preview",
+      "environment": "preview"
     },
     "simulator": {
       "android": {
@@ -35,7 +37,8 @@
         "simulator": true
       },
       "distribution": "internal",
-      "channel": "simulator"
+      "channel": "simulator",
+      "environment": "preview"
     },
     "play": {
       "android": {
@@ -45,7 +48,8 @@
         }
       },
       "autoIncrement": true,
-      "channel": "production"
+      "channel": "production",
+      "environment": "production"
     }
   },
   "submit": {
