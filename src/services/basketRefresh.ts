@@ -10,10 +10,10 @@ import { api, UnifiedProduct, PlatformVariant, CartCalculation, getProductPlatfo
 import { Platform } from './storage';
 import { matchScore, pickBestMatch, isSameProduct } from '../utils/matcher';
 import { stripSizeToken } from '../utils/productKey';
+import { needsRefresh } from '../utils/lineFreshness';
 
 type Line = { product: UnifiedProduct; quantity: number };
 
-const REFRESH_TTL_MS = 10 * 60 * 1000;
 const POOL = 5;
 const LINK_MIN_SCORE = 0.5;
 
@@ -112,11 +112,14 @@ async function refreshLine(line: Line): Promise<Line> {
   };
 }
 
+// Lines added or re-checked through the right store stay trusted for an hour,
+// the rest for 10 minutes (see utils/lineFreshness.ts).
 export async function refreshBasketLines(items: Line[], force = false): Promise<{ items: Line[]; changed: boolean }> {
   const out = items.slice();
+  const now = Date.now();
   const stale = items
     .map((ci, i) => ({ ci, i }))
-    .filter(({ ci }) => force || !ci.product.refreshedAt || Date.now() - ci.product.refreshedAt > REFRESH_TTL_MS);
+    .filter(({ ci }) => force || needsRefresh(ci.product, now));
 
   for (let s = 0; s < stale.length; s += POOL) {
     await Promise.all(stale.slice(s, s + POOL).map(async ({ ci, i }) => {
@@ -128,6 +131,44 @@ export async function refreshBasketLines(items: Line[], force = false): Promise<
     }));
   }
   return { items: out, changed: stale.length > 0 };
+}
+
+// Same data regardless of key order and unset fields, ignoring the refresh stamp.
+function sameData(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+  const keys = (o: object) => Object.keys(o).filter(k => k !== 'refreshedAt' && (o as Record<string, unknown>)[k] !== undefined);
+  const ka = keys(a);
+  const kb = keys(b);
+  return ka.length === kb.length && ka.every(k => sameData((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]));
+}
+
+/**
+ * Folds a background refresh (`before` → `after`, index for index) into the
+ * basket as it is NOW, which may have moved on while the refresh ran: quantity
+ * edits, lines removed, stock limits the live bill wrote. Only lines the refresh
+ * touched change, and they keep their current quantity. `repriced` is true when
+ * a line changed beyond its refresh stamp, i.e. the bill must be recomputed.
+ */
+export function mergeRefreshedLines(current: Line[], before: Line[], after: Line[]): { items: Line[]; changed: boolean; repriced: boolean } {
+  let changed = false;
+  let repriced = false;
+  const used = new Set<number>();
+  const items = current.map(line => {
+    const i = before.findIndex((b, j) => !used.has(j) && b.product.id === line.product.id);
+    if (i < 0) return line;
+    used.add(i);
+    const next = after[i];
+    if (!next || next === before[i]) return line; // not re-checked (fresh, or its search failed)
+    changed = true;
+    if (sameData(next.product, before[i].product)) {
+      // Nothing moved: keep the line as it is now and only record the check.
+      return { ...line, product: { ...line.product, refreshedAt: next.product.refreshedAt } };
+    }
+    repriced = true;
+    return { ...line, product: next.product };
+  });
+  return { items, changed, repriced };
 }
 
 // Writes the stock limits a live bill discovered back onto the saved lines.

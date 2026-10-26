@@ -7,7 +7,8 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { Plus, Minus, Trophy, ShieldCheck, Layers, RefreshCw, Trash2, Bookmark, Send, AlertTriangle, MapPinOff, CheckCircle2, AlertCircle } from 'lucide-react-native';
 import { storage, Platform } from '../../services/storage';
 import { api, UnifiedProduct, CartCalculation, resolvePlatformProduct, getProductOverallMax } from '../../services/api';
-import { refreshBasketLines, applyLiveLimits } from '../../services/basketRefresh';
+import { refreshBasketLines, applyLiveLimits, mergeRefreshedLines } from '../../services/basketRefresh';
+import { needsRefresh } from '../../utils/lineFreshness';
 import { computeBasketVerdict, getPlatformFulfillment, BasketVerdict } from '../../utils/basketVerdict';
 import { shouldShowStockBadge } from '../../utils/stockNotes';
 import SavedListsModal from '../../components/SavedListsModal';
@@ -58,7 +59,13 @@ export default function CartScreen() {
   const [loaded, setLoaded] = useState(false);
   const [locationMismatch, setLocationMismatch] = useState(false);
   const [listsOpen, setListsOpen] = useState(false);
+  // Lines are being re-checked against the live catalogs after the bill was
+  // priced from stored data: the bill may still change, so no verdict or export.
+  const [rechecking, setRechecking] = useState(false);
   const calcRunIdRef = useRef(0);
+  // Bumped per load (focus, list change) and on blur/clear, so a background
+  // re-check that outlived its load never writes over a newer basket.
+  const loadRunIdRef = useRef(0);
   // Latest bill state for async handlers, whose closures go stale mid-await.
   const pendingRef = useRef<Platform[]>([]);
   const calculationsRef = useRef<CartCalculation[]>([]);
@@ -69,10 +76,10 @@ export default function CartScreen() {
   // priced platform has reported, so a fast-but-expensive result never
   // flashes as "Best Value".
   const verdict = useMemo(
-    () => (pendingPlatforms.length === 0 && calculations.length > 0 && !locationMismatch
+    () => (pendingPlatforms.length === 0 && calculations.length > 0 && !locationMismatch && !rechecking
       ? computeBasketVerdict(calculations, cartItems)
       : EMPTY_VERDICT),
-    [calculations, cartItems, pendingPlatforms, locationMismatch],
+    [calculations, cartItems, pendingPlatforms, locationMismatch, rechecking],
   );
   const winnerPlatform = verdict.winnerKey;
   const mostCompleteKeys = verdict.mostCompleteKeys;
@@ -81,6 +88,8 @@ export default function CartScreen() {
     PLATFORM_ORDER.filter(p => items.some(i => i.product.platform === p || i.product.platformPrices?.[p]));
 
   const loadCartData = async () => {
+    const loadId = ++loadRunIdRef.current;
+    const isCurrentLoad = () => loadRunIdRef.current === loadId;
     const [cart, currentLoc, cartLoc, mismatchFlag] = await Promise.all([
       storage.getCart(),
       storage.getLocation(),
@@ -95,35 +104,63 @@ export default function CartScreen() {
       (cart.length > 0 && !!currentLoc && !!cartLoc &&
         Math.hypot(currentLoc.latitude - cartLoc.latitude, currentLoc.longitude - cartLoc.longitude) > 0.005);
 
-    // Saved lines can be days old: re-validate price/stock/links against the
-    // live catalogs before pricing, so the basket matches what Search shows.
-    // Skipped on a location mismatch (prices there would be for another area).
-    let liveCart = cart;
-    if (cart.length > 0 && !isMismatch) {
-      // The bills on screen belong to the previous basket; drop them now so
-      // they don't flash while the catalogs are re-checked below.
-      calcRunIdRef.current++;
-      setCalculations([]);
-      setPendingPlatforms(platformsToPrice(cart));
-      const refreshed = await refreshBasketLines(cart);
-      if (refreshed.changed) {
-        liveCart = refreshed.items;
-        setCartItems(liveCart);
-        await storage.saveCart(liveCart);
-      }
-    }
-
     setLocationMismatch(isMismatch);
 
-    // If location has changed, do NOT fetch prices for the new location!
+    // If location has changed, do NOT fetch prices for the new location, nor
+    // re-check the catalogs (they would answer for another area).
     if (isMismatch) {
       calcRunIdRef.current++;
       setCalculations([]);
       setPendingPlatforms([]);
+      setRechecking(false);
       return;
     }
 
-    await runCalculations(liveCart);
+    // Lines added through the bridge (or re-checked lately) are trusted as
+    // stored. Older or fallback-store lines are re-checked against the live
+    // catalogs, but only AFTER the bill: it is priced from the stored lines
+    // first so the basket never waits on a catalog crawl, and the crawl's
+    // bridged Blinkit searches don't overlap the bridged Blinkit bill.
+    const recheck = cart.some(line => needsRefresh(line.product));
+    setRechecking(recheck);
+    await runCalculations(cart);
+    if (recheck) await recheckLines(isCurrentLoad);
+  };
+
+  // Re-validates stale lines (price, stock, links) against the live catalogs,
+  // then folds the result into the basket as it is now and re-prices the bill
+  // if anything that matters moved. Each line's own failures are swallowed by
+  // refreshBasketLines and leave it as stored.
+  const recheckLines = async (isCurrentLoad: () => boolean) => {
+    try {
+      // Re-read: the bill just wrote live stock limits, and the user may have
+      // changed quantities meanwhile.
+      const before = await storage.getCart();
+      if (!isCurrentLoad() || !before.some(line => needsRefresh(line.product))) return;
+      const refreshed = await refreshBasketLines(before);
+      if (!isCurrentLoad() || !refreshed.changed) return;
+      const merged = mergeRefreshedLines(await storage.getCart(), before, refreshed.items);
+      if (!isCurrentLoad() || !merged.changed) return;
+      await storage.saveCart(merged.items);
+      if (!isCurrentLoad()) return;
+      setCartItems(merged.items);
+      if (merged.repriced) {
+        // Same tick as the new run marking its platforms pending, so the
+        // verdict never shows for the old bill in between.
+        setRechecking(false);
+        await runCalculations(merged.items, { keepBill: true });
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      if (isCurrentLoad()) setRechecking(false);
+    }
+  };
+
+  // Abandons a running re-check: its result would describe a basket that changed.
+  const cancelRecheck = () => {
+    loadRunIdRef.current++;
+    setRechecking(false);
   };
 
   useFocusEffect(
@@ -133,12 +170,18 @@ export default function CartScreen() {
       // Intentionally run once per focus with the latest cart — re-adding
       // loadCartData here would re-subscribe on every render.
       loadCartData();
-      return () => { live = false; };
+      return () => {
+        live = false;
+        // Blurred: the next focus re-checks from the saved basket again.
+        loadRunIdRef.current++;
+      };
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [])
   );
 
-  async function runCalculations(items: { product: UnifiedProduct; quantity: number }[]) {
+  // keepBill: leave the current bill on screen (marked as fetching) while the
+  // new one is priced, instead of blanking it; used when a re-check corrects lines.
+  async function runCalculations(items: { product: UnifiedProduct; quantity: number }[], opts: { keepBill?: boolean } = {}) {
     if (items.length === 0) {
       calcRunIdRef.current++;
       setCalculations([]);
@@ -155,7 +198,7 @@ export default function CartScreen() {
     // resolve instantly with zeroed totals.
     const platformsWithItems = platformsToPrice(items);
 
-    setCalculations([]);
+    if (!opts.keepBill) setCalculations([]);
     setPendingPlatforms(platformsWithItems);
 
     try {
@@ -221,6 +264,7 @@ export default function CartScreen() {
         text: 'Clear',
         style: 'destructive',
         onPress: async () => {
+          cancelRecheck();
           setCartItems([]);
           await storage.saveCart([]);
           await AsyncStorage.removeItem('@cart_location');
@@ -233,6 +277,7 @@ export default function CartScreen() {
   };
 
   const handleClearAndSearchAgain = async () => {
+    cancelRecheck();
     setCartItems([]);
     await storage.saveCart([]);
     await AsyncStorage.removeItem('@cart_location');
@@ -272,7 +317,10 @@ export default function CartScreen() {
   const [exportNotice, setExportNotice] = useState<ExportNotice | null>(null);
 
   const handleExport = async (platform: 'blinkit' | 'swiggy') => {
-    if (exporting || cartItems.length === 0) return;
+    // While lines are re-checked the basket and bill may still change (an item
+    // found unavailable, a corrected price), and the re-check's searches share
+    // the Blinkit bridge session the export uses — the button is disabled too.
+    if (exporting || rechecking || cartItems.length === 0) return;
     const display = platform === 'swiggy' ? 'Swiggy' : 'Blinkit';
     const linked = await storage.getToken(platform);
     if (!linked && !(await loadDemoMode())) {
@@ -679,6 +727,12 @@ export default function CartScreen() {
 
           {/* Full Cost Breakdown by App (Blinkit always on top) */}
           <Text style={styles.sectionTitle}>Full Cost Breakdown by App</Text>
+          {rechecking && !locationMismatch && (
+            <View style={styles.recheckRow}>
+              <ActivityIndicator size={10} color="#60A5FA" />
+              <Text style={styles.recheckText}>Rechecking stock… the bill may still change</Text>
+            </View>
+          )}
           {locationMismatch ? (
             <View style={styles.mismatchNoticeCard}>
               <View style={styles.mismatchIconWrap}>
@@ -989,10 +1043,10 @@ export default function CartScreen() {
                       ) : (
                         <TouchableOpacity
                           onPress={() => handleExport(calc.platform)}
-                          disabled={exporting !== null || !hasItems}
+                          disabled={exporting !== null || !hasItems || rechecking}
                           style={[
                             styles.cardExportBtn,
-                            (exporting !== null || !hasItems) && { opacity: 0.55 }
+                            (exporting !== null || !hasItems || rechecking) && { opacity: 0.55 }
                           ]}
                           activeOpacity={0.8}
                         >
@@ -1013,11 +1067,13 @@ export default function CartScreen() {
                                   ? `Exporting to ${t.name}…`
                                   : !hasItems
                                   ? `No items available on ${t.name}`
+                                  : rechecking
+                                  ? 'Rechecking stock…'
                                   : oosLineCount > 0
                                   ? `Export Available Items to ${t.name}`
                                   : `Export Basket to ${t.name}`}
                               </Text>
-                              {hasItems && oosLineCount > 0 && (
+                              {hasItems && oosLineCount > 0 && !rechecking && (
                                 <Text style={[styles.cardExportBtnSubtext, { color: t.textColor }]}>
                                   {oosLineCount} out-of-stock item{oosLineCount === 1 ? '' : 's'} will be skipped
                                 </Text>
@@ -1410,6 +1466,22 @@ const styles = StyleSheet.create({
   statusText: {
     fontFamily: fonts.bodySemiBold,
     fontSize: 9.5,
+  },
+  recheckRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 6,
+    marginBottom: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: 'rgba(96, 165, 250, 0.12)',
+  },
+  recheckText: {
+    fontFamily: fonts.bodySemiBold,
+    fontSize: 11,
+    color: '#60A5FA',
   },
   mostItemsBadge: {
     flexDirection: 'row',

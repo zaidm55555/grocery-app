@@ -1,4 +1,4 @@
-import { refreshBasketLines, applyLiveLimits } from '../basketRefresh';
+import { refreshBasketLines, applyLiveLimits, mergeRefreshedLines } from '../basketRefresh';
 import { api } from '../api';
 import { product, variant, calc } from './fixtures';
 
@@ -91,6 +91,95 @@ describe('refreshBasketLines', () => {
     search.mockImplementation(async (_p, q) => (q === 'Tata Salt 1 kg' ? [] : [live()]));
     await refreshBasketLines([{ product: product({ title: 'Tata Salt 1 kg', productId: 'p1' }), quantity: 1 }]);
     expect(search.mock.calls.map(c => c[1])).toEqual(['Tata Salt 1 kg', 'Tata Salt']);
+  });
+});
+
+describe('refreshBasketLines: trust window', () => {
+  const MIN = 60 * 1000;
+  const ago = (m: number) => Date.now() - m * MIN;
+  const twin = { swiggy: variant({ id: 'swiggy-1' }) };
+
+  it('does not search a bridge-verified line stamped within the hour', async () => {
+    const verified = { product: product({ storeVerified: true, refreshedAt: ago(45), platformPrices: twin }), quantity: 1 };
+    const r = await refreshBasketLines([verified]);
+    expect(r.changed).toBe(false);
+    expect(r.items[0]).toBe(verified);
+    expect(search).not.toHaveBeenCalled();
+  });
+
+  it('re-checks a verified line once the trust window has passed', async () => {
+    search.mockResolvedValue([live({ storeVerified: true })]);
+    const old = { product: product({ productId: 'p1', storeVerified: true, refreshedAt: ago(61) }), quantity: 1 };
+    const r = await refreshBasketLines([old]);
+    expect(r.changed).toBe(true);
+    expect(search).toHaveBeenCalledWith('blinkit', 'Tata Salt');
+  });
+
+  it('keeps the 10-minute TTL for a line from the Blinkit fallback store', async () => {
+    search.mockResolvedValue([]);
+    const recent = { product: product({ storeVerified: false, refreshedAt: ago(5) }), quantity: 1 };
+    expect((await refreshBasketLines([recent])).changed).toBe(false);
+    expect(search).not.toHaveBeenCalled();
+    const older = { product: product({ storeVerified: false, refreshedAt: ago(15) }), quantity: 1 };
+    expect((await refreshBasketLines([older])).changed).toBe(true);
+    expect(search).toHaveBeenCalled();
+  });
+
+  it('re-checks a verified line whose twin came from the fallback store on the short TTL', async () => {
+    search.mockResolvedValue([]);
+    const mixed = { product: { ...product({ id: 'swiggy-1', platform: 'swiggy', refreshedAt: ago(15) }), platformPrices: { blinkit: variant({ id: 'blinkit-1', storeVerified: false }) } }, quantity: 1 };
+    expect((await refreshBasketLines([mixed])).changed).toBe(true);
+  });
+
+  it('only searches the lines that need it in a mixed basket', async () => {
+    search.mockResolvedValue([]);
+    const fresh = { product: product({ id: 'blinkit-1', title: 'Fresh', storeVerified: true, refreshedAt: ago(1) }), quantity: 1 };
+    const stale = { product: product({ id: 'blinkit-2', title: 'Unstamped', storeVerified: true }), quantity: 1 };
+    const r = await refreshBasketLines([fresh, stale]);
+    expect(search.mock.calls.map(c => c[1])).toEqual(['Unstamped']);
+    expect(r.items[0]).toBe(fresh);
+    expect(r.items[1].product.refreshedAt).toBeGreaterThan(0);
+  });
+});
+
+describe('mergeRefreshedLines', () => {
+  const line = (id: string, over = {}, quantity = 1) => ({ product: product({ id, title: id, ...over }), quantity });
+
+  it('takes a corrected line but keeps the quantity the user has now', () => {
+    const before = [line('a', { price: 10 })];
+    const after = [{ ...before[0], product: { ...before[0].product, price: 12, refreshedAt: 5 } }];
+    const current = [line('a', { price: 10 }, 4)];
+    const r = mergeRefreshedLines(current, before, after);
+    expect(r).toMatchObject({ changed: true, repriced: true });
+    expect(r.items[0]).toMatchObject({ quantity: 4, product: { price: 12, refreshedAt: 5 } });
+  });
+
+  it('only records the check when nothing moved, keeping what the bill wrote since', () => {
+    const before = [line('a', { price: 10 })];
+    const after = [{ ...before[0], product: { ...before[0].product, refreshedAt: 5 } }];
+    const current = [line('a', { price: 10, availableStock: 3 })]; // live bill limit written meanwhile
+    const r = mergeRefreshedLines(current, before, after);
+    expect(r).toMatchObject({ changed: true, repriced: false });
+    expect(r.items[0].product).toMatchObject({ price: 10, availableStock: 3, refreshedAt: 5 });
+  });
+
+  it('ignores key order and unset fields when deciding whether a line moved', () => {
+    const before = [{ product: { ...product({ id: 'a' }), platformPrices: { swiggy: { ...variant(), manual: true } } }, quantity: 1 }];
+    const v = before[0].product.platformPrices.swiggy;
+    const reordered = { manual: true, imageUrl: v.imageUrl, price: v.price, quantity: v.quantity, brand: v.brand, title: v.title, id: v.id, originalPrice: undefined };
+    const after = [{ ...before[0], product: { ...before[0].product, platformPrices: { swiggy: reordered }, refreshedAt: 5 } }];
+    expect(mergeRefreshedLines(before, before, after).repriced).toBe(false);
+  });
+
+  it('leaves lines the refresh skipped, removed lines, and new lines alone', () => {
+    const a = line('a');
+    const b = line('b');
+    const after = [a, { ...b, product: { ...b.product, price: 99, refreshedAt: 5 } }];
+    const added = line('c');
+    const r = mergeRefreshedLines([a, added], [a, b], after); // b was removed meanwhile
+    expect(r.items).toEqual([a, added]);
+    expect(r.items[0]).toBe(a);
+    expect(r).toMatchObject({ changed: false, repriced: false });
   });
 });
 

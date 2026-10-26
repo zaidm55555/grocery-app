@@ -115,6 +115,117 @@ describe('Cart screen: basic states', () => {
   });
 });
 
+describe('Cart screen: background re-check of stale lines', () => {
+  // Holds the re-check open until the test calls finish(); a change re-prices every line to ₹33.
+  let finish: (changed: boolean, stampOnly?: boolean) => void;
+  const holdRefresh = () => {
+    (basketRefresh.refreshBasketLines as jest.Mock).mockImplementation((items: any[]) => new Promise(r => {
+      finish = (changed, stampOnly = false) => r({
+        changed,
+        items: changed ? items.map(l => ({ ...l, product: { ...l.product, ...(stampOnly ? {} : { price: 33 }), refreshedAt: Date.now() } })) : items,
+      });
+    }));
+  };
+  const calcCalls = () => (api.calculateCart as jest.Mock).mock.calls;
+
+  it('shows the bill from the stored lines before the re-check finishes, then re-prices with its corrections', async () => {
+    await seed([salt()]); // never stamped: needs a re-check
+    holdRefresh();
+    const u = await renderCart();
+    expect((await u.findAllByText('₹60')).length).toBeGreaterThan(0);
+    expect(u.getByText(/Rechecking stock… the bill may still change/)).toBeTruthy();
+    expect(calcCalls()).toHaveLength(1);
+    expect(basketRefresh.refreshBasketLines).toHaveBeenCalledTimes(1);
+    // Neither a verdict nor an export while the lines may still change.
+    expect(u.queryByText('BEST VALUE')).toBeNull();
+    expect(u.queryByText('Export Basket to Blinkit')).toBeNull();
+    expect(u.getAllByText('Rechecking stock…').length).toBe(2);
+
+    setCalcs([liveCalc('blinkit', { total: 70 }), liveCalc('swiggy', { total: 62 })]);
+    await act(async () => { finish(true); });
+    await waitFor(() => expect(calcCalls()).toHaveLength(2));
+    expect(calcCalls()[1][0][0].product.price).toBe(33);
+    expect((await u.findAllByText('₹70')).length).toBeGreaterThan(0);
+    expect((await storage.getCart())[0].product.price).toBe(33);
+    expect(u.queryByText(/Rechecking stock/)).toBeNull();
+    expect(await u.findByText('Export Basket to Blinkit')).toBeTruthy();
+    expect(await u.findByText('BEST VALUE')).toBeTruthy();
+  });
+
+  it('keeps the current bill on screen while the corrected one is fetched', async () => {
+    await seed([salt()]);
+    holdRefresh();
+    const base = (api.calculateCart as jest.Mock).getMockImplementation()!;
+    let releaseBill!: () => void;
+    (api.calculateCart as jest.Mock).mockImplementation(async (...args: any[]) => {
+      if (calcCalls().length === 2) await new Promise<void>(r => { releaseBill = r; });
+      return (base as any)(...args);
+    });
+    const u = await renderCart();
+    await u.findAllByText('₹60');
+    await act(async () => { finish(true); });
+    await waitFor(() => expect(calcCalls()).toHaveLength(2));
+    expect(u.getAllByText('₹60').length).toBeGreaterThan(0); // not blanked into skeletons
+    expect(u.getAllByText('Fetching…').length).toBeGreaterThan(0);
+    await act(async () => { releaseBill(); });
+    await waitFor(() => expect(u.queryByText('Fetching…')).toBeNull());
+  });
+
+  it('only records the check, without re-pricing, when nothing changed', async () => {
+    await seed([salt()]);
+    holdRefresh();
+    const u = await renderCart();
+    await u.findAllByText('₹60');
+    await act(async () => { finish(true, true); });
+    expect(await u.findByText('BEST VALUE')).toBeTruthy();
+    expect(calcCalls()).toHaveLength(1);
+    expect((await storage.getCart())[0].product).toMatchObject({ price: 28, refreshedAt: expect.any(Number) });
+  });
+
+  it('keeps a quantity changed during the re-check and re-prices it with the corrections', async () => {
+    await seed([salt()]);
+    holdRefresh();
+    const u = await renderCart();
+    await u.findAllByText('₹60');
+    const plus = touchablesIn(u.getByText('2').parent!)[1];
+    await act(async () => { await fireEvent.press(plus); });
+    await waitFor(async () => expect((await storage.getCart())[0].quantity).toBe(3));
+    await act(async () => { finish(true); });
+    await waitFor(async () => expect((await storage.getCart())[0]).toMatchObject({ quantity: 3, product: { price: 33 } }));
+    const last = calcCalls()[calcCalls().length - 1][0][0];
+    expect(last).toMatchObject({ quantity: 3, product: { price: 33 } });
+  });
+
+  it('drops a re-check that finishes after the screen went away', async () => {
+    await seed([salt()]);
+    holdRefresh();
+    const u = await renderCart();
+    await u.findAllByText('₹60');
+    await u.unmount();
+    await act(async () => { finish(true); });
+    expect((await storage.getCart())[0].product.price).toBe(28);
+    expect(calcCalls()).toHaveLength(1);
+  });
+
+  it('trusts recently added bridge-verified lines: no re-check and no catalog searches', async () => {
+    await seed([salt({ storeVerified: true, refreshedAt: Date.now() - 20 * 60 * 1000 })]);
+    (basketRefresh.refreshBasketLines as jest.Mock).mockRestore(); // the real one would search
+    const search = jest.spyOn(api, 'searchSingle').mockResolvedValue([]);
+    const u = await renderCart();
+    expect(await u.findByText('BEST VALUE')).toBeTruthy();
+    expect(u.queryByText(/Rechecking stock/)).toBeNull();
+    expect(search).not.toHaveBeenCalled();
+    expect(calcCalls()).toHaveLength(1);
+  });
+
+  it('re-checks a line from the Blinkit fallback store once its 10-minute window has passed', async () => {
+    await seed([salt({ storeVerified: false, refreshedAt: Date.now() - 20 * 60 * 1000 })]);
+    const u = await renderCart();
+    await u.findByText('BEST VALUE');
+    expect(basketRefresh.refreshBasketLines).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('Cart screen: location mismatch', () => {
   it('pauses live pricing when the basket was built elsewhere', async () => {
     await seed([salt()]);

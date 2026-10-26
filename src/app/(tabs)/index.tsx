@@ -9,6 +9,7 @@ import { storage, Platform, LocationData } from '../../services/storage';
 import { colors, fonts, platformThemes, PLATFORM_ORDER } from '../../constants/theme';
 import { liveKey, familyKey } from '../../utils/productKey';
 import { pickBestMatch } from '../../utils/matcher';
+import { stampIfVerified } from '../../utils/lineFreshness';
 import MatchModal, { MatchFlowState, MatchTarget, MatchCell } from '../../components/MatchModal';
 import VariantPickerModal from '../../components/VariantPickerModal';
 import SharedListingSheet from '../../components/SharedListingSheet';
@@ -504,7 +505,8 @@ export default function SearchScreen() {
     const updatedCart = cartItemsRef.current.map(ci => {
       const prices = updates.get(ci.product.id);
       if (!prices) return ci;
-      return { ...ci, product: { ...ci.product, platformPrices: { ...(ci.product.platformPrices || {}), ...prices } } };
+      // Twins straight from search: no need to re-check them on opening the basket.
+      return { ...ci, product: stampIfVerified({ ...ci.product, platformPrices: { ...(ci.product.platformPrices || {}), ...prices } }) };
     });
     await commitCart(updatedCart);
     setMatchFlow(null);
@@ -556,7 +558,7 @@ export default function SearchScreen() {
         // Twin listing from the other app — merge its price into the line
         updatedLine = {
           ...line,
-          product: { ...line.product, platformPrices: { ...(line.product.platformPrices || {}), [product.platform]: toVariant(product) } }
+          product: stampIfVerified({ ...line.product, platformPrices: { ...(line.product.platformPrices || {}), [product.platform]: toVariant(product) } })
         };
       }
       const updated = [...items];
@@ -573,8 +575,9 @@ export default function SearchScreen() {
       return;
     }
 
-    // Brand-new line — add it, then auto-match the other apps
-    const newLine = { product, quantity: 1 };
+    // Brand-new line — add it, then auto-match the other apps. A listing the
+    // bridge answered is stamped as checked, so the basket doesn't search it again.
+    const newLine = { product: stampIfVerified(product), quantity: 1 };
     const updated = [...items, newLine];
     await commitCart(updated);
     beginMatchFlow(newLine);

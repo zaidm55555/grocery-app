@@ -255,6 +255,17 @@ describe('basket apply / undo', () => {
     expect(cart[0].quantity).toBe(2);
   });
 
+  it('stamps new lines as checked only when their listings came from the right store', () => {
+    const verified = { ...bl('v', 'Verified Ghee', { storeVerified: true }), platformPrices: { swiggy: variant({ id: 'swiggy-v' }) } };
+    const fallback = bl('f', 'Fallback Ghee', { storeVerified: false });
+    const existing = { product: bl('x', 'Existing Atta', { storeVerified: true }), quantity: 1 };
+    const { cart } = applyPicks([existing], [pick(verified, 1), pick(fallback, 1, 1), pick(existing.product, 1, 2)]);
+    expect(cart.find(l => l.product.id === 'blinkit-v')!.product.refreshedAt).toEqual(expect.any(Number));
+    expect(cart.find(l => l.product.id === 'blinkit-f')!.product.refreshedAt).toBeUndefined();
+    // Topping up an existing line leaves its stamp to the basket refresh.
+    expect(cart.find(l => l.product.id === 'blinkit-x')!.product).toBe(existing.product);
+  });
+
   it('reports 0 added when an existing line is already at its limit', () => {
     const butter = bl('b', 'Amul Butter', { availableStock: 2 });
     const { applied } = applyPicks([{ product: butter, quantity: 2 }], [pick(butter, 1)]);

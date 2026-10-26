@@ -406,6 +406,39 @@ describe('Search screen: adding to the basket', () => {
     expect((await storage.getCart())[0]).toMatchObject({ quantity: 1, product: { id: 'blinkit-1' } });
   });
 
+  it('stamps a line added from a bridge-verified listing so the basket does not search it again', async () => {
+    respondWith([bl('1', 'Tata Salt Blinkit', { storeVerified: true })], []);
+    const u = await renderSearch();
+    await doSearch(u);
+    await u.findByText('Tata Salt Blinkit');
+    const before = Date.now();
+    await act(async () => { await fireEvent.press(addButtonFor(u, 'Tata Salt Blinkit')); });
+    await waitFor(async () => expect((await storage.getCart()).length).toBe(1));
+    expect((await storage.getCart())[0].product.refreshedAt).toBeGreaterThanOrEqual(before);
+  });
+
+  it('leaves a line from the Blinkit fallback store unstamped so the basket re-checks it', async () => {
+    respondWith([bl('1', 'Tata Salt Blinkit', { storeVerified: false })], []);
+    const u = await renderSearch();
+    await doSearch(u);
+    await u.findByText('Tata Salt Blinkit');
+    await act(async () => { await fireEvent.press(addButtonFor(u, 'Tata Salt Blinkit')); });
+    await waitFor(async () => expect((await storage.getCart()).length).toBe(1));
+    expect((await storage.getCart())[0].product.refreshedAt).toBeUndefined();
+  });
+
+  it('re-stamps a verified line when its twin from the other app is added', async () => {
+    await storage.saveCart([{ product: bl('1', 'Tata Salt', { storeVerified: true, refreshedAt: 1 }), quantity: 1 }]);
+    respondWith([], [sw('1', 'Tata Salt')]);
+    const u = await renderSearch();
+    await doSearch(u);
+    await u.findByText('Tata Salt');
+    const before = Date.now();
+    await act(async () => { await fireEvent.press(addButtonFor(u, 'Tata Salt')); });
+    await waitFor(async () => expect((await storage.getCart())[0].product.platformPrices?.swiggy?.id).toBe('swiggy-1'));
+    expect((await storage.getCart())[0].product.refreshedAt).toBeGreaterThanOrEqual(before);
+  });
+
   it('refuses to add an out-of-stock listing', async () => {
     respondWith([bl('1', 'Gone Item', { inStock: false })], []);
     const u = await renderSearch();
@@ -490,6 +523,28 @@ describe('Search screen: auto-match on the other app', () => {
     await waitFor(async () => expect((await storage.getCart())[0].product.platformPrices?.swiggy?.id).toBe('swiggy-9'));
     expect(await u.findByText(/Added to basket · now on Instamart/)).toBeTruthy();
     expect(api.searchSingle).toHaveBeenCalledWith('swiggy', 'Tata Salt Blinkit');
+  });
+
+  it('stamps the matched line when the source and the confirmed twin came from the right store', async () => {
+    respondWith([bl('1', 'Tata Salt Blinkit', { storeVerified: true })], []);
+    (api.searchSingle as jest.Mock).mockResolvedValue([swiggyCandidate]);
+    const u = await renderSearch();
+    await doSearch(u, 'salt');
+    await addFirst(u);
+    await fireEvent.press(await u.findByText(/^Confirm · /));
+    await waitFor(async () => expect((await storage.getCart())[0].product.platformPrices?.swiggy?.id).toBe('swiggy-9'));
+    expect((await storage.getCart())[0].product.refreshedAt).toEqual(expect.any(Number));
+  });
+
+  it('does not stamp a matched line whose source came from the Blinkit fallback store', async () => {
+    respondWith([bl('1', 'Tata Salt Blinkit', { storeVerified: false })], []);
+    (api.searchSingle as jest.Mock).mockResolvedValue([swiggyCandidate]);
+    const u = await renderSearch();
+    await doSearch(u, 'salt');
+    await addFirst(u);
+    await fireEvent.press(await u.findByText(/^Confirm · /));
+    await waitFor(async () => expect((await storage.getCart())[0].product.platformPrices?.swiggy?.id).toBe('swiggy-9'));
+    expect((await storage.getCart())[0].product.refreshedAt).toBeUndefined();
   });
 
   it('Skip leaves the line unmatched on the other app', async () => {

@@ -8,6 +8,7 @@ import type { CartLine } from '../services/lists';
 import { PLATFORM_ORDER } from '../constants/theme';
 import { pickBestMatch } from './matcher';
 import { liveKey } from './productKey';
+import { stampIfVerified } from './lineFreshness';
 
 export const MAX_INPUT_CHARS = 600;
 export const MAX_ITEMS = 15;
@@ -337,7 +338,8 @@ export function applyPicks(cart: CartLine[], picks: AiPick[]): { cart: CartLine[
       applied.push({ lineId: line.product.id, added: quantity - line.quantity, created: false });
       next[idx] = { ...line, quantity };
     } else {
-      next.push({ product: pick.product, quantity: pick.units });
+      // Fresh search results: stamped so the basket doesn't search them again.
+      next.push({ product: stampIfVerified(pick.product), quantity: pick.units });
       applied.push({ lineId: pick.product.id, added: pick.units, created: true });
     }
   }
