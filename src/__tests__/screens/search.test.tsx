@@ -658,7 +658,7 @@ describe('Search screen: AI mode', () => {
     jest.spyOn(aiKey, 'get').mockResolvedValue(KEY);
     await storage.saveLocation(LOC);
     const u = await renderSearch();
-    await act(async () => { fireEvent.press(u.getByLabelText('Open AI mode')); });
+    await act(async () => { await fireEvent.press(u.getByLabelText('Open AI mode')); });
     expect(await u.findByText('Link Blinkit or Instamart in Profile (or turn on demo mode) first.')).toBeTruthy();
   });
 
@@ -666,7 +666,7 @@ describe('Search screen: AI mode', () => {
     jest.spyOn(aiKey, 'get').mockResolvedValue(KEY);
     await linkBoth();
     const u = await renderSearch();
-    await act(async () => { fireEvent.press(u.getByLabelText('Open AI mode')); });
+    await act(async () => { await fireEvent.press(u.getByLabelText('Open AI mode')); });
     expect(await u.findByText('Set your delivery location in Profile first.')).toBeTruthy();
   });
 
@@ -681,12 +681,12 @@ describe('Search screen: AI mode', () => {
     await storage.saveLocation(LOC);
     await linkBoth();
     const u = await renderSearch();
-    await act(async () => { fireEvent.press(u.getByLabelText('Open AI mode')); });
-    fireEvent.changeText(await u.findByLabelText('What do you need?'), 'a litre of milk');
-    await act(async () => { fireEvent.press(u.getByText('Build my basket')); });
+    await act(async () => { await fireEvent.press(u.getByLabelText('Open AI mode')); });
+    await fireEvent.changeText(await u.findByLabelText('What do you need?'), 'a litre of milk');
+    await act(async () => { await fireEvent.press(u.getByText('Build my basket')); });
     expect(build).toHaveBeenCalledWith('a litre of milk', expect.objectContaining({ apiKey: KEY }));
     await waitFor(async () => expect((await storage.getCart()).map((l: any) => [l.product.id, l.quantity])).toEqual([['blinkit-milk', 2]]));
-    await act(async () => { fireEvent.press(await u.findByText('View basket')); });
+    await act(async () => { await fireEvent.press(await u.findByText('View basket')); });
     expect(mockNavigate).toHaveBeenCalledWith('/(tabs)/cart');
   });
 });

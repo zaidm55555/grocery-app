@@ -171,8 +171,8 @@ describe('Profile screen: AI mode key', () => {
   it('saves a valid key and only ever shows it masked', async () => {
     const save = jest.spyOn(aiKey, 'save').mockResolvedValue();
     const u = await renderProfile();
-    fireEvent.changeText(u.getByLabelText('Groq API key'), `  ${KEY} `);
-    await act(async () => { fireEvent.press(u.getByText('Save key')); });
+    await fireEvent.changeText(u.getByLabelText('Groq API key'), `  ${KEY} `);
+    await act(async () => { await fireEvent.press(u.getByText('Save key')); });
     expect(save).toHaveBeenCalledWith(KEY);
     expect(u.getByText(`Key saved · gsk_…${KEY.slice(-4)}`)).toBeTruthy();
     expect(u.queryByText(new RegExp(KEY))).toBeNull();
@@ -181,8 +181,8 @@ describe('Profile screen: AI mode key', () => {
   it('rejects something that is not a Groq key', async () => {
     const save = jest.spyOn(aiKey, 'save');
     const u = await renderProfile();
-    fireEvent.changeText(u.getByLabelText('Groq API key'), 'sk-not-groq');
-    await act(async () => { fireEvent.press(u.getByText('Save key')); });
+    await fireEvent.changeText(u.getByLabelText('Groq API key'), 'sk-not-groq');
+    await act(async () => { await fireEvent.press(u.getByText('Save key')); });
     expect(save).not.toHaveBeenCalled();
     expect(Alert.alert).toHaveBeenCalledWith('Invalid key', expect.stringContaining('gsk_'));
   });
@@ -190,8 +190,8 @@ describe('Profile screen: AI mode key', () => {
   it('reports a failed save', async () => {
     jest.spyOn(aiKey, 'save').mockRejectedValue(new Error('keychain locked'));
     const u = await renderProfile();
-    fireEvent.changeText(u.getByLabelText('Groq API key'), KEY);
-    await act(async () => { fireEvent.press(u.getByText('Save key')); });
+    await fireEvent.changeText(u.getByLabelText('Groq API key'), KEY);
+    await act(async () => { await fireEvent.press(u.getByText('Save key')); });
     expect(Alert.alert).toHaveBeenCalledWith('Could not save key', 'keychain locked');
     expect(u.getByText('Save key')).toBeTruthy();
   });
@@ -200,7 +200,7 @@ describe('Profile screen: AI mode key', () => {
     (aiKey.get as jest.Mock).mockResolvedValue(KEY);
     const clear = jest.spyOn(aiKey, 'clear').mockResolvedValue();
     const u = await renderProfile();
-    fireEvent.press(await u.findByText('Remove key'));
+    await fireEvent.press(await u.findByText('Remove key'));
     const buttons = (Alert.alert as jest.Mock).mock.calls[0][2];
     await act(async () => { await buttons.find((b: any) => b.text === 'Remove').onPress(); });
     expect(clear).toHaveBeenCalled();
@@ -210,7 +210,7 @@ describe('Profile screen: AI mode key', () => {
   it('clears the key on Reset App Data', async () => {
     const clear = jest.spyOn(aiKey, 'clear').mockResolvedValue();
     const u = await renderProfile();
-    fireEvent.press(u.getByText('Reset App Data'));
+    await fireEvent.press(u.getByText('Reset App Data'));
     const buttons = (Alert.alert as jest.Mock).mock.calls[0][2];
     await act(async () => { await buttons.find((b: any) => b.text === 'Reset Everything').onPress(); });
     expect(clear).toHaveBeenCalled();

@@ -28,13 +28,13 @@ const RESULT: AiBasketResult = {
   unmatched: [{ index: 2, item: { name: 'Saffron', query: 'saffron', amount: '' }, reason: 'No results on Blinkit or Instamart' }],
 };
 
-const setup = (props: Partial<React.ComponentProps<typeof AiModeSheet>> = {}, initial: CartLine[] = []) => {
+const setup = async (props: Partial<React.ComponentProps<typeof AiModeSheet>> = {}, initial: CartLine[] = []) => {
   let cart = initial;
   const onCommitCart = jest.fn(async (next: CartLine[]) => { cart = next; });
   const onClose = jest.fn();
   const onOpenProfile = jest.fn();
   const onViewBasket = jest.fn();
-  const utils = render(
+  const utils = await render(
     <AiModeSheet
       visible
       onClose={onClose}
@@ -50,9 +50,9 @@ const setup = (props: Partial<React.ComponentProps<typeof AiModeSheet>> = {}, in
 
 const lines = (cart: CartLine[]) => cart.map(l => [l.product.id, l.quantity]);
 
-const runRequest = async (u: ReturnType<typeof setup>, text = 'milk and eggs') => {
-  fireEvent.changeText(u.getByLabelText('What do you need?'), text);
-  await act(async () => { fireEvent.press(u.getByText('Build my basket')); });
+const runRequest = async (u: Awaited<ReturnType<typeof setup>>, text = 'milk and eggs') => {
+  await fireEvent.changeText(u.getByLabelText('What do you need?'), text);
+  await act(async () => { await fireEvent.press(u.getByText('Build my basket')); });
 };
 
 beforeEach(() => {
@@ -63,28 +63,28 @@ beforeEach(() => {
 describe('AiModeSheet', () => {
   it('asks for a Groq key when none is saved and links to Profile', async () => {
     mockGet.mockResolvedValue(null);
-    const u = setup();
+    const u = await setup();
     expect(await u.findByText('Groq API key needed')).toBeTruthy();
-    fireEvent.press(u.getByText('Add key in Profile'));
+    await fireEvent.press(u.getByText('Add key in Profile'));
     expect(u.onClose).toHaveBeenCalled();
     expect(u.onOpenProfile).toHaveBeenCalled();
   });
 
   it('shows why it cannot run and does not run', async () => {
-    const u = setup({ blockedReason: 'Set your delivery location in Profile first.' });
+    const u = await setup({ blockedReason: 'Set your delivery location in Profile first.' });
     expect(await u.findByText('Set your delivery location in Profile first.')).toBeTruthy();
     await runRequest(u);
     expect(mockBuild).not.toHaveBeenCalled();
   });
 
   it('fills in the example request', async () => {
-    const u = setup();
-    fireEvent.press(await u.findByText(/^Try:/));
+    const u = await setup();
+    await fireEvent.press(await u.findByText(/^Try:/));
     expect(u.getByLabelText('What do you need?').props.value).toMatch(/dal tadka/);
   });
 
   it('adds the picks to the basket and shows a review with what was not added', async () => {
-    const u = setup({}, [{ product: product({ id: 'blinkit-old', title: 'Bread' }), quantity: 1 }]);
+    const u = await setup({}, [{ product: product({ id: 'blinkit-old', title: 'Bread' }), quantity: 1 }]);
     await runRequest(u, 'a litre of milk, 2 dozen eggs, saffron');
 
     expect(mockBuild).toHaveBeenCalledWith('a litre of milk, 2 dozen eggs, saffron', expect.objectContaining({ apiKey: 'gsk_testkey1234567890abcdef' }));
@@ -97,43 +97,43 @@ describe('AiModeSheet', () => {
   });
 
   it('removes a single item, can add it back, and undoes everything', async () => {
-    const u = setup({}, [{ product: product({ id: 'blinkit-old', title: 'Bread' }), quantity: 1 }]);
+    const u = await setup({}, [{ product: product({ id: 'blinkit-old', title: 'Bread' }), quantity: 1 }]);
     await runRequest(u);
-    await act(async () => { fireEvent.press(u.getByLabelText('Remove Amul Taaza Milk')); });
+    await act(async () => { await fireEvent.press(u.getByLabelText('Remove Amul Taaza Milk')); });
     expect(lines(u.cart())).toEqual([['blinkit-old', 1], ['swiggy-eggs', 4]]);
     expect(u.getByText('Added 1 item to your basket')).toBeTruthy();
 
-    await act(async () => { fireEvent.press(u.getByLabelText('Add back Amul Taaza Milk')); });
+    await act(async () => { await fireEvent.press(u.getByLabelText('Add back Amul Taaza Milk')); });
     expect(lines(u.cart())).toEqual([['blinkit-old', 1], ['swiggy-eggs', 4], ['blinkit-milk', 2]]);
 
-    await act(async () => { fireEvent.press(u.getByText('Undo all')); });
+    await act(async () => { await fireEvent.press(u.getByText('Undo all')); });
     expect(lines(u.cart())).toEqual([['blinkit-old', 1]]);
     expect(u.getByText('Nothing added to your basket')).toBeTruthy();
   });
 
   it('does not touch the basket when nothing matched', async () => {
     mockBuild.mockResolvedValue({ ...RESULT, picks: [] });
-    const u = setup();
+    const u = await setup();
     await runRequest(u);
     expect(u.onCommitCart).not.toHaveBeenCalled();
     expect(await u.findByText('Nothing added to your basket')).toBeTruthy();
   });
 
   it('opens the basket from the review', async () => {
-    const u = setup();
+    const u = await setup();
     await runRequest(u);
-    fireEvent.press(await u.findByText('View basket'));
+    await fireEvent.press(await u.findByText('View basket'));
     expect(u.onClose).toHaveBeenCalled();
     expect(u.onViewBasket).toHaveBeenCalled();
   });
 
   it('shows an auth error with a way to fix the key, and lets the user retry', async () => {
     mockBuild.mockRejectedValue(new GroqError('Groq rejected the API key. Check it in Profile.', 'auth', 401));
-    const u = setup();
+    const u = await setup();
     await runRequest(u);
     expect(await u.findByText('Groq rejected the API key. Check it in Profile.')).toBeTruthy();
     expect(u.getByText('Open Profile')).toBeTruthy();
-    fireEvent.press(u.getByText('Try again'));
+    await fireEvent.press(u.getByText('Try again'));
     expect(u.getByText('Build my basket')).toBeTruthy();
     expect(u.onCommitCart).not.toHaveBeenCalled();
   });
@@ -141,11 +141,14 @@ describe('AiModeSheet', () => {
   it('cancelling mid-run leaves the basket alone', async () => {
     let finish: (r: AiBasketResult) => void = () => {};
     mockBuild.mockImplementation(() => new Promise(res => { finish = res; }));
-    const u = setup();
-    await runRequest(u);
-    expect(u.getByText('Reading your request…')).toBeTruthy();
-    fireEvent.press(u.getByText('Cancel'));
+    const u = await setup();
+    await fireEvent.changeText(u.getByLabelText('What do you need?'), 'milk and eggs');
+    // RNTL 14's fireEvent awaits the handler's promise, which here only settles once the build finishes.
+    const building = fireEvent.press(u.getByText('Build my basket'));
+    expect(await u.findByText('Reading your request…')).toBeTruthy();
+    await fireEvent.press(u.getByText('Cancel'));
     await act(async () => { finish(RESULT); });
+    await building;
     expect(u.onCommitCart).not.toHaveBeenCalled();
     await waitFor(() => expect(u.getByText('Build my basket')).toBeTruthy());
   });
