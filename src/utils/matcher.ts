@@ -98,8 +98,9 @@ const SYNONYMS: Record<string, string> = {
   southekayi: 'cucumber', sautekayi: 'cucumber', elekosu: 'cabbage', hookosu: 'cauliflower',
   mullangi: 'radish', sakkare: 'sugar', uppu: 'salt', akki: 'rice', avalakki: 'poha', tuppa: 'clarifiedbutter',
   mosaru: 'curd', haalu: 'milk', motte: 'egg', tengina: 'coconut', kobbari: 'coconut', dodda: 'large',
+  hasiru: 'green', hasiri: 'green', kempu: 'red', bili: 'white',
   // "Nati" / "Desi" / "Country" / "Local" all name the native variety (vs hybrid)
-  nati: 'desi', naati: 'desi', country: 'desi', local: 'desi',
+  nati: 'desi', naati: 'desi', country: 'desi', local: 'desi', deshi: 'desi', naatu: 'desi',
   big: 'large', sambhar: 'sambar', organically: 'organic', khaalis: 'pure', khalis: 'pure',
 };
 
@@ -198,6 +199,13 @@ const GENERIC = new Set([
 ]);
 // "hybrid" (tomato) is the default variety on both apps, so it is descriptive.
 
+// Origin / growing words: they say how a product was grown, never who made it,
+// so a title leading with one has no brand there ("Desi Tomato", "Organic Ginger").
+const ORIGIN = ['desi', 'organic', 'farm', 'homegrown', 'hydroponic'];
+// Words that read as "desi" when the other title names the variety (desi / hybrid):
+// "Indian Tomato" is the desi one, while "Indian Style Paneer" stays generic.
+const ORIGIN_AS_DESI = ['indian', 'india'];
+
 // One-sided presence of these means a different product ("Coca-Cola" vs "Coca-Cola Zero").
 const HARD_QUALIFIERS = new Set([
   'zero', 'diet', 'sugarfree', 'unsalted', 'lite', 'light', 'decaf', 'lowfat', 'fatfree', 'glutenfree',
@@ -236,10 +244,31 @@ function stem(t: string): string {
   return t;
 }
 
+// Kannada / Hindi words are romanised many ways ("Menasinakayi", "Menasinakaayi",
+// "Menasinakai"): fold long vowels and the -kayi ending so the spellings meet.
+// Used only to look up SYNONYMS, and only keys that are themselves romanised
+// that way (long vowel or -kai), so "Good" never reaches "gud".
+const translit = (t: string) => t.replace(/([aeiou])\1+/g, (_m, v: string) => (v === 'e' ? 'i' : v === 'o' ? 'u' : v))
+  .replace(/kayi$/, 'kai');
+const TRANSLIT_SYNONYMS: Record<string, string> = (() => {
+  const out: Record<string, string> = {};
+  const clash = new Set<string>();
+  for (const [k, v] of Object.entries(SYNONYMS)) {
+    const f = translit(k);
+    if (f === k && !k.endsWith('kai')) continue;
+    if (out[f] !== undefined && out[f] !== v) clash.add(f);
+    else out[f] = v;
+  }
+  clash.forEach(f => delete out[f]);
+  return out;
+})();
+
 function normalizeWord(t: string): string {
   if (SYNONYMS[t]) return SYNONYMS[t];
   const s = stem(t);
-  return SYNONYMS[s] || s;
+  if (SYNONYMS[s]) return SYNONYMS[s];
+  const f = translit(t);
+  return (f !== t && TRANSLIT_SYNONYMS[f]) || s;
 }
 
 const words = (s: string) => s.split(/[^a-z0-9]+/).filter(Boolean);
@@ -271,6 +300,12 @@ const STOP_NORM = new Set([...STOPWORDS, ...norm(STOPWORDS)]);
 const GENERIC_NORM = new Set([...GENERIC, ...norm(GENERIC)]);
 const HARD_NORM = new Set([...HARD_QUALIFIERS, ...norm(HARD_QUALIFIERS)]);
 const CONFLICT_GROUPS = CONFLICT_GROUPS_RAW.map(g => [...new Set(g.map(normalizeWord))]);
+const ORIGIN_NORM = new Set([...ORIGIN, ...norm(ORIGIN)]);
+const ORIGIN_AS_DESI_NORM = new Set([...ORIGIN_AS_DESI, ...norm(ORIGIN_AS_DESI)]);
+const DESI = normalizeWord('desi');
+const VARIETY_GROUP = CONFLICT_GROUPS.find(g => g.includes(DESI))!;
+/** A leading word that describes the product (generic or origin) rather than naming a brand. */
+const isDescriptorLead = (t: string) => GENERIC_NORM.has(t) || ORIGIN_NORM.has(t);
 
 // Brand token = what the brand name itself tokenises to, so it lines up with titles.
 const brandToken = (b: string) => rawTokens(b).join('');
@@ -309,6 +344,12 @@ export interface TitleParts {
    * the other title does not use becomes an alias.
    */
   alts: [string[], string[]][];
+  /**
+   * Unknown words that appear only inside the title's trailing bracket(s) and
+   * are not brands or variant words ("Green Chilli (Hasiru Menasinakaayi)").
+   * Present only when non-empty.
+   */
+  bracketOnly?: string[];
 }
 
 // The words on each side of a slash that differ ("Sabja" / "Basil Seeds"), or
@@ -338,8 +379,12 @@ function slashPair(left: string[], right: string[], before: string[]): [string[]
  * qualifiers, variant words and brands always count, gloss or not.
  */
 export function parseTitle(str: string | undefined): TitleParts {
-  const glosses: string[] = [];
-  const body = stripAllSizes(str).replace(BRACKET_RE, (_m, inner: string) => { glosses.push(inner); return ' | '; });
+  const glosses: { inner: string; trailing: boolean }[] = [];
+  const body = stripAllSizes(str).replace(BRACKET_RE, (m: string, inner: string, at: number, whole: string) => {
+    const rest = whole.slice(at + m.length).replace(BRACKET_RE, '').replace(/[^a-z0-9]/gi, '');
+    glosses.push({ inner, trailing: rest === '' });
+    return ' | ';
+  });
   const tokens: string[] = [];
   const add = (t: string) => { if (!STOP_NORM.has(t) && !tokens.includes(t)) tokens.push(t); };
   const alts: [string[], string[]][] = [];
@@ -353,16 +398,21 @@ export function parseTitle(str: string | undefined): TitleParts {
     }
   }
   const aliases: string[] = [];
-  for (const inner of glosses) {
+  const bracketOnly: string[] = [];
+  for (const { inner, trailing } of glosses) {
     const inside = dedupe(phraseTokens(inner));
     const gloss = inside.some(t => tokens.includes(t));
     for (const t of inside) {
       if (tokens.includes(t) || aliases.includes(t)) continue;
-      if (gloss && !SIGNAL.has(t) && !BRAND_PARENT.has(t)) aliases.push(t);
-      else tokens.push(t);
+      const plain = !SIGNAL.has(t) && !BRAND_PARENT.has(t);
+      if (gloss && plain) aliases.push(t);
+      else {
+        tokens.push(t);
+        if (trailing && plain && !GENERIC_NORM.has(t)) bracketOnly.push(t);
+      }
     }
   }
-  return { tokens, aliases, alts };
+  return { tokens, aliases, alts, ...(bracketOnly.length ? { bracketOnly } : {}) };
 }
 
 export function tokenSet(str: string | undefined): Set<string> {
@@ -501,8 +551,8 @@ type AnalysedBase = Omit<Analysed, 'tokens' | 'brands' | 'distinctive'>;
 const isUmbrella = (t: string) => BRAND_PARENT.has(t) && !BRAND_PARENT.get(t);
 
 function analyse(item: MatchableItem): Analysed {
-  const { tokens, aliases, alts } = parseTitle(itemName(item));
-  return withTokens(tokens, { aliases, alts, qty: quantityOf(item), price: Number(item.price) || 0, inStock: item.inStock !== false });
+  const { tokens, aliases, alts, bracketOnly } = parseTitle(itemName(item));
+  return withTokens(tokens, { aliases, alts, bracketOnly, qty: quantityOf(item), price: Number(item.price) || 0, inStock: item.inStock !== false });
 }
 
 function withTokens(tokens: string[], base: AnalysedBase): Analysed {
@@ -532,6 +582,15 @@ function readAgainst(x: Analysed, other: Set<string>): Analysed {
   aliases.forEach(t => { if (other.has(t) && !tokens.includes(t)) tokens.push(t); });
   if (!dropped.size && tokens.length === x.tokens.length) return x;
   return withTokens(tokens, { ...x, aliases: aliases.filter(t => !tokens.includes(t)), alts: [] });
+}
+
+// "Indian Tomato" vs "Desi Tomato" / "Tomato Hybrid": when the other title names
+// the variety, "Indian" is the desi one. Otherwise it stays a generic word.
+function readOrigin(x: Analysed, other: Set<string>): Analysed {
+  const all = [...x.tokens, ...x.aliases];
+  if (!VARIETY_GROUP.some(t => other.has(t)) || all.includes(DESI) || !all.some(t => ORIGIN_AS_DESI_NORM.has(t))) return x;
+  const swap = (list: string[]) => [...new Set(list.map(t => (ORIGIN_AS_DESI_NORM.has(t) ? DESI : t)))];
+  return withTokens(swap(x.tokens), { ...x, aliases: swap(x.aliases) });
 }
 
 // "Max Fresh" vs "MaxFresh", "Soya Bean" vs "Soyabean": join adjacent words
@@ -593,8 +652,26 @@ export function scoreMatch(target: MatchableItem, candidate: MatchableItem): Mat
   return scoreAnalysed(analyse(target), analyse(candidate));
 }
 
+// Unit price within this ratio corroborates that a bracket is only a gloss.
+const GLOSS_PRICE_RATIO = 1.15;
+
+// Every extra word sits in the trailing bracket of an unbranded title, the other
+// title is fully covered, and the exact pack size and unit price agree. Branded
+// titles never qualify: a bracket there names a sub-line ("Dairy Milk (Fruit &
+// Nut)") priced like its parent, so price cannot tell them apart.
+function bracketGloss(A: Analysed, B: Analysed, extras: string[]): boolean {
+  const side = A.distinctive.has(extras[0]) ? A : B;
+  if (A.brands.length || B.brands.length || !A.inStock || !B.inStock) return false;
+  if (!extras.every(t => side.bracketOnly?.includes(t))) return false;
+  const cmp = compareQuantity(A.qty, B.qty);
+  if (cmp.status !== 'same' || !cmp.a || !cmp.b || !A.price || !B.price) return false;
+  const ua = A.price / cmp.a, ub = B.price / cmp.b;
+  return Math.max(ua, ub) / Math.min(ua, ub) <= GLOSS_PRICE_RATIO;
+}
+
 function scoreAnalysed(rawA: Analysed, rawB: Analysed): MatchDetail {
-  const [A, B] = joinCompounds(readAgainst(rawA, allWords(rawB)), readAgainst(rawB, allWords(rawA)));
+  const [oA, oB] = [readOrigin(rawA, allWords(rawB)), readOrigin(rawB, allWords(rawA))];
+  const [A, B] = joinCompounds(readAgainst(oA, allWords(oB)), readAgainst(oB, allWords(oA)));
   const parts = { brand: 0, name: 0, variant: 0, size: 0, price: 0, stock: 0 };
   const reasons: string[] = [];
   let capped = false;
@@ -612,7 +689,7 @@ function scoreAnalysed(rawA: Analysed, rawB: Analysed): MatchDetail {
     const [branded, bare] = A.brands.length ? [setA, B.tokens] : [setB, A.tokens];
     parts.brand = 0.4;
     capped = true;
-    if (bare.length > 1 && !branded.has(bare[0]) && !GENERIC_NORM.has(bare[0])) {
+    if (bare.length > 1 && !branded.has(bare[0]) && !isDescriptorLead(bare[0])) {
       nameMult = 0.6;
       reasons.push(`brand may differ (${pretty(bare[0])} vs ${pretty((A.brands[0] || B.brands[0]))})`);
     } else {
@@ -620,7 +697,17 @@ function scoreAnalysed(rawA: Analysed, rawB: Analysed): MatchDetail {
     }
   } else if (A.tokens[0] === B.tokens[0]) {
     parts.brand = 0.8;
-  } else if (A.tokens.length > 1 && B.tokens.length > 1 && !setB.has(A.tokens[0]) && !setA.has(B.tokens[0])) {
+  } else if (A.tokens.length > 1 && B.tokens.length > 1 && !setB.has(A.tokens[0]) && !setA.has(B.tokens[0])
+    && !GENERIC_NORM.has(A.tokens[0]) && !GENERIC_NORM.has(B.tokens[0])
+    && (ORIGIN_NORM.has(A.tokens[0]) !== ORIGIN_NORM.has(B.tokens[0]))) {
+    // An origin word against some other leading word ("Desi Ghee" vs "Cow Ghee"):
+    // not a brand, but each title names a different kind of the product.
+    parts.brand = 0.6;
+    nameMult = 0.6;
+    capped = true;
+    reasons.push(`different kind (${pretty(A.tokens[0])} vs ${pretty(B.tokens[0])})`);
+  } else if (A.tokens.length > 1 && B.tokens.length > 1 && !setB.has(A.tokens[0]) && !setA.has(B.tokens[0])
+    && !isDescriptorLead(A.tokens[0]) && !isDescriptorLead(B.tokens[0])) {
     parts.brand = 0.2;
     nameMult = 0.6;
     capped = true;
@@ -647,6 +734,13 @@ function scoreAnalysed(rawA: Analysed, rawB: Analysed): MatchDetail {
     name = (shared.length / Math.min(DA.size, DB.size)) * 0.5;
     parts.variant = 0.2;
     reasons.push(`different words (${onlyA.join(' ')} vs ${onlyB.join(' ')})`);
+  } else if ((onlyA.length || onlyB.length) && bracketGloss(A, B, onlyA.length ? onlyA : onlyB)) {
+    // "Green Chilli (Hasiru Menasinakaayi)" vs "Green Chilli": unknown words only
+    // in an unbranded title's trailing bracket, with the exact pack and unit price
+    // agreeing, read as a translation rather than a different product.
+    name = 1;
+    parts.variant = 1;
+    reasons.push(`bracket read as a translation (${(onlyA.length ? onlyA : onlyB).join(' ')}): same size and price`);
   } else if (onlyA.length || onlyB.length) {
     const extras = onlyA.length ? onlyA : onlyB;
     name = 1 - Math.min(0.5, 0.25 * extras.length);

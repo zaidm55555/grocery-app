@@ -313,6 +313,43 @@ export const MATCH_PAIRS: MatchPair[] = [
   p('none', 'real', ['Organically Grown Ginger (Shunti)', '100 g', 30], ['Ginger Garlic Paste', '100 g', 40]),
   p('none', 'real', ['Fresh Eggs White eggs', '12 Pieces x 2', 180], ['Brown Eggs', '24 pcs', 220]),
   p('none', 'slash', ['Sabja/ Basil Seeds', '100 g', 60], ['Chia Seeds', '100 g', 90]),
+  // ---------- origin words: Desi / Indian / Local / Country / Nati name one variety ----------
+  // A leading origin word is not a brand; for produce "Desi" and "Indian" agree.
+  p('auto', 'origin', ['Desi Tomato', '500 g', 21], ['Indian Tomato', '500 g', 21]),
+  p('auto', 'origin', ['Desi Tomato', '500 g', 21], ['Tomato - Indian', '500 g', 21]),
+  p('auto', 'origin', ['Desi Tomato', '500 g', 21], ['Local Tomato', '500 g', 21]),
+  p('auto', 'origin', ['Desi Tomato', '500 g', 21], ['Country Tomato', '500 g', 21]),
+  p('auto', 'origin', ['Desi Tomato', '500 g', 21], ['Tomato (Desi)', '500 g', 21]),
+  p('auto', 'origin', ['Indian Tomato', '500 g', 21], ['Desi Tomato', '500 g', 21]),
+  p('auto', 'origin', ['Desi Onion', '1 kg', 40], ['Indian Onion', '1 kg', 41]),
+  p('auto', 'origin', ['Desi Potato', '1 kg', 35], ['Local Potato (Aloo)', '1 kg', 36]),
+  p('auto', 'origin', ['Indian Style Paneer', '200 g', 90], ['Paneer', '200 g', 90]),
+  p('auto', 'origin', ['Fresh Paneer', '200 g', 90], ['Paneer', '200 g', 90]),
+  p('suggest', 'origin', ['Desi Tomato', '500 g', 21], ['Tomato', '500 g', 21]),
+  p('suggest', 'origin', ['Desi Onion', '1 kg', 40], ['Onion', '1 kg', 40]),
+  p('none', 'origin', ['Desi Tomato', '500 g', 21], ['Hybrid Tomato', '500 g', 21]),
+  p('none', 'origin', ['Indian Tomato', '500 g', 21], ['Tomato Hybrid', '500 g', 21]),
+  p('none', 'origin', ['Desi Ghee', '1 L', 600], ['Cow Ghee', '1 L', 620]),
+  p('none', 'origin', ['Desi Onion', '1 kg', 40], ['Desi Tomato', '1 kg', 40]),
+  p('none', 'origin', ['Indian Onion', '1 kg', 40], ['Spring Onion', '1 kg', 60]),
+  // ---------- bracket glosses: spelling variants and unknown words in a trailing bracket ----------
+  // Unbranded title + exact size + unit price within 15%: the bracket is a translation.
+  p('auto', 'bracket', ['Green Chilli (Hasiru Menasinakaayi)', '100 g', 12], ['Green Chilli', '100 g', 12]),
+  p('auto', 'bracket', ['Green Chilli (Hasiru Menasinakaayi)', '100 g', 12], ['Green Chilli (Hari Mirch)', '100 g', 11]),
+  p('auto', 'bracket', ['Green Chilli (Menasinakaayi)', '100 g', 12], ['Hasiru Menasinakai', '100 g', 12]),
+  p('auto', 'bracket', ['Drumstick (Nuggekaayi)', '250 g', 30], ['Drumstick', '250 g', 32]),
+  p('auto', 'bracket', ['Ridge Gourd (Heerekai)', '500 g', 40], ['Ridge Gourd', '500 g', 38]),
+  p('suggest', 'bracket', ['Drumstick (Nuggekaayi)', '250 g', 30], ['Drumstick', '250 g', 45]),
+  p('suggest', 'bracket', ['Drumstick (Nuggekaayi)', '250 g', 30], ['Drumstick', '500 g', 60]),
+  p('suggest', 'bracket', ['Drumstick (Nuggekaayi)', '250 g', 30], ['Drumstick', '250 g', 30, false]),
+  // Branded titles: a bracket names a sub-line priced like its parent, never auto.
+  p('none', 'bracket', ['Cadbury Dairy Milk (Fruit & Nut)', '50 g', 45], ['Cadbury Dairy Milk', '50 g', 45]),
+  p('none', 'bracket', ['Coca-Cola (Zero)', '750 ml', 40], ['Coca-Cola', '750 ml', 40]),
+  p('none', 'bracket', ["Lay's Classic (Magic Masala)", '52 g', 20], ["Lay's Classic", '52 g', 20]),
+  p('none', 'bracket', ['Kurkure (Green Chutney)', '90 g', 20], ['Kurkure', '90 g', 20]),
+  // Variant words in an unbranded bracket still count.
+  p('none', 'bracket', ['Chilli (Red)', '100 g', 12], ['Green Chilli', '100 g', 12]),
+  p('suggest', 'bracket', ['Onion (Small)', '500 g', 30], ['Onion', '500 g', 30]),
   // A bracket that adds words (not a gloss) still counts: shown at most as a suggestion.
   p('none', 'gloss', ['Cadbury Dairy Milk Silk', '60 g', 80], ['Cadbury Dairy Milk Silk (Bubbly)', '60 g', 90]),
   p('none', 'gloss', ['Cadbury Dairy Milk', '50 g', 45], ['Cadbury Dairy Milk (Fruit & Nut)', '50 g', 50]),

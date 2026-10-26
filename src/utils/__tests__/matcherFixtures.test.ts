@@ -60,6 +60,17 @@ describe('matcher fixture set', () => {
     expect(metrics.surfacedRecall).toBeGreaterThanOrEqual(SURFACED_RECALL_BAR);
   });
 
+  it('puts every origin-word pair (Desi / Indian / Local) in its exact band', () => {
+    const miss = results.filter(r => r.pr.tag === 'origin' && r.band !== r.pr.expect);
+    expect(miss.map(r => `${r.pr.a.name} ~ ${r.pr.b.name}: ${r.band} (want ${r.pr.expect})`)).toEqual([]);
+  });
+
+  // A different product here may still surface as a suggestion; it must never auto-link.
+  it('puts every bracket-gloss pair in its band (auto / suggest exact, none never auto)', () => {
+    const miss = results.filter(r => r.pr.tag === 'bracket' && (r.pr.expect === 'none' ? r.band === 'auto' : r.band !== r.pr.expect));
+    expect(miss.map(r => `${r.pr.a.name} ~ ${r.pr.b.name}: ${r.band} (want ${r.pr.expect})`)).toEqual([]);
+  });
+
   it('puts the suggest-labelled pairs in the suggest band', () => {
     expect(of('suggest').filter(r => r.band !== 'suggest').map(r => `${r.pr.a.name} ~ ${r.pr.b.name}: ${r.band}`)).toEqual([]);
   });
