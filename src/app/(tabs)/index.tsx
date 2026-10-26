@@ -8,7 +8,7 @@ import { isDemoMode, loadDemoMode, DEMO_LOCATION } from '../../services/demo';
 import { storage, Platform, LocationData } from '../../services/storage';
 import { colors, fonts, platformThemes, PLATFORM_ORDER } from '../../constants/theme';
 import { liveKey, familyKey } from '../../utils/productKey';
-import { pickBestMatch } from '../../utils/matcher';
+import { searchForMatch } from '../../services/matchSearch';
 import { stampIfVerified } from '../../utils/lineFreshness';
 import MatchModal, { MatchFlowState, MatchTarget, MatchCell } from '../../components/MatchModal';
 import VariantPickerModal from '../../components/VariantPickerModal';
@@ -394,15 +394,21 @@ export default function SearchScreen() {
       });
     };
 
-    setCell({ status: 'pending', candidates: [], best: null, score: null });
+    setCell({ status: 'pending', candidates: [], best: null, score: null, ranked: undefined, suggestion: null, reasons: undefined, error: undefined });
     try {
-      const results = await api.searchSingle(pid, target.name);
-      const best = pickBestMatch<UnifiedProduct>({ name: target.name, unit: target.unit, price: target.price }, results);
+      // Query ladder + banded decision: only 'auto' is pre-selected (applied on
+      // Confirm); a 'suggest' pick is shown with its reasons and needs a tap.
+      const { decision } = await searchForMatch(pid, { name: target.name, unit: target.unit, price: target.price });
+      const ranked = decision.ranked.map(r => ({ product: r.candidate, score: r.score, reasons: r.reasons }));
+      const top = decision.best ? { product: decision.best.candidate, score: decision.best.score, reasons: decision.reasons } : null;
       setCell({
-        status: best ? 'ok' : 'empty',
-        candidates: results.slice(0, 12),
-        best: best?.candidate || null,
-        score: best?.score ?? null,
+        status: decision.band === 'auto' ? 'ok' : decision.band === 'suggest' ? 'suggest' : 'empty',
+        candidates: ranked.map(r => r.product),
+        ranked,
+        best: decision.band === 'auto' && top ? top.product : null,
+        score: top?.score ?? null,
+        suggestion: decision.band === 'suggest' ? top : null,
+        reasons: decision.reasons,
       });
     } catch (e: any) {
       setCell({ status: 'error', error: String(e?.message || e) });

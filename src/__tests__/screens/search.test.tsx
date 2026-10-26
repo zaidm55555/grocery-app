@@ -522,7 +522,9 @@ describe('Search screen: auto-match on the other app', () => {
     await fireEvent.press(await u.findByText(/^Confirm · /));
     await waitFor(async () => expect((await storage.getCart())[0].product.platformPrices?.swiggy?.id).toBe('swiggy-9'));
     expect(await u.findByText(/Added to basket · now on Instamart/)).toBeTruthy();
-    expect(api.searchSingle).toHaveBeenCalledWith('swiggy', 'Tata Salt Blinkit');
+    // Full title first; the exact twin stops the query ladder there.
+    expect(api.searchSingle).toHaveBeenCalledTimes(1);
+    expect(api.searchSingle).toHaveBeenCalledWith('swiggy', 'Tata Salt Blinkit', { throwOnError: true, includeOutOfStock: true });
   });
 
   it('stamps the matched line when the source and the confirmed twin came from the right store', async () => {
@@ -589,6 +591,20 @@ describe('Search screen: auto-match on the other app', () => {
     await doSearch(u);
     await addFirst(u);
     expect(await u.findByText('no close match')).toBeTruthy();
+  });
+
+  it('offers a different pack size as a suggestion that only links once tapped', async () => {
+    respondWith([bl('1', 'Tata Salt Blinkit')], []);
+    (api.searchSingle as jest.Mock).mockResolvedValue([sw('8', 'Tata Salt Blinkit', { quantity: '2 kg', price: 80 })]);
+    const u = await renderSearch();
+    await doSearch(u);
+    await addFirst(u);
+    expect(await u.findByText('check match')).toBeTruthy();
+    expect(u.getByText(/different size 1 kg vs 2 kg/)).toBeTruthy();
+    expect(u.getByText('Confirm · 0 matches')).toBeTruthy();
+    await fireEvent.press(u.getAllByText('Tata Salt Blinkit').slice(-1)[0]);
+    await fireEvent.press(await u.findByText('Confirm · 1 match'));
+    await waitFor(async () => expect((await storage.getCart())[0].product.platformPrices?.swiggy).toMatchObject({ id: 'swiggy-8', manual: true }));
   });
 
   it('reports a search error and can retry', async () => {

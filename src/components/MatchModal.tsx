@@ -4,7 +4,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Check, AlertTriangle, ChevronDown, ChevronUp, RotateCcw, X } from 'lucide-react-native';
 import { Platform } from '../services/storage';
 import { UnifiedProduct } from '../services/api';
-import { matchScore } from '../utils/matcher';
+import { rankCandidates } from '../utils/matcher';
 import { colors, fonts, platformThemes } from '../constants/theme';
 
 export interface MatchTarget {
@@ -16,13 +16,30 @@ export interface MatchTarget {
   image: string;
 }
 
+/** A candidate with the matcher's score and the reasons behind it. */
+export interface RankedPick {
+  product: UnifiedProduct;
+  score: number;
+  reasons?: string[];
+}
+
 export interface MatchCell {
-  status: 'pending' | 'ok' | 'empty' | 'error';
+  // ok: auto-matched (applied on Confirm); suggest: a likely match the user must
+  // tap to accept; empty: nothing close; error: the search itself failed.
+  status: 'pending' | 'ok' | 'suggest' | 'empty' | 'error';
   candidates: UnifiedProduct[];
   best: UnifiedProduct | null;
   score: number | null;
   error?: string;
+  /** Candidates best first (falls back to scoring `candidates` here). */
+  ranked?: RankedPick[];
+  /** status 'suggest': the closest listing and why it needs a check. */
+  suggestion?: RankedPick | null;
+  reasons?: string[];
 }
+
+// Alternatives shown before "Show N more".
+const ALT_PAGE = 8;
 
 export interface MatchFlowState {
   step: 'searching' | 'candidates';
@@ -69,8 +86,17 @@ const logoStyles = StyleSheet.create({
   },
 });
 
+// Score-sorted candidates for a cell: the matcher's ranking when the search
+// stored one, else scored here.
+function rankedFor(t: MatchTarget, cell: MatchCell | undefined): RankedPick[] {
+  if (!cell) return [];
+  if (cell.ranked) return cell.ranked;
+  return rankCandidates(t, cell.candidates || []).map(r => ({ product: r.candidate, score: r.score, reasons: r.reasons }));
+}
+
 export default function MatchModal({ flow, onChoose, onRetry, onSkip, onConfirm }: Props) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [showAll, setShowAll] = useState<Record<string, boolean>>({});
   const sourceTheme = platformThemes[flow.sourcePlatform];
 
   const toggle = (key: string) => setExpanded(prev => ({ ...prev, [key]: !prev[key] }));
@@ -89,6 +115,7 @@ export default function MatchModal({ flow, onChoose, onRetry, onSkip, onConfirm 
   const cellStatusSlot = (cell: MatchCell | undefined, tid: string, pid: Platform) => {
     if (!cell || cell.status === 'pending') return <ActivityIndicator size="small" color={colors.accentPrimary} />;
     if (cell.status === 'ok') return <Check size={16} color={colors.emerald} />;
+    if (cell.status === 'suggest') return <Text style={s.noMatchText}>check</Text>;
     if (cell.status === 'empty') return <Text style={s.noMatchText}>no match</Text>;
     return (
       <TouchableOpacity style={s.retryPill} onPress={() => onRetry(tid, pid)}>
@@ -98,16 +125,19 @@ export default function MatchModal({ flow, onChoose, onRetry, onSkip, onConfirm 
     );
   };
 
-  const candidateRow = (tid: string, pid: Platform, c: { product: UnifiedProduct; score: number }, active: boolean, isAuto: boolean) => (
+  const candidateRow = (tid: string, pid: Platform, c: RankedPick, active: boolean, isAuto: boolean) => (
     <TouchableOpacity
       key={`${c.product.id}-${active}`}
       style={[s.candidateRow, active && s.candidateRowActive]}
-      onPress={() => !isAuto && onChoose(tid, pid, c)}
+      onPress={() => !isAuto && onChoose(tid, pid, { product: c.product, score: c.score })}
     >
       <Image source={{ uri: c.product.imageUrl }} style={s.candidateImage} />
       <View style={{ flex: 1 }}>
         <Text style={s.candidateName} numberOfLines={2}>{c.product.title}</Text>
         <Text style={s.candidateUnit}>{c.product.quantity}</Text>
+        {!!c.reasons?.length && (
+          <Text style={s.reasonText} numberOfLines={2}>{c.reasons.slice(0, 2).join(' · ')}</Text>
+        )}
       </View>
       <View style={{ alignItems: 'flex-end' }}>
         <Text style={s.candidatePrice}>₹{c.product.price}</Text>
@@ -117,16 +147,44 @@ export default function MatchModal({ flow, onChoose, onRetry, onSkip, onConfirm 
     </TouchableOpacity>
   );
 
+  // Score-sorted list with the skip row; long lists reveal the rest on demand.
+  const pickList = (t: MatchTarget, pid: Platform, key: string, items: RankedPick[], activeId?: string) => {
+    const all = !!showAll[key];
+    const visible = all ? items : items.slice(0, ALT_PAGE);
+    return (
+      <View style={s.alternatesList}>
+        {visible.map(alt => candidateRow(t.id, pid, alt, alt.product.id === activeId, false))}
+        {!all && items.length > ALT_PAGE && (
+          <TouchableOpacity style={s.alternatesToggle} onPress={() => setShowAll(prev => ({ ...prev, [key]: true }))}>
+            <Text style={s.alternatesToggleText}>Show {items.length - ALT_PAGE} more</Text>
+            <ChevronDown size={13} color={colors.textMuted} />
+          </TouchableOpacity>
+        )}
+        <TouchableOpacity style={s.skipAppRow} onPress={() => onChoose(t.id, pid, 'skip')}>
+          <X size={13} color={colors.textSecondary} />
+          <Text style={s.skipAppText}>None of these match — skip this app</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  };
+
   const resultCard = (t: MatchTarget, pid: Platform) => {
     const cell = flow.results[t.id]?.[pid];
     const chosenPick = flow.chosen[t.id]?.[pid];
-    const activeId = typeof chosenPick === 'object' ? chosenPick.product.id : cell?.best?.id;
+    const chosen = typeof chosenPick === 'object' ? chosenPick : null;
+    const ranked = rankedFor(t, cell);
+    const autoPick: RankedPick | null = cell?.best
+      ? ranked.find(r => r.product.id === cell.best!.id) || { product: cell.best, score: cell.score || 0, reasons: cell.reasons }
+      : null;
+    const activePick: RankedPick | null = chosen
+      ? ranked.find(r => r.product.id === chosen.product.id) || chosen
+      : autoPick;
+    const activeId = activePick?.product.id;
     const key = `${t.id}:${pid}`;
     const isOpen = !!expanded[key];
-    const alternatives = (cell?.candidates || [])
-      .filter(c => c.id !== activeId)
-      .slice(0, 8)
-      .map(c => ({ product: c, score: matchScore(t, c) }));
+    const alternatives = ranked.filter(c => c.product.id !== activeId);
+    const suggestion = cell?.status === 'suggest' && cell.suggestion ? cell.suggestion : null;
+    const suggestionAlts = suggestion ? ranked.filter(c => c.product.id !== suggestion.product.id) : [];
 
     return (
       <View key={pid} style={s.resultCard}>
@@ -138,6 +196,13 @@ export default function MatchModal({ flow, onChoose, onRetry, onSkip, onConfirm 
               <Check size={9} color="#000" />
               <Text style={s.autoBadgeText}>
                 auto-matched{typeof chosenPick === 'object' && chosenPick.score ? ` · ${Math.round(chosenPick.score * 100)}%` : ''}
+              </Text>
+            </View>
+          )}
+          {cell?.status === 'suggest' && (
+            <View style={[s.autoBadge, { backgroundColor: 'rgba(245, 158, 11, 0.15)' }]}>
+              <Text style={[s.autoBadgeText, { color: colors.amber }]}>
+                {chosen ? `picked · ${Math.round(chosen.score * 100)}%` : 'check match'}
               </Text>
             </View>
           )}
@@ -154,22 +219,29 @@ export default function MatchModal({ flow, onChoose, onRetry, onSkip, onConfirm 
           )}
         </View>
 
-        {cell?.status === 'ok' && cell.best && (
+        {cell?.status === 'ok' && activePick && (
           <>
-            {candidateRow(t.id, pid, { product: cell.best, score: cell.score || 0 }, true, true)}
+            {candidateRow(t.id, pid, activePick, true, true)}
             <TouchableOpacity style={s.alternatesToggle} onPress={() => toggle(key)}>
-              <Text style={s.alternatesToggleText}>Other matches · {(cell.candidates || []).length - 1 >= 0 ? (cell.candidates || []).length - 1 : 0}</Text>
+              <Text style={s.alternatesToggleText}>Other matches · {alternatives.length}</Text>
               {isOpen ? <ChevronUp size={13} color={colors.textMuted} /> : <ChevronDown size={13} color={colors.textMuted} />}
             </TouchableOpacity>
-            {isOpen && (
-              <View style={s.alternatesList}>
-                {alternatives.map(alt => candidateRow(t.id, pid, alt, false, false))}
-                <TouchableOpacity style={s.skipAppRow} onPress={() => onChoose(t.id, pid, 'skip')}>
-                  <X size={13} color={colors.textSecondary} />
-                  <Text style={s.skipAppText}>None of these match — skip this app</Text>
-                </TouchableOpacity>
-              </View>
+            {isOpen && pickList(t, pid, key, alternatives)}
+            {chosenPick === 'skip' && (
+              <Text style={s.skippedNote}>Skipped — this app won’t be priced for this item.</Text>
             )}
+          </>
+        )}
+
+        {suggestion && (
+          <>
+            <Text style={s.emptyText}>Closest match on {platformThemes[pid].name} — tap it if it’s the same item.</Text>
+            {candidateRow(t.id, pid, suggestion, activeId === suggestion.product.id, false)}
+            <TouchableOpacity style={s.alternatesToggle} onPress={() => toggle(key)}>
+              <Text style={s.alternatesToggleText}>Other matches · {suggestionAlts.length}</Text>
+              {isOpen ? <ChevronUp size={13} color={colors.textMuted} /> : <ChevronDown size={13} color={colors.textMuted} />}
+            </TouchableOpacity>
+            {isOpen && pickList(t, pid, key, suggestionAlts, activeId)}
             {chosenPick === 'skip' && (
               <Text style={s.skippedNote}>Skipped — this app won’t be priced for this item.</Text>
             )}
@@ -184,15 +256,7 @@ export default function MatchModal({ flow, onChoose, onRetry, onSkip, onConfirm 
                 <Text style={s.pickManuallyText}>Pick manually</Text>
               </TouchableOpacity>
             )}
-            {isOpen && (
-              <View style={s.alternatesList}>
-                {(cell.candidates || []).slice(0, 8).map(c => candidateRow(t.id, pid, { product: c, score: matchScore(t, c) }, false, false))}
-                <TouchableOpacity style={s.skipAppRow} onPress={() => onChoose(t.id, pid, 'skip')}>
-                  <X size={13} color={colors.textSecondary} />
-                  <Text style={s.skipAppText}>None of these match — skip this app</Text>
-                </TouchableOpacity>
-              </View>
-            )}
+            {isOpen && pickList(t, pid, key, ranked, activeId)}
           </>
         )}
 
@@ -470,6 +534,12 @@ const s = StyleSheet.create({
     fontSize: 10,
     color: colors.textMuted,
     marginTop: 1,
+  },
+  reasonText: {
+    fontFamily: fonts.body,
+    fontSize: 9,
+    color: colors.amber,
+    marginTop: 2,
   },
   candidatePrice: {
     fontFamily: fonts.bodyBold,
