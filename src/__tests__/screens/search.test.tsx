@@ -8,7 +8,7 @@ import { api, UnifiedProduct } from '../../services/api';
 import * as locationUtils from '../../utils/location';
 import { product } from '../../services/__tests__/fixtures';
 import { touchablesIn } from '../helpers/touchables';
-import { aiKey } from '../../services/aiKey';
+import { aiProxy } from '../../services/aiProxy';
 import * as aiMode from '../../services/aiMode';
 
 const mockPush = jest.fn();
@@ -652,10 +652,11 @@ describe('Search screen: one Instamart listing shared by two basket lines', () =
 });
 
 describe('Search screen: AI mode', () => {
-  const KEY = 'gsk_testkey1234567890abcdef';
+  // Fake values only.
+  const PROXY = { url: 'https://ai-proxy.example.workers.dev/chat', token: 'test-app-token-not-real' };
 
   it('explains that a store must be linked first', async () => {
-    jest.spyOn(aiKey, 'get').mockResolvedValue(KEY);
+    jest.spyOn(aiProxy, 'get').mockResolvedValue(PROXY);
     await storage.saveLocation(LOC);
     const u = await renderSearch();
     await act(async () => { await fireEvent.press(u.getByLabelText('Open AI mode')); });
@@ -663,7 +664,7 @@ describe('Search screen: AI mode', () => {
   });
 
   it('explains that a location is needed first', async () => {
-    jest.spyOn(aiKey, 'get').mockResolvedValue(KEY);
+    jest.spyOn(aiProxy, 'get').mockResolvedValue(PROXY);
     await linkBoth();
     const u = await renderSearch();
     await act(async () => { await fireEvent.press(u.getByLabelText('Open AI mode')); });
@@ -671,7 +672,7 @@ describe('Search screen: AI mode', () => {
   });
 
   it('puts the AI picks in the basket and opens it from the review', async () => {
-    jest.spyOn(aiKey, 'get').mockResolvedValue(KEY);
+    jest.spyOn(aiProxy, 'get').mockResolvedValue(PROXY);
     const milk = bl('milk', 'Amul Taaza Milk', { quantity: '500 ml' });
     const build = jest.spyOn(aiMode, 'buildAiBasket').mockResolvedValue({
       requested: [{ name: 'Milk', query: 'milk', amount: '1 litre' }],
@@ -684,7 +685,7 @@ describe('Search screen: AI mode', () => {
     await act(async () => { await fireEvent.press(u.getByLabelText('Open AI mode')); });
     await fireEvent.changeText(await u.findByLabelText('What do you need?'), 'a litre of milk');
     await act(async () => { await fireEvent.press(u.getByText('Build my basket')); });
-    expect(build).toHaveBeenCalledWith('a litre of milk', expect.objectContaining({ apiKey: KEY }));
+    expect(build).toHaveBeenCalledWith('a litre of milk', expect.objectContaining({ proxy: PROXY }));
     await waitFor(async () => expect((await storage.getCart()).map((l: any) => [l.product.id, l.quantity])).toEqual([['blinkit-milk', 2]]));
     await act(async () => { await fireEvent.press(await u.findByText('View basket')); });
     expect(mockNavigate).toHaveBeenCalledWith('/(tabs)/cart');

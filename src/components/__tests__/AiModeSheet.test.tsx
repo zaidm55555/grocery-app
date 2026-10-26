@@ -1,16 +1,18 @@
 import React from 'react';
 import { render, fireEvent, waitFor, act } from '@testing-library/react-native';
 import AiModeSheet from '../AiModeSheet';
-import { aiKey } from '../../services/aiKey';
+import { aiProxy } from '../../services/aiProxy';
 import { buildAiBasket, AiBasketResult } from '../../services/aiMode';
 import { GroqError } from '../../services/groq';
 import type { CartLine } from '../../services/lists';
 import { product } from '../../services/__tests__/fixtures';
 
-jest.mock('../../services/aiKey', () => ({ aiKey: { get: jest.fn() } }));
+jest.mock('../../services/aiProxy', () => ({ aiProxy: { get: jest.fn() } }));
 jest.mock('../../services/aiMode', () => ({ buildAiBasket: jest.fn(), searchAllStores: jest.fn() }));
 
-const mockGet = aiKey.get as jest.Mock;
+const mockGet = aiProxy.get as jest.Mock;
+// Fake values only.
+const PROXY = { url: 'https://ai-proxy.example.workers.dev/chat', token: 'test-app-token-not-real' };
 const mockBuild = buildAiBasket as jest.Mock;
 
 const milk = product({ id: 'blinkit-milk', title: 'Amul Taaza Milk', quantity: '500 ml', price: 27, platform: 'blinkit' });
@@ -54,17 +56,19 @@ const runRequest = async (u: Awaited<ReturnType<typeof setup>>, text = 'milk and
 };
 
 beforeEach(() => {
-  mockGet.mockReset().mockResolvedValue('gsk_testkey1234567890abcdef');
+  mockGet.mockReset().mockResolvedValue(PROXY);
   mockBuild.mockReset().mockResolvedValue(RESULT);
 });
 
 describe('AiModeSheet', () => {
-  it('says the Groq key is not configured when the env var is unset, without a Profile link', async () => {
+  it('says AI mode is not configured when the proxy env vars are unset, without a Profile link', async () => {
     mockGet.mockResolvedValue(null);
     const u = await setup();
-    expect(await u.findByText('Groq API key not configured')).toBeTruthy();
-    expect(u.getByText(/EXPO_PUBLIC_GROQ_API_KEY in \.env\.local/)).toBeTruthy();
+    expect(await u.findByText('AI mode is not configured')).toBeTruthy();
+    expect(u.getByText(/EXPO_PUBLIC_AI_PROXY_URL and EXPO_PUBLIC_AI_PROXY_TOKEN in \.env\.local/)).toBeTruthy();
     expect(u.queryByText(/Profile/)).toBeNull();
+    await runRequest(u);
+    expect(mockBuild).not.toHaveBeenCalled();
   });
 
   it('shows why it cannot run and does not run', async () => {
@@ -84,7 +88,7 @@ describe('AiModeSheet', () => {
     const u = await setup({}, [{ product: product({ id: 'blinkit-old', title: 'Bread' }), quantity: 1 }]);
     await runRequest(u, 'a litre of milk, 2 dozen eggs, saffron');
 
-    expect(mockBuild).toHaveBeenCalledWith('a litre of milk, 2 dozen eggs, saffron', expect.objectContaining({ apiKey: 'gsk_testkey1234567890abcdef' }));
+    expect(mockBuild).toHaveBeenCalledWith('a litre of milk, 2 dozen eggs, saffron', expect.objectContaining({ proxy: PROXY }));
     expect(lines(u.cart())).toEqual([['blinkit-old', 1], ['blinkit-milk', 2], ['swiggy-eggs', 4]]);
     expect(await u.findByText('Added 2 items to your basket')).toBeTruthy();
     expect(u.getByText('Amul Taaza Milk')).toBeTruthy();
@@ -125,10 +129,10 @@ describe('AiModeSheet', () => {
   });
 
   it('shows an auth error and lets the user retry', async () => {
-    mockBuild.mockRejectedValue(new GroqError('Groq rejected the API key. Check EXPO_PUBLIC_GROQ_API_KEY.', 'auth', 401));
+    mockBuild.mockRejectedValue(new GroqError('The AI service rejected this app. Check EXPO_PUBLIC_AI_PROXY_TOKEN.', 'auth', 401));
     const u = await setup();
     await runRequest(u);
-    expect(await u.findByText('Groq rejected the API key. Check EXPO_PUBLIC_GROQ_API_KEY.')).toBeTruthy();
+    expect(await u.findByText('The AI service rejected this app. Check EXPO_PUBLIC_AI_PROXY_TOKEN.')).toBeTruthy();
     expect(u.queryByText('Open Profile')).toBeNull();
     await fireEvent.press(u.getByText('Try again'));
     expect(u.getByText('Build my basket')).toBeTruthy();

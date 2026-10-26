@@ -1,0 +1,4 @@
+# Copy to .dev.vars (gitignored) for `npm run dev` and fill in. Never commit .dev.vars.
+# APP_TOKEN: any random string of 16+ characters, e.g. from `openssl rand -hex 32`.
+GROQ_API_KEY=
+APP_TOKEN=

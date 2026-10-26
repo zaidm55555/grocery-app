@@ -1,13 +1,15 @@
-// Minimal Groq chat-completions client for AI mode. Plain fetch against the
-// OpenAI-compatible endpoint keeps the bundle free of SDKs and makes it easy to
-// mock. The key comes from the caller (see aiKey.ts for why it is client-held, and why only for now).
+// Minimal Groq chat-completions client for AI mode. Requests go to BasketBuddy's
+// AI proxy (backend/ai-proxy), which adds the Groq key server-side and forwards
+// an allow-listed version of this OpenAI-style body to Groq; the app never sees
+// the key. Plain fetch keeps the bundle free of SDKs and makes it easy to mock.
+import type { AiProxyConfig } from './aiProxy';
 
 // Production model with strict JSON-schema structured outputs on Groq
 // (https://console.groq.com/docs/structured-outputs). Groq's recommended
-// replacement for the deprecated Llama 3.x models.
+// replacement for the deprecated Llama 3.x models. The proxy only allows this
+// model: keep ALLOWED_MODELS in backend/ai-proxy/src/proxy.ts in sync.
 export const GROQ_MODEL = 'openai/gpt-oss-120b';
 
-const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const TIMEOUT_MS = 45000;
 
 export type GroqErrorKind = 'auth' | 'rate_limit' | 'http' | 'network' | 'timeout' | 'bad_response' | 'aborted';
@@ -25,7 +27,8 @@ export class GroqError extends Error {
 }
 
 export interface GroqJsonRequest {
-  apiKey: string;
+  /** The AI proxy endpoint and app token (see aiProxy.ts). */
+  proxy: AiProxyConfig;
   system: string;
   user: string;
   /** Name and JSON schema for strict structured output. */
@@ -63,11 +66,11 @@ export async function groqJson(req: GroqJsonRequest): Promise<unknown> {
 
   let res: Response;
   try {
-    res = await doFetch(GROQ_URL, {
+    res = await doFetch(req.proxy.url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${req.apiKey}`,
+        'X-App-Token': req.proxy.token,
       },
       body: JSON.stringify({
         model: GROQ_MODEL,
@@ -89,22 +92,30 @@ export async function groqJson(req: GroqJsonRequest): Promise<unknown> {
     });
   } catch {
     if (req.signal?.aborted) throw new GroqError('Cancelled', 'aborted');
-    if (timedOut) throw new GroqError('Groq took too long to answer. Try again.', 'timeout');
-    throw new GroqError('Could not reach Groq. Check your connection.', 'network');
+    if (timedOut) throw new GroqError('The AI service took too long to answer. Try again.', 'timeout');
+    throw new GroqError('Could not reach the AI service. Check your connection.', 'network');
   } finally {
     clearTimeout(timer);
     req.signal?.removeEventListener('abort', onAbort);
   }
 
-  if (res.status === 401 || res.status === 403) {
-    throw new GroqError('Groq rejected the API key. Check EXPO_PUBLIC_GROQ_API_KEY.', 'auth', res.status);
+  // 401/403/413 come from the proxy itself; 429 is its per-IP limit or Groq's
+  // own. The proxy reports Groq rejecting its key as 502, never as 401.
+  if (res.status === 401) {
+    throw new GroqError('The AI service rejected this app. Check EXPO_PUBLIC_AI_PROXY_TOKEN.', 'auth', res.status);
+  }
+  if (res.status === 403) {
+    throw new GroqError('The AI service refused requests from here (origin not allowed).', 'auth', res.status);
   }
   if (res.status === 429) {
-    throw new GroqError('Groq rate limit reached. Wait a minute and try again.', 'rate_limit', res.status);
+    throw new GroqError('Too many AI requests. Wait a minute and try again.', 'rate_limit', res.status);
+  }
+  if (res.status === 413) {
+    throw new GroqError('That request is too big for AI mode. Try fewer items.', 'http', res.status);
   }
   if (!res.ok) {
     const detail = await errorDetail(res);
-    throw new GroqError(`Groq request failed (${res.status})${detail ? `: ${detail}` : ''}`, 'http', res.status);
+    throw new GroqError(`AI request failed (${res.status})${detail ? `: ${detail}` : ''}`, 'http', res.status);
   }
 
   let data: unknown;

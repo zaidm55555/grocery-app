@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Modal, View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet, ActivityIndicator, KeyboardAvoidingView, Platform as RNPlatform } from 'react-native';
 import { Sparkles, X, Undo2, RotateCcw, KeyRound, PackageX, Check, AlertCircle } from 'lucide-react-native';
 import { colors, fonts, platformThemes } from '../constants/theme';
-import { aiKey } from '../services/aiKey';
+import { aiProxy } from '../services/aiProxy';
 import { buildAiBasket, searchAllStores, AiBasketResult, AiProgress } from '../services/aiMode';
 import { GROQ_MODEL, GroqError } from '../services/groq';
 import { applyPicks, undoApplied, AppliedLine, MAX_INPUT_CHARS } from '../utils/aiBasket';
@@ -35,7 +35,7 @@ const rupees = (n: number) => `₹${Math.round(n * 100) / 100}`;
 export default function AiModeSheet({ visible, onClose, getCart, onCommitCart, blockedReason, onViewBasket }: Props) {
   const [phase, setPhase] = useState<Phase>('input');
   const [text, setText] = useState('');
-  const [hasKey, setHasKey] = useState<boolean | null>(null);
+  const [configured, setConfigured] = useState<boolean | null>(null);
   const [progress, setProgress] = useState<AiProgress | null>(null);
   const [result, setResult] = useState<AiBasketResult | null>(null);
   // applied[i] is what picks[i] put in the basket; null once the user removed it.
@@ -47,7 +47,7 @@ export default function AiModeSheet({ visible, onClose, getCart, onCommitCart, b
   useEffect(() => {
     if (!visible) return;
     let live = true;
-    aiKey.get().then(k => { if (live) setHasKey(!!k); }).catch(() => { if (live) setHasKey(false); });
+    aiProxy.get().then(p => { if (live) setConfigured(!!p); }).catch(() => { if (live) setConfigured(false); });
     return () => { live = false; };
   }, [visible]);
 
@@ -71,10 +71,10 @@ export default function AiModeSheet({ visible, onClose, getCart, onCommitCart, b
   const run = async () => {
     if (busyRef.current || !text.trim() || blockedReason) return;
     busyRef.current = true;
-    const key = await aiKey.get().catch(() => null);
-    if (!key) {
+    const proxy = await aiProxy.get().catch(() => null);
+    if (!proxy) {
       busyRef.current = false;
-      setHasKey(false);
+      setConfigured(false);
       return;
     }
     const ctrl = new AbortController();
@@ -83,7 +83,7 @@ export default function AiModeSheet({ visible, onClose, getCart, onCommitCart, b
     setProgress(null);
     setPhase('working');
     try {
-      const res = await buildAiBasket(text, { apiKey: key, search: searchAllStores, onProgress: setProgress, signal: ctrl.signal });
+      const res = await buildAiBasket(text, { proxy, search: searchAllStores, onProgress: setProgress, signal: ctrl.signal });
       if (abortRef.current !== ctrl) return;
       const next = applyPicks(getCart(), res.picks);
       if (res.picks.length > 0) await onCommitCart(next.cart);
@@ -149,7 +149,7 @@ export default function AiModeSheet({ visible, onClose, getCart, onCommitCart, b
 
   const activeCount = applied.filter(a => a && a.added > 0).length;
   const addedValue = (result?.picks || []).reduce((sum, p, i) => sum + (applied[i] ? p.product.price * applied[i]!.added : 0), 0);
-  const canRun = !!text.trim() && hasKey !== false && !blockedReason;
+  const canRun = !!text.trim() && configured !== false && !blockedReason;
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={phase === 'working' ? cancel : handleClose}>
@@ -170,12 +170,12 @@ export default function AiModeSheet({ visible, onClose, getCart, onCommitCart, b
               <>
                 <Text style={styles.lead}>Describe what you need. We search both stores and add the best match for each item.</Text>
 
-                {hasKey === false && (
+                {configured === false && (
                   <View style={styles.noticeCard}>
                     <KeyRound size={16} color={colors.amber} />
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.noticeTitle}>Groq API key not configured</Text>
-                      <Text style={styles.noticeText}>Set EXPO_PUBLIC_GROQ_API_KEY in .env.local and restart the bundler.</Text>
+                      <Text style={styles.noticeTitle}>AI mode is not configured</Text>
+                      <Text style={styles.noticeText}>Set EXPO_PUBLIC_AI_PROXY_URL and EXPO_PUBLIC_AI_PROXY_TOKEN in .env.local and restart the bundler.</Text>
                     </View>
                   </View>
                 )}
@@ -209,7 +209,7 @@ export default function AiModeSheet({ visible, onClose, getCart, onCommitCart, b
                   <Text style={styles.primaryBtnText}>Build my basket</Text>
                 </TouchableOpacity>
                 <Text style={styles.footnote}>
-                  Your request and the matching store listings are sent to Groq ({GROQ_MODEL}). Items are added straight to your basket; you can undo them on the next screen.
+                  Your request and the matching store listings are sent through the BasketBuddy AI proxy to Groq ({GROQ_MODEL}). Items are added straight to your basket; you can undo them on the next screen.
                 </Text>
               </>
             )}

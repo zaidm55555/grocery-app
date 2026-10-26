@@ -5,6 +5,7 @@
 import { api, UnifiedProduct } from './api';
 import { isAddressSyncing, waitForAddressSync } from './addressSync';
 import { groqJson, GroqError, GroqJsonRequest } from './groq';
+import type { AiProxyConfig } from './aiProxy';
 import {
   AiPick,
   AiRequestedItem,
@@ -34,7 +35,8 @@ export interface AiBasketResult {
 }
 
 export interface AiBasketDeps {
-  apiKey: string;
+  /** AI proxy endpoint and app token (aiProxy.get()); null when not configured. */
+  proxy: AiProxyConfig | null;
   /** Searches every store for one query; failures should resolve to []. */
   search: (query: string) => Promise<UnifiedProduct[]>;
   onProgress?: (progress: AiProgress) => void;
@@ -58,11 +60,14 @@ export async function buildAiBasket(text: string, deps: AiBasketDeps): Promise<A
   const chat = deps.chat ?? groqJson;
   const input = cleanText(text, MAX_INPUT_CHARS);
   if (!input) throw new AiModeError('Type what you need first.');
-  if (!deps.apiKey) throw new AiModeError('Groq API key not configured (set EXPO_PUBLIC_GROQ_API_KEY in .env.local).');
+  const proxy = deps.proxy;
+  if (!proxy?.url || !proxy.token) {
+    throw new AiModeError('AI mode is not configured (set EXPO_PUBLIC_AI_PROXY_URL and EXPO_PUBLIC_AI_PROXY_TOKEN in .env.local).');
+  }
 
   deps.onProgress?.({ stage: 'parsing' });
   const parsed = await chat({
-    apiKey: deps.apiKey,
+    proxy,
     system: PARSE_SYSTEM_PROMPT,
     user: input,
     schemaName: 'grocery_request',
@@ -92,7 +97,7 @@ export async function buildAiBasket(text: string, deps: AiBasketDeps): Promise<A
   if (candidates.some(c => c.length > 0)) {
     deps.onProgress?.({ stage: 'choosing' });
     rawPicks = await chat({
-      apiKey: deps.apiKey,
+      proxy,
       system: PICK_SYSTEM_PROMPT,
       user: buildPickPrompt(requested, candidates),
       schemaName: 'basket_picks',

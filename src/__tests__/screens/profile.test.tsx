@@ -161,7 +161,7 @@ describe('Profile screen: location', () => {
 });
 
 describe('Profile screen: AI mode key', () => {
-  it('has no Groq key UI (the key comes from EXPO_PUBLIC_GROQ_API_KEY)', async () => {
+  it('has no Groq key UI (AI mode goes through the AI proxy; the app holds no Groq key)', async () => {
     const u = await renderProfile();
     expect(u.queryByText(/Groq API key/)).toBeNull();
     expect(u.queryByLabelText('Groq API key')).toBeNull();

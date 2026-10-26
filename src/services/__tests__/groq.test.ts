@@ -1,6 +1,7 @@
 import { groqJson, GroqError, GROQ_MODEL } from '../groq';
 
-const KEY = 'gsk_testkey1234567890abcdef';
+// Fake values only.
+const PROXY = { url: 'https://ai-proxy.example.workers.dev/chat', token: 'test-app-token-not-real' };
 
 const response = (status: number, body: unknown, raw = false) => ({
   ok: status >= 200 && status < 300,
@@ -16,7 +17,7 @@ const completion = (content: unknown, finish = 'stop') =>
 
 const call = (fetchImpl: jest.Mock, extra: Partial<Parameters<typeof groqJson>[0]> = {}) =>
   groqJson({
-    apiKey: KEY,
+    proxy: PROXY,
     system: 'sys',
     user: 'two dozen eggs',
     schemaName: 'grocery_request',
@@ -35,14 +36,16 @@ const rejection = async (p: Promise<unknown>): Promise<GroqError> => {
 };
 
 describe('groqJson', () => {
-  it('posts a strict json_schema request with the key as a bearer token and parses the reply', async () => {
+  it('posts a strict json_schema request to the AI proxy with the app token and parses the reply', async () => {
     const fetchImpl = jest.fn().mockResolvedValue(completion('{"items":[{"name":"Eggs"}]}'));
     await expect(call(fetchImpl)).resolves.toEqual({ items: [{ name: 'Eggs' }] });
 
     const [url, init] = fetchImpl.mock.calls[0];
-    expect(url).toBe('https://api.groq.com/openai/v1/chat/completions');
+    expect(url).toBe(PROXY.url);
     expect(init.method).toBe('POST');
-    expect(init.headers.Authorization).toBe(`Bearer ${KEY}`);
+    expect(init.headers['X-App-Token']).toBe(PROXY.token);
+    // The app holds no Groq key, so it never sends one.
+    expect(init.headers.Authorization).toBeUndefined();
     const body = JSON.parse(init.body);
     expect(body.model).toBe(GROQ_MODEL);
     expect(body.messages).toEqual([{ role: 'system', content: 'sys' }, { role: 'user', content: 'two dozen eggs' }]);
@@ -54,24 +57,31 @@ describe('groqJson', () => {
   });
 
   it.each([
-    [401, 'auth'],
-    [403, 'auth'],
-    [429, 'rate_limit'],
-  ])('maps HTTP %s to a %s error without leaking the key', async (status, kind) => {
-    const fetchImpl = jest.fn().mockResolvedValue(response(status, {}));
+    [401, 'auth', 'The AI service rejected this app. Check EXPO_PUBLIC_AI_PROXY_TOKEN.'],
+    [403, 'auth', 'The AI service refused requests from here (origin not allowed).'],
+    [429, 'rate_limit', 'Too many AI requests. Wait a minute and try again.'],
+    [413, 'http', 'That request is too big for AI mode. Try fewer items.'],
+  ])('maps proxy HTTP %s to a %s error without leaking the token', async (status, kind, message) => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(status, { error: { message: `server said ${PROXY.token}` } }));
     const err = await rejection(call(fetchImpl));
     expect(err).toBeInstanceOf(GroqError);
     expect(err.kind).toBe(kind);
     expect(err.status).toBe(status);
-    expect(err.message).not.toContain(KEY);
+    expect(err.message).toBe(message);
+    expect(err.message).not.toContain(PROXY.token);
   });
 
   it('includes the server message on other HTTP errors, and survives an unreadable body', async () => {
     const withMsg = await rejection(call(jest.fn().mockResolvedValue(response(400, { error: { message: 'model not found' } }))));
     expect(withMsg.kind).toBe('http');
-    expect(withMsg.message).toBe('Groq request failed (400): model not found');
+    expect(withMsg.message).toBe('AI request failed (400): model not found');
+    const upstreamAuth = await rejection(call(jest.fn().mockResolvedValue(
+      response(502, { error: { code: 'upstream_auth', message: 'The AI provider rejected the proxy credentials.' } }),
+    )));
+    expect(upstreamAuth.kind).toBe('http');
+    expect(upstreamAuth.message).toBe('AI request failed (502): The AI provider rejected the proxy credentials.');
     const noBody = await rejection(call(jest.fn().mockResolvedValue(response(500, null, true))));
-    expect(noBody.message).toBe('Groq request failed (500)');
+    expect(noBody.message).toBe('AI request failed (500)');
   });
 
   it.each([

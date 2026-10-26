@@ -70,6 +70,13 @@
     "testMatch": [
       "<rootDir>/src/**/__tests__/**/*.test.{ts,tsx}"
     ],
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "<rootDir>/backend/"
+    ],
+    "modulePathIgnorePatterns": [
+      "<rootDir>/backend/"
+    ],
     "setupFilesAfterEnv": [
       "<rootDir>/jest.setup.ts"
     ],

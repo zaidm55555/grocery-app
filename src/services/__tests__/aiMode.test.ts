@@ -9,7 +9,8 @@ jest.mock('../addressSync', () => ({
 }));
 const sync = require('../addressSync') as { isAddressSyncing: jest.Mock; waitForAddressSync: jest.Mock };
 
-const KEY = 'gsk_testkey1234567890abcdef';
+// Fake values only.
+const PROXY = { url: 'https://ai-proxy.example.workers.dev/chat', token: 'test-app-token-not-real' };
 const bl = (id: string, title: string, over: Partial<UnifiedProduct> = {}) =>
   product({ id: `blinkit-${id}`, title, platform: 'blinkit', quantity: '500 ml', price: 30, ...over });
 const sw = (id: string, title: string, over: Partial<UnifiedProduct> = {}) =>
@@ -53,11 +54,11 @@ describe('buildAiBasket', () => {
       ] };
     });
     const progress: AiProgress[] = [];
-    const res = await buildAiBasket('milk 1L, 2 dozen eggs and saffron', { apiKey: KEY, search, chat, onProgress: p => progress.push(p) });
+    const res = await buildAiBasket('milk 1L, 2 dozen eggs and saffron', { proxy: PROXY, search, chat, onProgress: p => progress.push(p) });
 
     expect(search.mock.calls.map(c => c[0])).toEqual(['milk', 'eggs', 'saffron']);
     expect(chat).toHaveBeenCalledTimes(2);
-    expect(chat.mock.calls[0][0].apiKey).toBe(KEY);
+    expect(chat.mock.calls.map(c => c[0].proxy)).toEqual([PROXY, PROXY]);
     expect(res.requested.map(r => r.name)).toEqual(['Milk', 'Eggs', 'Saffron']);
     expect(res.picks.map(p => [p.item.name, p.product.id, p.units])).toEqual([['Milk', 'blinkit-milk', 2], ['Eggs', 'blinkit-eggs', 4]]);
     // Same product on the other store is attached from the same search results.
@@ -68,7 +69,7 @@ describe('buildAiBasket', () => {
 
   it('skips the pick call when no item has usable results', async () => {
     const chat = fakeChat({ items: [{ name: 'Saffron', query: 'saffron', amount: '' }] }, () => { throw new Error('should not be called'); });
-    const res = await buildAiBasket('saffron', { apiKey: KEY, search: async () => [], chat });
+    const res = await buildAiBasket('saffron', { proxy: PROXY, search: async () => [], chat });
     expect(chat).toHaveBeenCalledTimes(1);
     expect(res.picks).toEqual([]);
     expect(res.unmatched).toHaveLength(1);
@@ -81,28 +82,28 @@ describe('buildAiBasket', () => {
       return [];
     });
     const chat = fakeChat(PARSED, () => ({ picks: [] }));
-    const res = await buildAiBasket('stuff', { apiKey: KEY, search, chat });
+    const res = await buildAiBasket('stuff', { proxy: PROXY, search, chat });
     expect(res.unmatched.map(u => u.item.name)).toEqual(['Milk', 'Eggs', 'Saffron']);
     expect(chat).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects empty input, a missing key, and requests with no grocery items', async () => {
+  it('rejects empty input, a missing proxy config, and requests with no grocery items', async () => {
     const chat = fakeChat({ items: [] }, () => ({ picks: [] }));
-    await expect(buildAiBasket('   ', { apiKey: KEY, search: async () => [], chat })).rejects.toBeInstanceOf(AiModeError);
-    await expect(buildAiBasket('milk', { apiKey: '', search: async () => [], chat })).rejects.toThrow(/Groq API key/);
+    await expect(buildAiBasket('   ', { proxy: PROXY, search: async () => [], chat })).rejects.toBeInstanceOf(AiModeError);
+    await expect(buildAiBasket('milk', { proxy: null, search: async () => [], chat })).rejects.toThrow(/AI mode is not configured/);
     expect(chat).not.toHaveBeenCalled();
-    await expect(buildAiBasket('tell me a joke', { apiKey: KEY, search: async () => [], chat })).rejects.toThrow(/No grocery items/);
+    await expect(buildAiBasket('tell me a joke', { proxy: PROXY, search: async () => [], chat })).rejects.toThrow(/No grocery items/);
   });
 
   it('caps the request text sent to the LLM', async () => {
     const chat = fakeChat({ items: [] }, () => ({ picks: [] }));
-    await buildAiBasket('milk '.repeat(500), { apiKey: KEY, search: async () => [], chat }).catch(() => {});
+    await buildAiBasket('milk '.repeat(500), { proxy: PROXY, search: async () => [], chat }).catch(() => {});
     expect(chat.mock.calls[0][0].user.length).toBeLessThanOrEqual(600);
   });
 
-  it('propagates Groq errors (e.g. a bad key)', async () => {
-    const chat = jest.fn(async () => { throw new GroqError('Groq rejected the API key. Check EXPO_PUBLIC_GROQ_API_KEY.', 'auth', 401); });
-    await expect(buildAiBasket('milk', { apiKey: KEY, search: async () => [], chat })).rejects.toMatchObject({ kind: 'auth' });
+  it('propagates AI service errors (e.g. a rejected app token)', async () => {
+    const chat = jest.fn(async () => { throw new GroqError('The AI service rejected this app. Check EXPO_PUBLIC_AI_PROXY_TOKEN.', 'auth', 401); });
+    await expect(buildAiBasket('milk', { proxy: PROXY, search: async () => [], chat })).rejects.toMatchObject({ kind: 'auth' });
   });
 
   it('stops searching once cancelled', async () => {
@@ -112,7 +113,7 @@ describe('buildAiBasket', () => {
       return CATALOG[q] ?? [];
     });
     const chat = fakeChat(PARSED, () => ({ picks: [] }));
-    await expect(buildAiBasket('milk eggs', { apiKey: KEY, search, chat, signal: ctrl.signal })).rejects.toMatchObject({ kind: 'aborted' });
+    await expect(buildAiBasket('milk eggs', { proxy: PROXY, search, chat, signal: ctrl.signal })).rejects.toMatchObject({ kind: 'aborted' });
     expect(search).toHaveBeenCalledTimes(1);
     expect(chat).toHaveBeenCalledTimes(1);
   });

@@ -1,0 +1,35 @@
+# BasketBuddy AI proxy (see README.md). Secrets are NOT in this file: set them with
+# `npx wrangler secret put GROQ_API_KEY` and `npx wrangler secret put APP_TOKEN`.
+name = "basketbuddy-ai-proxy"
+main = "src/index.ts"
+compatibility_date = "2026-10-20"
+
+# Deploy fails if either secret is missing on the Worker; also drives `wrangler types`.
+[secrets]
+required = ["GROQ_API_KEY", "APP_TOKEN"]
+
+[vars]
+# Comma-separated browser origins allowed to call /chat (only matters for the web
+# build; native apps send no Origin header). Add your deployed web origin here.
+# Avoid "*": it would let any website use its visitors' browsers (many IPs) to
+# spend your Groq quota with the extractable app token.
+ALLOWED_ORIGINS = "http://localhost:8081"
+
+# Per-IP limit (IPv6 grouped by /64). Approximate and per Cloudflare location,
+# see https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/
+# One AI-mode run makes two /chat calls. Needs Wrangler 4.36.0 or later.
+[[ratelimits]]
+name = "AI_RATE_LIMITER"
+namespace_id = "1001"
+
+  [ratelimits.simple]
+  limit = 12
+  period = 60
+
+[observability]
+enabled = true
+
+# Invocation logs record request details (including headers such as X-App-Token).
+# Keep them off; the Worker's own console output never includes keys or bodies.
+[observability.logs]
+invocation_logs = false

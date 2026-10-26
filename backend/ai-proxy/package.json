@@ -1,0 +1,20 @@
+{
+  "name": "basketbuddy-ai-proxy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cloudflare Worker that forwards BasketBuddy AI mode requests to Groq so the Groq key never ships in the app.",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "cf-typegen": "wrangler types --strict-vars=false",
+    "typecheck": "wrangler types --strict-vars=false && tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "typescript": "~6.0.3",
+    "vitest": "^5.0.5",
+    "wrangler": "^4.153.0"
+  }
+}
