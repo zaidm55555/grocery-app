@@ -85,6 +85,22 @@ const SYNONYMS: Record<string, string> = {
   govardhan: 'gowardhan', hersheys: 'hersheys', chings: 'chings', bagrrys: 'bagrrys', venkys: 'venkys',
   hellmanns: 'hellmanns', ponds: 'ponds', chaas: 'buttermilk', chhach: 'buttermilk', patta: 'leaf', patti: 'leaf',
   achaari: 'achari', chips: 'chip', seeds: 'seed',
+  // Kannada names Blinkit/Instamart add in Bengaluru ("Onion (Eerulli)", "Toor Dal (Togari Bele)")
+  eerulli: 'onion', erulli: 'onion', irulli: 'onion', bellulli: 'garlic', belluli: 'garlic',
+  shunti: 'ginger', shunthi: 'ginger', menasinakayi: 'chili', menasinakai: 'chili', menasinkai: 'chili',
+  kharada: 'chili', hasi: 'green', menasu: 'pepper', togari: 'toor', bele: 'dal', hesaru: 'moong',
+  uddina: 'urad', uddu: 'urad', kadale: 'chana', kadalekai: 'groundnut', kadlekai: 'groundnut',
+  sasive: 'mustard', saasive: 'mustard', kaalu: 'seed', jeerige: 'cumin', arshina: 'turmeric',
+  arishina: 'turmeric', arisina: 'turmeric', pudi: 'powder', godihittu: 'atta', godi: 'wheat', hittu: 'flour',
+  kothambari: 'dhaniya', kotthambari: 'dhaniya', soppu: 'leaf', karibevu: 'curryleaf', menthya: 'fenugreek',
+  menthe: 'fenugreek', nimbe: 'lemon', hannu: 'fruit', gajjari: 'carrot', aloogadde: 'potato',
+  alugadde: 'potato', bendekayi: 'okra', bendekai: 'okra', badanekayi: 'brinjal', badanekai: 'brinjal',
+  southekayi: 'cucumber', sautekayi: 'cucumber', elekosu: 'cabbage', hookosu: 'cauliflower',
+  mullangi: 'radish', sakkare: 'sugar', uppu: 'salt', akki: 'rice', avalakki: 'poha', tuppa: 'clarifiedbutter',
+  mosaru: 'curd', haalu: 'milk', motte: 'egg', tengina: 'coconut', kobbari: 'coconut', dodda: 'large',
+  // "Nati" / "Desi" / "Country" / "Local" all name the native variety (vs hybrid)
+  nati: 'desi', naati: 'desi', country: 'desi', local: 'desi',
+  big: 'large', sambhar: 'sambar', organically: 'organic', khaalis: 'pure', khalis: 'pure',
 };
 
 // Multi-word phrases (written in plain words, normalised at load) -> one token.
@@ -106,9 +122,7 @@ const PHRASES: [string, string][] = [
   ['double toned', 'doubletoned'], ['extra virgin', 'extravirgin'], ['cold pressed', 'coldpressed'],
   ['kachi ghani', 'kachighani'], ['extra hot', 'extrahot'], ['mixed fruit', 'mixedfruit'],
   ['ice cream', 'icecream'], ['soft drink', 'softdrink'], ['cold drink', 'softdrink'], ['health drink', 'healthdrink'],
-  ['potato chips', 'chip'], ['potato chip', 'chip'], ['butter milk', 'buttermilk'], ['leaf tea', 'tea'],
-  ['coffee powder', 'coffee'], ['chocolate bar', 'bar'], ['dairy milk chocolate', 'dairymilk'],
-  ['silk chocolate', 'silk'], ['energy drink', 'drink'], ['fruit drink', 'drink'], ['uncle chips', 'unclechipps'], ['detergent powder', 'detergent'], ['washing powder', 'detergent'],
+  ['butter milk', 'buttermilk'], ['uncle chips', 'unclechipps'], ['kari menasu', 'blackpepper'],
   ['tooth paste', 'toothpaste'], ['hand wash', 'handwash'], ['dish wash', 'dishwash'], ['body wash', 'bodywash'],
   ['face wash', 'facewash'], ['corn flakes', 'cornflakes'], ['2 minute', 'minute'], ['two minute', 'minute'],
   ['hygienically packed', 'packed'], ['vacuum evaporated', 'iodised'], ['top load', 'topload'],
@@ -117,6 +131,15 @@ const PHRASES: [string, string][] = [
   ['mountain dew', 'mountaindew'], ['minute maid', 'minutemaid'], ['red bull', 'redbull'], ['red label', 'redlabel'],
   ['parle g', 'parleg'], ['dairy milk', 'dairymilk'], ['good day', 'goodday'], ['marie gold', 'mariegold'],
   ['nature fresh', 'naturefresh'],
+];
+
+// Phrases that fold a product-type word into its head ("Leaf Tea" -> "tea").
+// Cross-store scoring uses them; the strict same-product check does not, so
+// "Tata Tea Gold" and "Tata Tea Gold Leaf Tea" are not one listing there.
+const DESCRIPTOR_PHRASES: [string, string][] = [
+  ['potato chips', 'chip'], ['potato chip', 'chip'], ['leaf tea', 'tea'], ['coffee powder', 'coffee'],
+  ['chocolate bar', 'bar'], ['dairy milk chocolate', 'dairymilk'], ['silk chocolate', 'silk'],
+  ['energy drink', 'drink'], ['fruit drink', 'drink'], ['detergent powder', 'detergent'], ['washing powder', 'detergent'],
 ];
 
 // Known brands (umbrella brands and the product lines titles lead with), with
@@ -159,6 +182,7 @@ const BRANDS: [string, string?][] = [
   ['jivo'], ['emami'], ['tops'], ['weikfield'], ['keya'], ['tang'],
   ['parleg', 'parle'], ['goodday', 'britannia'], ['mariegold', 'britannia'], ['monaco', 'parle'],
   ['krackjack', 'parle'], ['hide and seek', 'parle'], ['little hearts', 'britannia'], ['nutrichoice', 'britannia'],
+  ['hamdard'], ['bhagyalakshmi'], ['jk'], ['nectr'],
 ];
 
 // Descriptor / packaging / category words: present on one side only, they say
@@ -170,7 +194,7 @@ const GENERIC = new Set([
   'homogenised', 'refined', 'india', 'indian', 'loose', 'chips', 'chip', 'crisp', 'namkeen', 'snack', 'softdrink',
   'drink', 'beverage', 'noodle', 'biscuit', 'cookie', 'bar', 'detergent', 'juice', 'taste', 'flavour', 'rich',
   'farm', 'wash', 'healthdrink', 'style', 'pasteurized', 'hybrid', 'processed', 'mineral', 'packaged', 'drinking',
-  'disinfectant', 'bathing', 'soap', 'powder', 'edible', 'cooking', 'unpolished',
+  'disinfectant', 'bathing', 'soap', 'powder', 'edible', 'cooking', 'unpolished', 'grown',
 ]);
 // "hybrid" (tomato) is the default variety on both apps, so it is descriptive.
 
@@ -199,7 +223,8 @@ const CONFLICT_GROUPS_RAW: string[][] = [
   ['raw', 'roasted', 'boiled'],
   ['topload', 'frontload'],
   ['liquid', 'powder', 'gel', 'spray', 'tablet', 'cube', 'bar'],
-  ['whole', 'seed', 'powder', 'crushed', 'split', 'flake'],
+  ['whole', 'seed', 'powder', 'crushed', 'split', 'flake', 'leaf', 'paste'],
+  ['desi', 'hybrid'],
 ];
 
 // ---------- Normalisation ----------
@@ -220,23 +245,26 @@ function normalizeWord(t: string): string {
 const words = (s: string) => s.split(/[^a-z0-9]+/).filter(Boolean);
 
 // Phrase table keyed by the normalised words, longest first.
-const PHRASE_TABLE: { from: string[]; to: string }[] = [
+const PHRASE_TABLE: { from: string[]; to: string; descriptor?: boolean }[] = [
   ...PHRASES.map(([from, to]) => ({ from: words(from).map(normalizeWord), to })),
+  ...DESCRIPTOR_PHRASES.map(([from, to]) => ({ from: words(from).map(normalizeWord), to, descriptor: true })),
   ...BRANDS.map(([b]) => words(b)).filter(w => w.length > 1).map(w => ({ from: w.map(normalizeWord), to: w.join('') })),
 ].sort((a, b) => b.from.length - a.from.length);
 
 // Phrase outputs are canonical already (only synonym-mapped, never stemmed).
-function joinPhrases(list: string[]): string[] {
+// `strict` leaves descriptor phrases unjoined.
+function joinPhrases(list: string[], strict = false): string[] {
   const out: string[] = [];
   for (let i = 0; i < list.length;) {
-    const hit = PHRASE_TABLE.find(p => p.from.every((w, k) => list[i + k] === w));
+    const hit = PHRASE_TABLE.find(p => !(strict && p.descriptor) && p.from.every((w, k) => list[i + k] === w));
     if (hit) { out.push(SYNONYMS[hit.to] || hit.to); i += hit.from.length; } else { out.push(list[i]); i++; }
   }
   return out;
 }
 
-// Normalised tokens of a phrase, stopwords included.
-const rawTokens = (str: string | undefined) => joinPhrases(words(stripAllSizes(str)).map(normalizeWord));
+// Normalised tokens of a phrase (already folded or not), stopwords included.
+const phraseTokens = (text: string, strict = false) => joinPhrases(words(text).map(normalizeWord), strict);
+const rawTokens = (str: string | undefined, strict = false) => phraseTokens(stripAllSizes(str), strict);
 
 const norm = (list: Iterable<string>) => new Set([...list].map(normalizeWord));
 const STOP_NORM = new Set([...STOPWORDS, ...norm(STOPWORDS)]);
@@ -249,15 +277,92 @@ const brandToken = (b: string) => rawTokens(b).join('');
 const BRAND_PARENT = new Map<string, string | null>();
 BRANDS.forEach(([b, parent]) => BRAND_PARENT.set(brandToken(b), parent ? brandToken(parent) : null));
 
+const dedupe = (list: string[]) => list.filter((t, i) => !STOP_NORM.has(t) && list.indexOf(t) === i);
+
 // Ordered, normalised, stopword-free tokens of a title with its sizes removed
 // (order kept so the leading token, usually the brand, can be weighted).
-export function nameTokens(str: string | undefined): string[] {
-  const out: string[] = [];
-  rawTokens(str).forEach(t => {
-    if (STOP_NORM.has(t) || out.includes(t)) return;
-    out.push(t);
-  });
-  return out;
+// Every word counts, brackets included; see parseTitle for the scoring view.
+export function nameTokens(str: string | undefined, strict = false): string[] {
+  return dedupe(rawTokens(str, strict));
+}
+
+// ---------- Title structure: glosses and slash pairs ----------
+
+// Words that always say which product it is, wherever they appear.
+const SIGNAL = new Set([...HARD_NORM, ...CONFLICT_GROUPS.flat()]);
+const BRACKET_RE = /[([{]([^()[\]{}]*)(?:[)\]}]|$)/g;
+// Clause breaks: a spaced dash ("Tomato - Hybrid"), comma, semicolon, pipe, colon.
+const CLAUSE_RE = /\s[-–—]\s|[,;|:]/;
+
+export interface TitleParts {
+  /** What the title says the product is: ordered, normalised, stopword-free. */
+  tokens: string[];
+  /**
+   * Help-only words: a bracket that restates the product in another language
+   * ("Onion (Eerulli)", "Toor Dal (Togari Bele)"). They count when the other
+   * title has them and are ignored when it does not.
+   */
+  aliases: string[];
+  /**
+   * Slash pairs ("Sabja/ Basil Seeds"): [left words, right words] naming the
+   * same thing two ways. Both sides are in `tokens`; when comparing, the side
+   * the other title does not use becomes an alias.
+   */
+  alts: [string[], string[]][];
+}
+
+// The words on each side of a slash that differ ("Sabja" / "Basil Seeds"), or
+// null when one side only repeats the other ("Arhar Dal/ Toor Dal"). The left
+// side stops at a brand, a hard qualifier or the title's first word (probably
+// an unknown brand), so a slash can never make the brand optional.
+function slashPair(left: string[], right: string[], before: string[]): [string[], string[]] | null {
+  const inLeft = new Set(left), inRight = new Set(right);
+  const rightAlt = right.filter(t => !inLeft.has(t) && !before.includes(t) && !HARD_NORM.has(t) && !BRAND_PARENT.has(t));
+  let i = left.length - 1;
+  while (i >= 0 && inRight.has(left[i])) i--; // shared head noun: "Cumin Seeds / Jeera Seeds"
+  const leftAlt: string[] = [];
+  const firstWord = before.length > 1 ? before[0] : null;
+  while (i >= 0 && leftAlt.length < 2 && !inRight.has(left[i]) && !BRAND_PARENT.has(left[i]) &&
+    !HARD_NORM.has(left[i]) && left[i] !== firstWord) {
+    leftAlt.unshift(left[i]);
+    i--;
+  }
+  return leftAlt.length && rightAlt.length ? [leftAlt, rightAlt] : null;
+}
+
+/**
+ * Splits a title into the words that identify the product, gloss words that can
+ * only help, and slash alternatives. A bracket is a gloss when it shares a word
+ * with the rest of the title after synonyms ("Green Chilli (Menasinakayi)");
+ * otherwise ("(Fruit & Nut)", "(Bubbly)") it is part of the name. Hard
+ * qualifiers, variant words and brands always count, gloss or not.
+ */
+export function parseTitle(str: string | undefined): TitleParts {
+  const glosses: string[] = [];
+  const body = stripAllSizes(str).replace(BRACKET_RE, (_m, inner: string) => { glosses.push(inner); return ' | '; });
+  const tokens: string[] = [];
+  const add = (t: string) => { if (!STOP_NORM.has(t) && !tokens.includes(t)) tokens.push(t); };
+  const alts: [string[], string[]][] = [];
+  for (const clause of body.split(CLAUSE_RE)) {
+    const sides = clause.split('/').map(side => dedupe(phraseTokens(side)));
+    sides[0].forEach(add);
+    for (let k = 1; k < sides.length; k++) {
+      const pair = slashPair(sides[k - 1], sides[k], [...tokens]);
+      if (pair) alts.push(pair);
+      sides[k].forEach(add);
+    }
+  }
+  const aliases: string[] = [];
+  for (const inner of glosses) {
+    const inside = dedupe(phraseTokens(inner));
+    const gloss = inside.some(t => tokens.includes(t));
+    for (const t of inside) {
+      if (tokens.includes(t) || aliases.includes(t)) continue;
+      if (gloss && !SIGNAL.has(t) && !BRAND_PARENT.has(t)) aliases.push(t);
+      else tokens.push(t);
+    }
+  }
+  return { tokens, aliases, alts };
 }
 
 export function tokenSet(str: string | undefined): Set<string> {
@@ -285,11 +390,12 @@ function conflictingVariant(ta: Set<string>, tb: Set<string>): [string, string] 
 }
 
 // Weighted Jaccard over the size-stripped name tokens: the strict, symmetric
-// similarity behind isSameProduct. The leading token (usually the brand) counts
-// extra; conflicting variant words zero the score.
+// similarity behind isSameProduct. Every word counts (brackets too) and
+// descriptor phrases stay unjoined. The leading token (usually the brand)
+// counts extra; conflicting variant words zero the score.
 export function nameSimilarity(a: string | undefined, b: string | undefined): number {
-  const la = nameTokens(a);
-  const lb = nameTokens(b);
+  const la = nameTokens(a, true);
+  const lb = nameTokens(b, true);
   if (!la.length || !lb.length) return 0;
   const ta = new Set(la), tb = new Set(lb);
   if (hasVariantConflict(ta, tb)) return 0;
@@ -380,8 +486,7 @@ export function sizeScore(target: MatchableItem, candidate: MatchableItem): numb
 
 // ---------- Scoring ----------
 
-interface Analysed {
-  tokens: string[];
+interface Analysed extends TitleParts {
   brands: string[];
   distinctive: Set<string>;
   qty: ParsedQuantity | null;
@@ -389,21 +494,44 @@ interface Analysed {
   inStock: boolean;
 }
 
+type AnalysedBase = Omit<Analysed, 'tokens' | 'brands' | 'distinctive'>;
+
 // Umbrella brands (no parent) are compared as brands only; product-line brands
 // ("Maggi", "Good Day") also stay in the name, since they say which product it is.
 const isUmbrella = (t: string) => BRAND_PARENT.has(t) && !BRAND_PARENT.get(t);
 
 function analyse(item: MatchableItem): Analysed {
-  return withTokens(nameTokens(itemName(item)), quantityOf(item), Number(item.price) || 0, item.inStock !== false);
+  const { tokens, aliases, alts } = parseTitle(itemName(item));
+  return withTokens(tokens, { aliases, alts, qty: quantityOf(item), price: Number(item.price) || 0, inStock: item.inStock !== false });
 }
 
-function withTokens(tokens: string[], qty: ParsedQuantity | null, price: number, inStock: boolean): Analysed {
+function withTokens(tokens: string[], base: AnalysedBase): Analysed {
   const brands = tokens.filter(t => BRAND_PARENT.has(t));
   // "Brooke Bond Red Label": the parent mention adds nothing once the line is named.
   const parentMention = (t: string) => brands.some(b => b !== t && ancestors(b).includes(t));
   const distinctive = new Set(tokens.filter(t =>
     !isUmbrella(t) && !parentMention(t) && !GENERIC_NORM.has(t) && !/^\d+$/.test(t)));
-  return { tokens, brands, distinctive, qty, price, inStock };
+  return { ...base, tokens, brands, distinctive };
+}
+
+const allWords = (x: Analysed) => new Set([...x.tokens, ...x.aliases]);
+
+// Reads `x` the way `other` is written: of each slash pair, the side `other`
+// does not use becomes an alias ("Sabja/ Basil Seeds" vs "Basil Seeds"), and
+// alias words that `other` does use count as shared words.
+function readAgainst(x: Analysed, other: Set<string>): Analysed {
+  const dropped = new Set<string>();
+  for (const [left, right] of x.alts) {
+    const cover = (side: string[]) => side.filter(t => other.has(t)).length / side.length;
+    const l = cover(left), r = cover(right);
+    if (l === 1 && r === 1) continue;
+    (l > r ? right : left).forEach(t => dropped.add(t));
+  }
+  const aliases = [...x.aliases, ...dropped];
+  const tokens = x.tokens.filter(t => !dropped.has(t));
+  aliases.forEach(t => { if (other.has(t) && !tokens.includes(t)) tokens.push(t); });
+  if (!dropped.size && tokens.length === x.tokens.length) return x;
+  return withTokens(tokens, { ...x, aliases: aliases.filter(t => !tokens.includes(t)), alts: [] });
 }
 
 // "Max Fresh" vs "MaxFresh", "Soya Bean" vs "Soyabean": join adjacent words
@@ -416,7 +544,7 @@ function joinCompounds(A: Analysed, B: Analysed): [Analysed, Analysed] {
       const pair = x.tokens[i] + (x.tokens[i + 1] ?? '');
       if (i + 1 < x.tokens.length && other.has(pair) && !other.has(x.tokens[i])) { out.push(pair); i++; changed = true; } else out.push(x.tokens[i]);
     }
-    return changed ? withTokens(out, x.qty, x.price, x.inStock) : x;
+    return changed ? withTokens(out, x) : x;
   };
   return [join(A, new Set(B.tokens)), join(B, new Set(A.tokens))];
 }
@@ -466,7 +594,7 @@ export function scoreMatch(target: MatchableItem, candidate: MatchableItem): Mat
 }
 
 function scoreAnalysed(rawA: Analysed, rawB: Analysed): MatchDetail {
-  const [A, B] = joinCompounds(rawA, rawB);
+  const [A, B] = joinCompounds(readAgainst(rawA, allWords(rawB)), readAgainst(rawB, allWords(rawA)));
   const parts = { brand: 0, name: 0, variant: 0, size: 0, price: 0, stock: 0 };
   const reasons: string[] = [];
   let capped = false;
@@ -501,10 +629,11 @@ function scoreAnalysed(rawA: Analysed, rawB: Analysed): MatchDetail {
     parts.brand = 0.6;
   }
 
-  // Variant words
-  const q = oneSidedQualifier(setA, setB);
+  // Variant words (gloss words included: they describe the product too)
+  const wordsA = allWords(A), wordsB = allWords(B);
+  const q = oneSidedQualifier(wordsA, wordsB);
   if (q) return reject(`"${q}" variant on one side only`);
-  const conflict = conflictingVariant(setA, setB);
+  const conflict = conflictingVariant(wordsA, wordsB);
   if (conflict) return reject(`different variant (${conflict[0]} vs ${conflict[1]})`);
 
   // Name overlap on the distinctive words (brand and descriptors excluded)
@@ -730,18 +859,20 @@ export function pickBestMatch<T extends MatchableItem>(target: MatchableItem, ca
 const DESCRIPTOR_WORDS = new Set(['premium', 'pure', 'shudh', 'natural', 'classic', 'original', 'regular', 'new',
   'improved', 'best', 'quality', 'special', 'superior', 'daily', 'value', 'standard', 'family', 'healthy', 'tasty',
   'delicious', 'instant', 'ready', 'packed', 'hygienically', 'hygienic', 'iodised', 'iodized', 'vacuum', 'evaporated',
-  'pasteurised', 'pasteurized', 'homogenised', 'homogenized', 'india', 'indian', 'loose', 'farm', 'rich', 'taste']);
+  'pasteurised', 'pasteurized', 'homogenised', 'homogenized', 'india', 'indian', 'loose', 'farm', 'rich', 'taste',
+  'unpolished']);
 
 /**
  * Searches to try, most specific first: the full title; the title without
- * sizes, brackets and descriptors; brand + first two product words; the head
- * noun. Duplicates dropped.
+ * sizes, brackets, descriptors and repeated words ("Arhar Dal/ Toor Dal");
+ * brand + first two product words; the head noun. Duplicates dropped.
  */
 export function buildQueryLadder(title: string | undefined): string[] {
   const full = String(title || '').trim();
   const body = stripAllSizes(full).replace(/\([^)]*\)/g, ' ').replace(/\[[^\]]*\]/g, ' ');
   const ws = body.split(/[^a-z0-9]+/).filter(Boolean)
-    .filter(w => !STOP_NORM.has(w) && !STOP_NORM.has(normalizeWord(w)));
+    .filter(w => !STOP_NORM.has(w) && !STOP_NORM.has(normalizeWord(w)))
+    .filter((w, i, all) => all.findIndex(o => normalizeWord(o) === normalizeWord(w)) === i);
   const plain = ws.filter(w => !DESCRIPTOR_WORDS.has(w));
 
   // Brand words: a known brand as one word or as two/three adjacent words.

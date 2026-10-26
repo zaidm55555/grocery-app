@@ -79,6 +79,25 @@ describe('searchForMatch', () => {
     expect(r.decision.reasons[0]).toMatch(/^different size 500 ml vs 1 L/);
   });
 
+  it('ranks seeded listings with the fetched ones and does not throw once it has some', async () => {
+    const decoy = sw('9', 'Amul Gold Full Cream Milk', '500 ml', 34);
+    respond({ [target.name]: new Error('net down'), 'amul taaza toned milk': [twin] });
+    const r = await searchForMatch('swiggy', target, { seed: [decoy, twin] });
+    expect(r.decision.band).toBe('auto');
+    expect(r.candidates.map(c => c.id)).toEqual(['swiggy-1', 'swiggy-9']);
+    expect(r.queries).toEqual([]);
+    expect(r.searches).toBe(1);
+  });
+
+  it('runs at most maxQueries searches and stops once aborted', async () => {
+    respond({});
+    expect((await searchForMatch('swiggy', target, { maxQueries: 2 })).searches).toBe(2);
+    const ctrl = new AbortController();
+    search.mockImplementation(async () => { ctrl.abort(); return []; });
+    const r = await searchForMatch('swiggy', target, { signal: ctrl.signal });
+    expect(r.searches).toBe(1);
+  });
+
   it('offers an out-of-stock twin as a suggestion, flagged', async () => {
     respond({ [target.name]: [{ ...twin, inStock: false }] });
     const r = await searchForMatch('swiggy', target);

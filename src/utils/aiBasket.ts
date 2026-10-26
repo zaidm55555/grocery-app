@@ -20,6 +20,14 @@ const MAX_REASON_CHARS = 140;
 const MAX_TITLE_CHARS = 90;
 /** Search results per store shown to the LLM for one item. */
 export const CANDIDATES_PER_PLATFORM = 6;
+/** Extra store searches AI mode may spend finding picks' twins on the other store(s). */
+export const MAX_TWIN_SEARCHES = 20;
+/**
+ * Ladder rungs per missing twin: full title, cleaned title, brand + first
+ * words. A 4-rung ladder's last rung (the head noun alone) is skipped: the
+ * item's own generic search already covered it.
+ */
+export const TWIN_RUNGS = 3;
 
 export interface AiRequestedItem {
   /** Short display name, e.g. "Toor dal". */
@@ -48,6 +56,21 @@ export interface AiUnmatched {
   index: number;
   item: AiRequestedItem;
   reason: string;
+}
+
+/** A pick with no linked listing on another (linked) store, and why. */
+export interface AiUnlinked {
+  /** The pick's request index (AiPick.index). */
+  index: number;
+  item: AiRequestedItem;
+  /** The picked listing. */
+  product: UnifiedProduct;
+  /** Store it has no twin on. */
+  platform: Platform;
+  /** The matcher's reasons for the closest listing, or why none was searched. */
+  reason: string;
+  /** Closest listing when plausible ('suggest' band). Not linked: it needs the user's OK. */
+  suggestion: { product: UnifiedProduct; score: number; reasons: string[] } | null;
 }
 
 export interface AppliedLine {
@@ -295,26 +318,45 @@ export function productToVariant(p: UnifiedProduct): PlatformVariant {
   };
 }
 
+/** What the matcher compares a pick's twins against. */
+export function twinTarget(product: UnifiedProduct): { name: string; unit: string; price: number } {
+  return { name: product.title, unit: product.quantity, price: product.price };
+}
+
+/** Stores other than the pick's own that it has no linked listing on yet. */
+export function missingTwinPlatforms(product: UnifiedProduct): Platform[] {
+  return PLATFORM_ORDER.filter(pl => pl !== product.platform && !product.platformPrices?.[pl]);
+}
+
+/** One store's rows of a search result pool. */
+export function poolFor(pool: UnifiedProduct[] | null | undefined, platform: Platform): UnifiedProduct[] {
+  return (pool || []).filter(p => isObj(p) && p.platform === platform && typeof p.id === 'string');
+}
+
+/** Stores that answered at least one of the item searches (the others are not linked or are down). */
+export function answeringPlatforms(results: UnifiedProduct[][]): Set<Platform> {
+  return new Set(PLATFORM_ORDER.filter(pl => results.some(rows => poolFor(Array.isArray(rows) ? rows : [], pl).length > 0)));
+}
+
+export function withTwin(product: UnifiedProduct, platform: Platform, twin: UnifiedProduct): UnifiedProduct {
+  return { ...product, platformPrices: { ...(product.platformPrices || {}), [platform]: productToVariant(twin) } };
+}
+
 /**
  * Adds the same product's listing on the other store(s) as a platform price, so
  * the basket can compare stores, using the deterministic auto-matcher over the
- * search results already fetched for this item (no extra network call). Nobody
- * reviews these links, so only an 'auto'-band match is attached: a different
- * pack size, extra variant words or a close runner-up leave the store unlinked.
+ * search results already fetched for this item (no network call; AI mode
+ * searches further for what this leaves unlinked). Nobody reviews these links,
+ * so only an 'auto'-band match is attached: a different pack size, extra
+ * variant words or a close runner-up leave the store unlinked.
  */
 export function attachTwins(product: UnifiedProduct, pool: UnifiedProduct[]): UnifiedProduct {
-  const prices: Partial<Record<Platform, PlatformVariant>> = { ...(product.platformPrices || {}) };
-  let changed = false;
-  for (const platform of PLATFORM_ORDER) {
-    if (platform === product.platform || prices[platform]) continue;
-    const others = (pool || []).filter(p => isObj(p) && p.platform === platform && typeof p.id === 'string');
-    const decision = decideMatch<UnifiedProduct>({ name: product.title, unit: product.quantity, price: product.price }, others);
-    if (decision.band === 'auto' && decision.best) {
-      prices[platform] = productToVariant(decision.best.candidate);
-      changed = true;
-    }
+  let out = product;
+  for (const platform of missingTwinPlatforms(product)) {
+    const decision = decideMatch<UnifiedProduct>(twinTarget(product), poolFor(pool, platform));
+    if (decision.band === 'auto' && decision.best) out = withTwin(out, platform, decision.best.candidate);
   }
-  return changed ? { ...product, platformPrices: prices } : product;
+  return out;
 }
 
 /** Same identity rule as the search screen: exact id, or normalized name+size on the line or any of its store variants. */

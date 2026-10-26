@@ -65,6 +65,15 @@ const ANY_UNIT = `${WEIGHT_UNITS}|${VOLUME_UNITS}|${COUNT_UNITS}`;
 const NUM = '\\d+(?:\\.\\d+)?';
 const END = '(?![a-z])';
 
+// "Atta - l kg", "Oil I Ltr": a lone lowercase L / capital I typed for the digit 1
+// in front of kg or litre (folded text, so "I" is already "i").
+const ONE_TYPO_RE = /(^|[\s(\-–,:/])[il]\s?(?=(?:kgs?|kilos?|kilogram(?:me)?s?|ltrs?|lt|lit(?:re|er)s?)(?![a-z]))/g;
+
+/** Repairs the "l kg" / "I ltr" typo (meaning 1 kg / 1 litre) in folded text. */
+export function fixSizeTypos(s: string): string {
+  return s.replace(ONE_TYPO_RE, (_m, lead: string) => `${lead}1 `);
+}
+
 // Trailing-only pack-size stripping (kept for familyKey grouping and search retries).
 const PACK_SIZE_RE = new RegExp(`[\\s.,:]*${NUM}\\s*(?:${ANY_UNIT}|pack|pkt|sachet)\\s*$`, 'i');
 const PACK_OF_RE = /[\s.,:]*(?:\(\s*)?pack\s+of\s+\d+(?:\s*\))?\s*$/i;
@@ -98,7 +107,7 @@ const ALL_SIZE_RES: RegExp[] = [
 
 /** Title with every pack-size expression removed (folded to lowercase). */
 export function stripAllSizes(name: string | undefined): string {
-  let s = foldText(name);
+  let s = fixSizeTypos(foldText(name));
   for (const re of ALL_SIZE_RES) s = s.replace(re, ' ');
   return s.replace(/\(\s*[^a-z0-9()]*\s*\)/g, ' ').replace(/\s+/g, ' ').trim();
 }
@@ -159,7 +168,7 @@ export function isUnknownQuantity(raw: string | undefined | null): boolean {
  * "3 pcs (approx. 450-600 g)") into totals per kind. Null when no size is found.
  */
 export function parseQuantity(raw: string | undefined | null): ParsedQuantity | null {
-  const s = foldText(raw).replace(/\*/g, ' x ');
+  const s = fixSizeTypos(foldText(raw)).replace(/\*/g, ' x ');
   if (!s.trim()) return null;
 
   let packs = 1;

@@ -27,6 +27,7 @@ const EXAMPLE = 'Ingredients for dal tadka for 4, a litre of milk, 2 dozen eggs'
 function progressLabel(p: AiProgress | null): string {
   if (!p || p.stage === 'parsing') return 'Reading your request…';
   if (p.stage === 'searching') return `Searching stores for ${p.current} (${p.done + 1}/${p.total})…`;
+  if (p.stage === 'linking') return `Finding ${p.current} on ${platformThemes[p.platform].name} (${p.done + 1}/${p.total})…`;
   return 'Choosing the best match for each item…';
 }
 

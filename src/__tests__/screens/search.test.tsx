@@ -749,6 +749,7 @@ describe('Search screen: AI mode', () => {
       requested: [{ name: 'Milk', query: 'milk', amount: '1 litre' }],
       picks: [{ index: 0, item: { name: 'Milk', query: 'milk', amount: '1 litre' }, product: milk, units: 2, reason: '' }],
       unmatched: [],
+      unlinked: [],
     });
     await storage.saveLocation(LOC);
     await linkBoth();

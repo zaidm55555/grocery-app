@@ -22,8 +22,8 @@ const metrics = {
 };
 
 // Bars: auto must be 100% precise; recall bars leave room for wording we can't know.
-const AUTO_RECALL_BAR = 90;
-const SURFACED_RECALL_BAR = 95;
+const AUTO_RECALL_BAR = 95;
+const SURFACED_RECALL_BAR = 98;
 
 afterAll(() => {
   console.log(

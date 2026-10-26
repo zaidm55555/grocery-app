@@ -1,6 +1,8 @@
-import { buildAiBasket, searchAllStores, AiModeError, AiProgress } from '../aiMode';
+import { buildAiBasket, searchAllStores, AiModeError, AiProgress, TwinSearch } from '../aiMode';
 import { GroqError, GroqJsonRequest } from '../groq';
 import { api, UnifiedProduct } from '../api';
+import { searchForMatch } from '../matchSearch';
+import { MAX_TWIN_SEARCHES } from '../../utils/aiBasket';
 import { product } from './fixtures';
 
 jest.mock('../addressSync', () => ({
@@ -32,9 +34,23 @@ const PARSED = { items: [
   { name: 'Saffron', query: 'saffron', amount: '' },
 ] };
 
+// Twin searches go through the real match ladder (searchForMatch) on a mocked api.
+let single: jest.SpyInstance;
+const singleAnswers = (byQuery: Record<string, UnifiedProduct[] | Error>) =>
+  single.mockImplementation(async (_p: string, q: string) => {
+    const r = byQuery[q];
+    if (r instanceof Error) throw r;
+    return r || [];
+  });
+
 beforeEach(() => {
   sync.isAddressSyncing.mockReset().mockReturnValue(false);
   sync.waitForAddressSync.mockReset().mockResolvedValue(undefined);
+  single = jest.spyOn(api, 'searchSingle').mockResolvedValue([]);
+});
+
+afterEach(() => {
+  single.mockRestore();
 });
 
 describe('buildAiBasket', () => {
@@ -64,7 +80,10 @@ describe('buildAiBasket', () => {
     // Same product on the other store is attached from the same search results.
     expect(res.picks[0].product.platformPrices?.swiggy?.id).toBe('swiggy-milk');
     expect(res.unmatched).toEqual([{ index: 2, item: res.requested[2], reason: 'No results on Blinkit or Instamart' }]);
-    expect(progress.map(p => p.stage)).toEqual(['parsing', 'searching', 'searching', 'searching', 'choosing']);
+    // Eggs had no Instamart row: the ladder ran there and found nothing.
+    expect(single.mock.calls[0].slice(0, 2)).toEqual(['swiggy', 'Farm Eggs 6 pcs']);
+    expect(res.unlinked).toEqual([expect.objectContaining({ index: 1, platform: 'swiggy', reason: 'no similar product', suggestion: null })]);
+    expect(progress.map(p => p.stage)).toEqual(['parsing', 'searching', 'searching', 'searching', 'choosing', 'linking']);
   });
 
   it('skips the pick call when no item has usable results', async () => {
@@ -116,6 +135,85 @@ describe('buildAiBasket', () => {
     await expect(buildAiBasket('milk eggs', { proxy: PROXY, search, chat, signal: ctrl.signal })).rejects.toMatchObject({ kind: 'aborted' });
     expect(search).toHaveBeenCalledTimes(1);
     expect(chat).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('buildAiBasket: finding twins on the other store', () => {
+  // The LLM takes the first candidate of every item.
+  const pickFirst = (req: GroqJsonRequest) => ({
+    picks: JSON.parse(req.user).items.map((i: any) => ({ index: i.index, ref: i.candidates[0].ref, units: 1, reason: '' })),
+  });
+  const parsed = (...queries: string[]) => ({ items: queries.map(q => ({ name: q, query: q, amount: '' })) });
+  const ATTA = 'Aashirvaad Superior MP Chakki Atta - l kg (Godihittu)';
+  const atta = bl('atta', ATTA, { quantity: '1 kg', price: 74 });
+  const multigrain = sw('multi', 'Aashirvaad Multigrain Atta', { quantity: '1 kg', price: 80 });
+  const twin = sw('atta', 'Aashirvaad Superior MP Atta', { quantity: '1 kg', price: 72 });
+
+  it('walks the ladder for a twin the item search missed and attaches only an auto match', async () => {
+    singleAnswers({ 'aashirvaad mp chakki atta': [multigrain, twin] });
+    const progress: AiProgress[] = [];
+    const res = await buildAiBasket('atta', {
+      proxy: PROXY, search: async () => [atta, multigrain], chat: fakeChat(parsed('atta'), pickFirst), onProgress: p => progress.push(p),
+    });
+    expect(single.mock.calls.map(c => [c[0], c[1]])).toEqual([['swiggy', ATTA], ['swiggy', 'aashirvaad mp chakki atta']]);
+    expect(res.picks[0].product.platformPrices?.swiggy?.id).toBe('swiggy-atta');
+    expect(res.unlinked).toEqual([]);
+    expect(progress.filter(p => p.stage === 'linking')).toEqual([{ stage: 'linking', done: 0, total: 1, current: 'atta', platform: 'swiggy' }]);
+  });
+
+  it('reports a suggestion and its reasons but does not link it', async () => {
+    const tomato = bl('tomato', 'Desi Tomato', { quantity: '500 g', price: 25 });
+    const plain = sw('tomato', 'Tomato', { quantity: '500 g', price: 20 });
+    singleAnswers({ 'Desi Tomato': [plain] });
+    const res = await buildAiBasket('tomato', {
+      proxy: PROXY, search: async () => [tomato, sw('onion', 'Onion', { quantity: '1 kg' })], chat: fakeChat(parsed('tomato'), pickFirst),
+    });
+    expect(res.picks[0].product.platformPrices?.swiggy).toBeUndefined();
+    expect(res.unlinked).toEqual([expect.objectContaining({ index: 0, platform: 'swiggy', reason: 'missing words: desi' })]);
+    expect(res.unlinked[0].suggestion).toEqual(expect.objectContaining({ product: plain, reasons: ['missing words: desi'] }));
+    // A suggestion does not stop the ladder (the exact twin may be further down).
+    expect(single.mock.calls.map(c => c[1])).toEqual(['Desi Tomato', 'tomato']);
+  });
+
+  it('caps the extra searches and reports what it could not check', async () => {
+    const names = ['Alpha', 'Bravo', 'Charlie', 'Delta', 'Echo', 'Foxtrot', 'Golf', 'Hotel'];
+    const rows: Record<string, UnifiedProduct[]> = {};
+    names.forEach(n => { rows[n] = [bl(n, `Zork ${n} Premium Thing`, { quantity: '1 kg' })]; });
+    rows.Alpha.push(sw('other', 'Unrelated Item', { quantity: '1 kg' }));
+    const res = await buildAiBasket('stuff', {
+      proxy: PROXY, search: async q => rows[q] || [], chat: fakeChat(parsed(...names), pickFirst),
+    });
+    // 8 twins x 3 rungs would be 24 searches; the budget stops at 20.
+    expect(single).toHaveBeenCalledTimes(MAX_TWIN_SEARCHES);
+    expect(res.unlinked).toHaveLength(8);
+    expect(res.unlinked[7].reason).toBe('Not searched: search limit reached');
+    expect(res.picks).toHaveLength(8);
+  });
+
+  it('does not search a store that answered none of the item searches', async () => {
+    const res = await buildAiBasket('atta', { proxy: PROXY, search: async () => [atta], chat: fakeChat(parsed('atta'), pickFirst) });
+    expect(single).not.toHaveBeenCalled();
+    expect(res.unlinked).toEqual([]);
+  });
+
+  it('keeps the pick when a twin search fails, with the reason', async () => {
+    singleAnswers({ [ATTA]: new Error('net down') });
+    const findTwin = jest.fn(async (...args: Parameters<TwinSearch>) => searchForMatch(args[0], args[1], { ...args[2], seed: [] }));
+    const res = await buildAiBasket('atta', {
+      proxy: PROXY, search: async () => [atta, multigrain], chat: fakeChat(parsed('atta'), pickFirst), findTwin,
+    });
+    expect(findTwin).toHaveBeenCalledWith('swiggy', { name: ATTA, unit: '1 kg', price: 74 }, expect.objectContaining({ maxQueries: 3 }));
+    expect(res.picks).toHaveLength(1);
+    expect(res.unlinked).toEqual([expect.objectContaining({ platform: 'swiggy', reason: 'Search failed: net down' })]);
+  });
+
+  it('stops finding twins once cancelled', async () => {
+    const ctrl = new AbortController();
+    single.mockImplementation(async () => { ctrl.abort(); return []; });
+    await expect(buildAiBasket('atta', {
+      proxy: PROXY, search: async () => [atta, multigrain], chat: fakeChat(parsed('atta'), pickFirst), signal: ctrl.signal,
+    })).rejects.toMatchObject({ kind: 'aborted' });
+    expect(single).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -1,6 +1,6 @@
 import {
   matchScore, pickBestMatch, nameTokens, nameSimilarity, sizeScore, isSameProduct, scoreMatch, decideMatch,
-  rankCandidates, buildQueryLadder, AUTO_MIN, SUGGEST_MIN,
+  rankCandidates, buildQueryLadder, parseTitle, AUTO_MIN, SUGGEST_MIN,
 } from '../matcher';
 
 type P = { name: string; unit: string; price?: number };
@@ -339,5 +339,83 @@ describe('buildQueryLadder', () => {
     expect(buildQueryLadder('Onion')).toEqual(['Onion']);
     expect(buildQueryLadder('Onion (Pyaz)')).toEqual(['Onion (Pyaz)', 'onion']);
     expect(buildQueryLadder('')).toEqual([]);
+  });
+});
+
+describe('parseTitle: brackets', () => {
+  it('drops a bracket that only translates the product', () => {
+    expect(parseTitle('Green Chilli (Menasinakayi)')).toEqual({ tokens: ['green', 'chili'], aliases: [], alts: [] });
+    expect(parseTitle('Fortune Unpolished Arhar Dal/ Toor Dal (Togari Bele)')).toEqual({ tokens: ['fortune', 'unpolished', 'toor', 'dal'], aliases: [], alts: [] });
+    expect(parseTitle('Aashirvaad Superior MP Chakki Atta - l kg (Godihittu)').tokens).toEqual(['aashirvaad', 'superior', 'mp', 'atta']);
+  });
+  it('keeps the unmatched words of a translating bracket as help-only aliases', () => {
+    expect(parseTitle('Lemon (Nimbe Hannu)')).toEqual({ tokens: ['lemon'], aliases: ['fruit'], alts: [] });
+  });
+  it('keeps a bracket that adds words, and variant words wherever they are', () => {
+    expect(parseTitle('Cadbury Dairy Milk (Fruit & Nut)').tokens).toEqual(['cadbury', 'dairymilk', 'fruit', 'nut']);
+    expect(parseTitle('JK Red Chilli Powder (Hot) (Kharada Pudi)').tokens).toEqual(['jk', 'red', 'chili', 'powder', 'hot']);
+    expect(parseTitle('Coca-Cola (Zero Sugar)').tokens).toEqual(['cocacola', 'zero']);
+    expect(parseTitle('Onion (Small Onion)').tokens).toEqual(['onion', 'small']);
+  });
+});
+
+describe('parseTitle: slash pairs', () => {
+  it('records the two names on either side of a slash', () => {
+    expect(parseTitle('Sabja/ Basil Seeds')).toEqual({ tokens: ['sabja', 'basil', 'seed'], aliases: [], alts: [[['sabja'], ['basil', 'seed']]] });
+  });
+  it('needs no pair when one side repeats the other through synonyms', () => {
+    expect(parseTitle('Hamdard Khaalis Cumin Seeds / Jeera Seeds').alts).toEqual([]);
+    expect(parseTitle('Aashirvaad Haldi/ Turmeric Powder').alts).toEqual([]);
+  });
+  it('never takes the brand (known, or the leading word) into a pair', () => {
+    expect(parseTitle('Catch Sabja/ Basil Seeds').alts).toEqual([[['sabja'], ['basil', 'seed']]]);
+    expect(parseTitle('Zingo Sabja/ Basil Seeds').alts).toEqual([[['sabja'], ['basil', 'seed']]]);
+    expect(decideMatch({ name: 'Zingo Sabja/ Basil Seeds', unit: '100 g' }, [{ name: 'Basil Seeds', unit: '100 g' }]).band).not.toBe('auto');
+  });
+});
+
+describe('decideMatch: glosses and slash pairs', () => {
+  const t = { name: 'Sabja/ Basil Seeds', unit: '100 g', price: 60 };
+  it('lets either side of a slash match', () => {
+    expect(decideMatch(t, [{ name: 'Basil Seeds', unit: '100 g', price: 58 }]).band).toBe('auto');
+    expect(decideMatch(t, [{ name: 'Sabja Seeds', unit: '100 g', price: 58 }]).band).toBe('auto');
+    expect(decideMatch(t, [{ name: 'Chia Seeds', unit: '100 g', price: 90 }]).band).toBe('none');
+  });
+  it('uses gloss words for variant conflicts', () => {
+    // "Kothambari Soppu" = coriander leaves: not the powder.
+    const d = decideMatch({ name: 'Coriander (Kothambari Soppu)', unit: '100 g' }, [{ name: 'Coriander Powder', unit: '100 g' }]);
+    expect(d.band).toBe('none');
+    expect(d.ranked[0].reasons[0]).toBe('different variant (leaf vs powder)');
+  });
+  it('lets gloss words confirm a match the other title spells out', () => {
+    expect(decideMatch({ name: 'Lemon (Nimbe Hannu)', unit: '4 pcs' }, [{ name: 'Lemon Fruit', unit: '4 pcs' }]).band).toBe('auto');
+  });
+});
+
+describe('isSameProduct: descriptor phrases count there', () => {
+  it('keeps "Leaf Tea" / "Powder" / "Fruit Drink" listings apart, unlike cross-store scoring', () => {
+    const pairs: [string, string, string][] = [
+      ['Tata Tea Gold', 'Tata Tea Gold Leaf Tea', '500 g'],
+      ['Bru Instant Coffee', 'Bru Instant Coffee Powder', '100 g'],
+      ['Frooti Mango Drink', 'Frooti Mango Fruit Drink', '200 ml'],
+    ];
+    for (const [a, b, unit] of pairs) {
+      expect(isSameProduct({ name: a, unit }, { name: b, unit })).toBe(false);
+      expect(decideMatch({ name: a, unit }, [{ name: b, unit }]).band).toBe('auto');
+    }
+  });
+  it('still accepts a pure translation', () => {
+    expect(isSameProduct({ name: 'Onion', unit: '1 kg' }, { name: 'Onion (Pyaz)', unit: '1 kg' })).toBe(true);
+  });
+});
+
+describe('buildQueryLadder: real titles', () => {
+  it('drops the size typo and words a slash repeats', () => {
+    expect(buildQueryLadder('Aashirvaad Superior MP Chakki Atta - l kg (Godihittu)')).toEqual([
+      'Aashirvaad Superior MP Chakki Atta - l kg (Godihittu)', 'aashirvaad mp chakki atta', 'aashirvaad mp chakki', 'atta',
+    ]);
+    expect(buildQueryLadder('Fortune Unpolished Arhar Dal/ Toor Dal (Togari Bele)')).toEqual([
+      'Fortune Unpolished Arhar Dal/ Toor Dal (Togari Bele)', 'fortune arhar dal', 'dal',
+    ]);
   });
 });

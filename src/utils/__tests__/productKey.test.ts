@@ -1,6 +1,6 @@
 import {
   productKey, itemName, itemUnit, liveKey, stripSizeToken, familyKey, variantSize, foldText, stripAllSizes,
-  parseQuantity, quantityOf, isUnknownQuantity,
+  parseQuantity, quantityOf, isUnknownQuantity, fixSizeTypos,
 } from '../productKey';
 
 describe('productKey', () => {
@@ -160,5 +160,23 @@ describe('variantSize: parser fixes', () => {
   });
   it('is Infinity for the "1 unit" placeholder', () => {
     expect(variantSize({ unit: '1 unit' })).toBe(Infinity);
+  });
+});
+
+describe('"l kg" / "I ltr" typo (a letter typed for the digit 1)', () => {
+  it('reads it as 1 kg / 1 litre', () => {
+    expect(parseQuantity('Aashirvaad Superior MP Chakki Atta - l kg (Godihittu)')).toEqual({ weight: 1000, packs: 1, primary: 'weight' });
+    expect(parseQuantity('I Ltr')).toEqual({ volume: 1000, packs: 1, primary: 'volume' });
+    expect(parseQuantity('Sunflower Oil (l litre)')).toEqual({ volume: 1000, packs: 1, primary: 'volume' });
+    expect(quantityOf({ name: 'Aashirvaad Atta - l kg', unit: '1 unit' })?.weight).toBe(1000);
+  });
+  it('strips it from titles like any other size', () => {
+    expect(stripAllSizes('Aashirvaad Superior MP Chakki Atta - l kg (Godihittu)')).toBe('aashirvaad superior mp chakki atta - (godihittu)');
+  });
+  it('leaves words that merely end in l or i alone', () => {
+    expect(fixSizeTypos('basil kg')).toBe('basil kg');
+    expect(fixSizeTypos('oil 1 l')).toBe('oil 1 l');
+    expect(fixSizeTypos('xl kg')).toBe('xl kg');
+    expect(parseQuantity('Basil kg')).toBeNull();
   });
 });
