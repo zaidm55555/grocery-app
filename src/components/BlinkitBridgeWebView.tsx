@@ -20,7 +20,9 @@ interface BlinkitBridgeHandle {
 }
 
 const BlinkitBridgeWebView = forwardRef<BlinkitBridgeHandle>((_, ref) => {
-  const webViewRef = useRef<WebView>(null);
+  // `<object>`: react-native-webview 14.0.x defaults its props generic to `undefined`, which
+  // collapses every prop to `never` (upstream issue #3977). Drop once Expo ships a fixed version.
+  const webViewRef = useRef<WebView<object>>(null);
   // The delivery context the page currently holds (see injectAddress).
   const lastAppliedRef = useRef('');
   // False from the moment the page starts loading until its bridge script reports
@@ -126,7 +128,7 @@ const BlinkitBridgeWebView = forwardRef<BlinkitBridgeHandle>((_, ref) => {
 
   return (
     <View style={styles.hidden} pointerEvents="none">
-      <WebView
+      <WebView<object>
         ref={webViewRef}
         source={{ uri: 'https://blinkit.com/' }}
         onMessage={handleMessage}

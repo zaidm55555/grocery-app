@@ -13,13 +13,13 @@ const notice = (over: Partial<ExportNotice> = {}): ExportNotice => ({
 });
 
 describe('ExportNoticeModal', () => {
-  it('renders nothing without a notice', () => {
-    const { toJSON } = render(<ExportNoticeModal notice={null} onCancel={jest.fn()} />);
+  it('renders nothing without a notice', async () => {
+    const { toJSON } = await render(<ExportNoticeModal notice={null} onCancel={jest.fn()} />);
     expect(toJSON()).toBeNull();
   });
 
-  it('lists out-of-stock, clamped and missing items with a summary', () => {
-    const { getByText } = render(<ExportNoticeModal notice={notice()} onCancel={jest.fn()} />);
+  it('lists out-of-stock, clamped and missing items with a summary', async () => {
+    const { getByText } = await render(<ExportNoticeModal notice={notice()} onCancel={jest.fn()} />);
     expect(getByText('Gone Item')).toBeTruthy();
     expect(getByText('Limited Item')).toBeTruthy();
     expect(getByText('5 → 2')).toBeTruthy();
@@ -27,28 +27,28 @@ describe('ExportNoticeModal', () => {
     expect(getByText('3 in-stock items will be added')).toBeTruthy();
   });
 
-  it('uses the singular form for one item and hides empty sections', () => {
-    const { getByText, queryByText } = render(
+  it('uses the singular form for one item and hides empty sections', async () => {
+    const { getByText, queryByText } = await render(
       <ExportNoticeModal notice={notice({ itemCount: 1, clamped: [], missing: [] })} onCancel={jest.fn()} />,
     );
     expect(getByText('1 in-stock item will be added')).toBeTruthy();
     expect(queryByText('5 → 2')).toBeNull();
   });
 
-  it('cancel closes without continuing', () => {
+  it('cancel closes without continuing', async () => {
     const n = notice();
     const onCancel = jest.fn();
-    const { getByText } = render(<ExportNoticeModal notice={n} onCancel={onCancel} />);
-    fireEvent.press(getByText('Cancel'));
+    const { getByText } = await render(<ExportNoticeModal notice={n} onCancel={onCancel} />);
+    await fireEvent.press(getByText('Cancel'));
     expect(onCancel).toHaveBeenCalledTimes(1);
     expect(n.onContinue).not.toHaveBeenCalled();
   });
 
-  it('continue closes the sheet and runs the export', () => {
+  it('continue closes the sheet and runs the export', async () => {
     const n = notice();
     const onCancel = jest.fn();
-    const { getByText } = render(<ExportNoticeModal notice={n} onCancel={onCancel} />);
-    fireEvent.press(getByText(/^Continue to /));
+    const { getByText } = await render(<ExportNoticeModal notice={n} onCancel={onCancel} />);
+    await fireEvent.press(getByText(/^Continue to /));
     expect(onCancel).toHaveBeenCalledTimes(1);
     expect(n.onContinue).toHaveBeenCalledTimes(1);
   });

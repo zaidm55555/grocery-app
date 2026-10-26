@@ -1,5 +1,5 @@
 import React from 'react';
-import { Alert, TouchableOpacity, Text, TextInput } from 'react-native';
+import { Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { render, fireEvent, waitFor, act, within } from '@testing-library/react-native';
 import SearchScreen from '../../app/(tabs)/index';
@@ -7,6 +7,7 @@ import { storage } from '../../services/storage';
 import { api, UnifiedProduct } from '../../services/api';
 import * as locationUtils from '../../utils/location';
 import { product } from '../../services/__tests__/fixtures';
+import { touchablesIn } from '../helpers/touchables';
 
 const mockPush = jest.fn();
 const mockNavigate = jest.fn();
@@ -81,27 +82,27 @@ beforeEach(async () => {
 
 const linkBoth = async () => { await storage.saveToken('blinkit', 'b'); await storage.saveToken('swiggy', 's'); };
 const renderSearch = async () => {
-  const utils = render(<SearchScreen />);
+  const utils = await render(<SearchScreen />);
   await act(async () => { await new Promise(r => setTimeout(r, 0)); });
   return utils;
 };
 // Touchables that share a parent View with the Text showing `label` (e.g. a stepper's − / +).
 const touchablesBesideText = (u: any, label: string) => {
-  const inst = u.UNSAFE_getAllByType(Text).find((n: any) => String(n.props.children) === label && n.parent.findAllByType(TouchableOpacity).length >= 2);
-  return inst.parent.findAllByType(TouchableOpacity);
+  const inst = u.getAllByText(label).find((n: any) => n.parent && touchablesIn(n.parent).length >= 2);
+  return touchablesIn(inst.parent);
 };
 // A filter-menu option: the menu lives in a Modal rendered after the cards, so it is the last match.
 const menuOption = (u: any, label: string) => { const all = u.getAllByText(label); return all[all.length - 1]; };
 const doSearch = async (utils: any, text = 'salt') => {
-  fireEvent.changeText(utils.getByPlaceholderText(/Search Milk/), text);
-  await act(async () => { fireEvent.press(utils.getByText('Search')); });
+  await fireEvent.changeText(utils.getByPlaceholderText(/Search Milk/), text);
+  await act(async () => { await fireEvent.press(utils.getByText('Search')); });
 };
 
 describe('Search screen: header and location', () => {
   it('shows the saved address and navigates to profile on tap', async () => {
     await storage.saveLocation(LOC);
     const { getByText } = await renderSearch();
-    fireEvent.press(getByText('Alkapuri, Vadodara'));
+    await fireEvent.press(getByText('Alkapuri, Vadodara'));
     expect(mockPush).toHaveBeenCalledWith('/(tabs)/profile');
   });
 
@@ -128,7 +129,7 @@ describe('Search screen: header and location', () => {
     await storage.saveCart([{ product: bl('9', 'In Cart'), quantity: 2 }, { product: bl('8', 'Also'), quantity: 1 }]);
     const { getByText } = await renderSearch();
     expect(getByText('2')).toBeTruthy();
-    fireEvent.press(getByText('Basket'));
+    await fireEvent.press(getByText('Basket'));
     expect(mockNavigate).toHaveBeenCalledWith('/(tabs)/cart');
   });
 });
@@ -138,7 +139,7 @@ describe('Search screen: empty states', () => {
     await storage.saveLocation(LOC);
     const { getByText } = await renderSearch();
     expect(getByText('Not Logged In')).toBeTruthy();
-    fireEvent.press(getByText('Go to Profile / Login'));
+    await fireEvent.press(getByText('Go to Profile / Login'));
     expect(mockPush).toHaveBeenCalledWith('/(tabs)/profile');
   });
 
@@ -198,8 +199,8 @@ describe('Search screen: searching', () => {
   it('submits from the keyboard too', async () => {
     const u = await renderSearch();
     const input = u.getByPlaceholderText(/Search Milk/);
-    fireEvent.changeText(input, 'milk');
-    await act(async () => { fireEvent(input, 'submitEditing'); });
+    await fireEvent.changeText(input, 'milk');
+    await act(async () => { await fireEvent(input, 'submitEditing'); });
     expect(api.search).toHaveBeenCalledWith('milk', expect.any(Function));
   });
 
@@ -225,11 +226,14 @@ describe('Search screen: searching', () => {
       return [];
     };
     const u = await renderSearch();
-    await doSearch(u);
+    await fireEvent.changeText(u.getByPlaceholderText(/Search Milk/), 'salt');
+    // RNTL 14's fireEvent awaits the handler's promise, which here only settles once the slow app answers.
+    const searching = fireEvent.press(u.getByText('Search'));
     expect(await u.findByText('Fast Blinkit Item')).toBeTruthy();
     expect(u.getAllByText(/Searching Instamart…|Fetching Instamart prices…/).length).toBeGreaterThan(0);
     expect(u.queryByText('Slow Swiggy Item')).toBeNull();
     await act(async () => { release(); });
+    await searching;
     expect(await u.findByText('Slow Swiggy Item')).toBeTruthy();
   });
 
@@ -259,7 +263,7 @@ describe('Search screen: searching', () => {
   it('quick-search chips run a search', async () => {
     const u = await renderSearch();
     const chips = u.getAllByText(/^(Milk|Bread|Eggs|Butter|Cheese)$/);
-    await act(async () => { fireEvent.press(chips[0]); });
+    await act(async () => { await fireEvent.press(chips[0]); });
     expect(api.search).toHaveBeenCalledWith(expect.any(String), expect.any(Function));
   });
 
@@ -269,8 +273,8 @@ describe('Search screen: searching', () => {
     await u.findByText('Tata Salt Blinkit');
     expect(u.queryByText('Quick:')).toBeNull();
     // the × button is the only touchable inside the search box besides the input
-    const box = u.UNSAFE_getByType(TextInput).parent!;
-    await act(async () => { fireEvent.press(box.findAllByType(TouchableOpacity)[0]); });
+    const box = u.getByPlaceholderText(/Search Milk/).parent!;
+    await act(async () => { await fireEvent.press(touchablesIn(box)[0]); });
     expect(u.getByPlaceholderText(/Search Milk/).props.value).toBe('');
     await waitFor(() => expect(u.queryByText('Tata Salt Blinkit')).toBeNull());
     expect(u.getByText('Quick:')).toBeTruthy();
@@ -283,8 +287,8 @@ describe('Search screen: address sync gating', () => {
   it('waits for an in-progress address sync before searching', async () => {
     sync.__setSyncing(true);
     const u = await renderSearch();
-    fireEvent.changeText(u.getByPlaceholderText(/Search Milk/), 'salt');
-    await act(async () => { fireEvent.press(u.getByText('Syncing…')); });
+    await fireEvent.changeText(u.getByPlaceholderText(/Search Milk/), 'salt');
+    await act(async () => { await fireEvent.press(u.getByText('Syncing…')); });
     expect(sync.waitForAddressSync).toHaveBeenCalled();
     expect(api.search).toHaveBeenCalled();
   });
@@ -349,8 +353,8 @@ describe('Search screen: Blinkit direct-fetch note', () => {
     const u = await renderSearch();
     await doSearch(u);
     await u.findByText(DIRECT_NOTE);
-    fireEvent.press(u.getByText('All Stores'));
-    fireEvent.press(menuOption(u, 'Instamart'));
+    await fireEvent.press(u.getByText('All Stores'));
+    await fireEvent.press(menuOption(u, 'Instamart'));
     await waitFor(() => expect(u.queryByText(DIRECT_NOTE)).toBeNull());
   });
 });
@@ -362,22 +366,22 @@ describe('Search screen: store filter', () => {
     const u = await renderSearch();
     await doSearch(u);
     await u.findByText('Tata Salt Blinkit');
-    fireEvent.press(u.getByText('All Stores'));
-    fireEvent.press(menuOption(u, 'Blinkit'));
+    await fireEvent.press(u.getByText('All Stores'));
+    await fireEvent.press(menuOption(u, 'Blinkit'));
     await waitFor(() => expect(u.queryByText('Aashirvaad Atta Swiggy')).toBeNull());
     expect(u.getByText('Tata Salt Blinkit')).toBeTruthy();
-    fireEvent.press(u.getByText('Showing results from')); // reopen the switcher via its pill
-    fireEvent.press(menuOption(u, 'All Stores'));
+    await fireEvent.press(u.getByText('Showing results from')); // reopen the switcher via its pill
+    await fireEvent.press(menuOption(u, 'All Stores'));
     expect(await u.findByText('Aashirvaad Atta Swiggy')).toBeTruthy();
   });
 
   it('explains an unlinked app when filtered to it with no results', async () => {
     await storage.removeToken('swiggy');
     const u = await renderSearch();
-    fireEvent.press(u.getByText('All Stores'));
-    fireEvent.press(menuOption(u, 'Instamart'));
+    await fireEvent.press(u.getByText('All Stores'));
+    await fireEvent.press(menuOption(u, 'Instamart'));
     expect(await u.findByText('Not Logged into Instamart')).toBeTruthy();
-    fireEvent.press(u.getByText('Login to Instamart'));
+    await fireEvent.press(u.getByText('Login to Instamart'));
     expect(mockPush).toHaveBeenCalledWith('/(tabs)/profile');
   });
 });
@@ -386,8 +390,8 @@ describe('Search screen: adding to the basket', () => {
   beforeEach(async () => { await linkBoth(); await storage.saveLocation(LOC); });
 
   const addButtonFor = (u: any, title: string) => {
-    const card = u.getByText(title).parent!.parent!; // name Text → card
-    const touchables = within(card).UNSAFE_getAllByType(TouchableOpacity);
+    const card = u.getByText(title).parent!; // name Text → card
+    const touchables = touchablesIn(card);
     return touchables[touchables.length - 1];
   };
 
@@ -395,7 +399,7 @@ describe('Search screen: adding to the basket', () => {
     const u = await renderSearch();
     await doSearch(u);
     await u.findByText('Tata Salt Blinkit');
-    await act(async () => { fireEvent.press(addButtonFor(u, 'Tata Salt Blinkit')); });
+    await act(async () => { await fireEvent.press(addButtonFor(u, 'Tata Salt Blinkit')); });
     await waitFor(async () => expect((await storage.getCart()).length).toBe(1));
     expect((await storage.getCart())[0]).toMatchObject({ quantity: 1, product: { id: 'blinkit-1' } });
   });
@@ -405,7 +409,7 @@ describe('Search screen: adding to the basket', () => {
     const u = await renderSearch();
     await doSearch(u);
     await u.findByText('Gone Item');
-    await act(async () => { fireEvent.press(addButtonFor(u, 'Gone Item')); });
+    await act(async () => { await fireEvent.press(addButtonFor(u, 'Gone Item')); });
     expect(Alert.alert).toHaveBeenCalledWith('Out of Stock', expect.stringContaining('Blinkit'));
     expect(await storage.getCart()).toEqual([]);
   });
@@ -415,7 +419,7 @@ describe('Search screen: adding to the basket', () => {
     const u = await renderSearch();
     await doSearch(u);
     await u.findByText('Zero Stock');
-    await act(async () => { fireEvent.press(addButtonFor(u, 'Zero Stock')); });
+    await act(async () => { await fireEvent.press(addButtonFor(u, 'Zero Stock')); });
     expect(Alert.alert).toHaveBeenCalledWith('Out of Stock', expect.any(String));
   });
 
@@ -426,9 +430,9 @@ describe('Search screen: adding to the basket', () => {
     await u.findByText('Tata Salt Blinkit');
     expect(u.getByText('2')).toBeTruthy();
     const steppers = touchablesBesideText(u, '2');
-    await act(async () => { fireEvent.press(steppers[1]); }); // +
+    await act(async () => { await fireEvent.press(steppers[1]); }); // +
     await waitFor(async () => expect((await storage.getCart())[0].quantity).toBe(3));
-    await act(async () => { fireEvent.press(touchablesBesideText(u, '3')[0]); }); // −
+    await act(async () => { await fireEvent.press(touchablesBesideText(u, '3')[0]); }); // −
     await waitFor(async () => expect((await storage.getCart())[0].quantity).toBe(2));
   });
 
@@ -437,7 +441,7 @@ describe('Search screen: adding to the basket', () => {
     const u = await renderSearch();
     await doSearch(u);
     await u.findByText('Tata Salt Blinkit');
-    await act(async () => { fireEvent.press(touchablesBesideText(u, '1')[0]); });
+    await act(async () => { await fireEvent.press(touchablesBesideText(u, '1')[0]); });
     await waitFor(async () => expect(await storage.getCart()).toEqual([]));
   });
 
@@ -448,7 +452,7 @@ describe('Search screen: adding to the basket', () => {
     const u = await renderSearch();
     await doSearch(u);
     await u.findByText('Tata Salt Blinkit');
-    await act(async () => { fireEvent.press(touchablesBesideText(u, '2')[1]); });
+    await act(async () => { await fireEvent.press(touchablesBesideText(u, '2')[1]); });
     expect(Alert.alert).toHaveBeenCalledWith('Stock Limit Reached', 'Only 2 units available on Blinkit.');
     expect((await storage.getCart())[0].quantity).toBe(2);
   });
@@ -458,7 +462,7 @@ describe('Search screen: adding to the basket', () => {
     const u = await renderSearch();
     await doSearch(u);
     await u.findByText('2 options');
-    fireEvent.press(u.getByText('2 options'));
+    await fireEvent.press(u.getByText('2 options'));
     expect(await u.findByText(/Blinkit · 2 sizes/)).toBeTruthy();
   });
 });
@@ -467,9 +471,9 @@ describe('Search screen: auto-match on the other app', () => {
   beforeEach(async () => { await linkBoth(); await storage.saveLocation(LOC); });
   const addFirst = async (u: any) => {
     await u.findByText('Tata Salt Blinkit');
-    const card = u.getByText('Tata Salt Blinkit').parent!.parent!;
-    const touchables = within(card).UNSAFE_getAllByType(TouchableOpacity);
-    await act(async () => { fireEvent.press(touchables[touchables.length - 1]); });
+    const card = u.getByText('Tata Salt Blinkit').parent!;
+    const touchables = touchablesIn(card);
+    await act(async () => { await fireEvent.press(touchables[touchables.length - 1]); });
   };
   const swiggyCandidate = sw('9', 'Tata Salt Blinkit Pack', { quantity: '1 kg', price: 41 });
 
@@ -480,7 +484,7 @@ describe('Search screen: auto-match on the other app', () => {
     await doSearch(u, 'salt');
     await addFirst(u);
     expect(await u.findByText('Confirm the matches')).toBeTruthy();
-    fireEvent.press(await u.findByText(/^Confirm · /));
+    await fireEvent.press(await u.findByText(/^Confirm · /));
     await waitFor(async () => expect((await storage.getCart())[0].product.platformPrices?.swiggy?.id).toBe('swiggy-9'));
     expect(await u.findByText(/Added to basket · now on Instamart/)).toBeTruthy();
     expect(api.searchSingle).toHaveBeenCalledWith('swiggy', 'Tata Salt Blinkit');
@@ -492,7 +496,7 @@ describe('Search screen: auto-match on the other app', () => {
     const u = await renderSearch();
     await doSearch(u);
     await addFirst(u);
-    fireEvent.press(await u.findByText('Skip'));
+    await fireEvent.press(await u.findByText('Skip'));
     await waitFor(() => expect(u.queryByText('Confirm the matches')).toBeNull());
     expect((await storage.getCart())[0].product.platformPrices).toBeUndefined();
   });
@@ -503,10 +507,10 @@ describe('Search screen: auto-match on the other app', () => {
     const u = await renderSearch();
     await doSearch(u);
     await addFirst(u);
-    fireEvent.press(await u.findByText(/Other matches/));
-    fireEvent.press(await u.findByText(/None of these match/));
+    await fireEvent.press(await u.findByText(/Other matches/));
+    await fireEvent.press(await u.findByText(/None of these match/));
     expect(await u.findByText('Confirm · 0 matches')).toBeTruthy();
-    fireEvent.press(u.getByText('Skip'));
+    await fireEvent.press(u.getByText('Skip'));
     expect((await storage.getCart())[0].product.platformPrices).toBeUndefined();
   });
 
@@ -537,7 +541,7 @@ describe('Search screen: auto-match on the other app', () => {
     await doSearch(u);
     await addFirst(u);
     expect(await u.findByText('error')).toBeTruthy();
-    await act(async () => { fireEvent.press(u.getAllByText('Retry')[0]); });
+    await act(async () => { await fireEvent.press(u.getAllByText('Retry')[0]); });
     expect(await u.findByText('auto-matched')).toBeTruthy();
   });
 
@@ -576,7 +580,7 @@ describe('Search screen: one Instamart listing shared by two basket lines', () =
     const u = await renderSearch();
     await doSearch(u, 'milk');
     await u.findByText('Pasteurized Milk');
-    await act(async () => { fireEvent.press(touchablesBesideText(u, '3')[1]); });
+    await act(async () => { await fireEvent.press(touchablesBesideText(u, '3')[1]); });
     const sheet = within(await u.findByTestId('shared-listing-sheet'));
     expect(sheet.getByText('Shared by 2 basket items')).toBeTruthy();
     expect(sheet.getByText('Toned Milk')).toBeTruthy();
@@ -589,9 +593,9 @@ describe('Search screen: one Instamart listing shared by two basket lines', () =
     const u = await renderSearch();
     await doSearch(u, 'milk');
     await u.findByText('Pasteurized Milk');
-    await act(async () => { fireEvent.press(touchablesBesideText(u, '3')[1]); });
+    await act(async () => { await fireEvent.press(touchablesBesideText(u, '3')[1]); });
     const sheet = within(await u.findByTestId('shared-listing-sheet'));
-    await act(async () => { fireEvent.press(sheet.getByTestId('shared-plus-blinkit-2')); });
+    await act(async () => { await fireEvent.press(sheet.getByTestId('shared-plus-blinkit-2')); });
     await waitFor(async () => expect((await storage.getCart()).map(l => l.quantity)).toEqual([2, 2]));
     expect(u.getAllByText('4').length).toBeGreaterThan(0);
   });
@@ -601,9 +605,9 @@ describe('Search screen: one Instamart listing shared by two basket lines', () =
     const u = await renderSearch();
     await doSearch(u, 'milk');
     await u.findByText('Pasteurized Milk');
-    await act(async () => { fireEvent.press(touchablesBesideText(u, '3')[0]); }); // −
+    await act(async () => { await fireEvent.press(touchablesBesideText(u, '3')[0]); }); // −
     const sheet = within(await u.findByTestId('shared-listing-sheet'));
-    await act(async () => { fireEvent.press(sheet.getByTestId('shared-minus-blinkit-2')); });
+    await act(async () => { await fireEvent.press(sheet.getByTestId('shared-minus-blinkit-2')); });
     await waitFor(async () => expect((await storage.getCart()).map(l => l.product.id)).toEqual(['blinkit-1']));
   });
 
@@ -612,11 +616,11 @@ describe('Search screen: one Instamart listing shared by two basket lines', () =
     const u = await renderSearch();
     await doSearch(u, 'milk');
     await u.findByText('Pasteurized Milk');
-    await act(async () => { fireEvent.press(touchablesBesideText(u, '3')[1]); });
+    await act(async () => { await fireEvent.press(touchablesBesideText(u, '3')[1]); });
     const sheet = within(await u.findByTestId('shared-listing-sheet'));
-    await act(async () => { fireEvent.press(sheet.getByTestId('shared-plus-blinkit-1')); }); // 3 → 4, at the limit
+    await act(async () => { await fireEvent.press(sheet.getByTestId('shared-plus-blinkit-1')); }); // 3 → 4, at the limit
     await waitFor(async () => expect((await storage.getCart()).map(l => l.quantity)).toEqual([3, 1]));
-    await act(async () => { fireEvent.press(sheet.getByTestId('shared-plus-blinkit-2')); }); // would be 5
+    await act(async () => { await fireEvent.press(sheet.getByTestId('shared-plus-blinkit-2')); }); // would be 5
     expect(Alert.alert).toHaveBeenCalledWith('Stock Limit Reached', 'Only 4 units available on Instamart.');
     expect((await storage.getCart()).map(l => l.quantity)).toEqual([3, 1]);
   });
@@ -626,7 +630,7 @@ describe('Search screen: one Instamart listing shared by two basket lines', () =
     const u = await renderSearch();
     await doSearch(u, 'milk');
     await u.findByText('Pasteurized Milk');
-    await act(async () => { fireEvent.press(touchablesBesideText(u, '3')[1]); });
+    await act(async () => { await fireEvent.press(touchablesBesideText(u, '3')[1]); });
     expect(Alert.alert).toHaveBeenCalledWith('Stock Limit Reached', 'Only 3 units available on Instamart.');
     expect(u.queryByTestId('shared-listing-sheet')).toBeNull();
   });
@@ -639,7 +643,7 @@ describe('Search screen: one Instamart listing shared by two basket lines', () =
     const u = await renderSearch();
     await doSearch(u, 'milk');
     await u.findByText('Pasteurized Milk');
-    await act(async () => { fireEvent.press(touchablesBesideText(u, '2')[1]); });
+    await act(async () => { await fireEvent.press(touchablesBesideText(u, '2')[1]); });
     await waitFor(async () => expect((await storage.getCart())[0].quantity).toBe(3));
     expect(u.queryByTestId('shared-listing-sheet')).toBeNull();
   });

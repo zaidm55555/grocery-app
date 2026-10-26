@@ -14,6 +14,7 @@ jest.mock('react-native-webview', () => {
     React.useImperativeHandle(ref, () => ({ injectJavaScript: mockInject, reload: jest.fn() }));
     return null;
   });
+  WebView.displayName = 'MockWebView';
   return { WebView, default: WebView };
 });
 jest.mock('../../services/blinkitBridge', () => ({
@@ -44,23 +45,23 @@ afterEach(() => jest.useRealTimers());
 
 describe('BlinkitBridgeWebView delivery context', () => {
   it('does not apply it before the page reports ready', async () => {
-    render(<BlinkitBridgeWebView />);
+    await render(<BlinkitBridgeWebView />);
     await tick(10000);
     expect(deliveryCalls()).toHaveLength(0);
   });
 
   it('applies it once when ready, however long the page stays open', async () => {
-    render(<BlinkitBridgeWebView />);
+    await render(<BlinkitBridgeWebView />);
     await message('BL_BRIDGE_READY');
     await tick(60000);
     expect(deliveryCalls()).toHaveLength(1);
   });
 
   it('applies it again after the page reloads', async () => {
-    render(<BlinkitBridgeWebView />);
+    await render(<BlinkitBridgeWebView />);
     await message('BL_BRIDGE_READY');
     await tick(5000);
-    act(() => { mockProps.onLoadStart(); });
+    await act(() => { mockProps.onLoadStart(); });
     await tick(5000);
     expect(deliveryCalls()).toHaveLength(1); // not ready yet: nothing injected into a half-loaded page
     await message('BL_BRIDGE_READY');
@@ -69,7 +70,7 @@ describe('BlinkitBridgeWebView delivery context', () => {
   });
 
   it('applies it again when the address changes', async () => {
-    render(<BlinkitBridgeWebView />);
+    await render(<BlinkitBridgeWebView />);
     await message('BL_BRIDGE_READY');
     await tick(5000);
     await AsyncStorage.setItem('@blinkit_address_id', '43');

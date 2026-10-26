@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { StyleSheet, View, Text, TextInput, FlatList, TouchableOpacity, ActivityIndicator, Image, Keyboard, KeyboardAvoidingView, Platform as RNPlatform, Pressable, Modal, Dimensions, Alert } from 'react-native';
+import { StyleSheet, View, Text, TextInput, FlatList, TouchableOpacity, ActivityIndicator, Image, Keyboard, KeyboardAvoidingView, Platform as RNPlatform, Pressable, Modal, Dimensions, Alert, type ViewInstance } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Search, MapPin, X, Plus, Minus, ChevronDown, Check, Zap, ShoppingCart, ShoppingBag, LogIn, Link2Off, Compass, ChevronRight, AlertCircle } from 'lucide-react-native';
@@ -170,7 +170,7 @@ export default function SearchScreen() {
   const [storeFilter, setStoreFilter] = useState<StoreFilter>('all');
   const [platformErrors, setPlatformErrors] = useState<Partial<Record<Platform, string>>>({});
   const [switcherOpen, setSwitcherOpen] = useState(false);
-  const pillRef = useRef<View>(null);
+  const pillRef = useRef<ViewInstance>(null);
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
 
   const handleToggleSwitcher = useCallback(() => {
@@ -208,6 +208,7 @@ export default function SearchScreen() {
   const [addressSyncing, setAddressSyncing] = useState(isAddressSyncing());
   const [blinkitBridgeUp, setBlinkitBridgeUp] = useState(isBlinkitBridgeConnected());
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- re-read in case the bridge changed between render and subscribing
     setBlinkitBridgeUp(isBlinkitBridgeConnected());
     return subscribeBlinkitBridgeStatus(() => setBlinkitBridgeUp(isBlinkitBridgeConnected()));
   }, []);
@@ -1107,7 +1108,7 @@ export default function SearchScreen() {
                 </View>
               );
             })()
-          ) : null
+          ) : undefined
         }
         ListFooterComponent={
           <>

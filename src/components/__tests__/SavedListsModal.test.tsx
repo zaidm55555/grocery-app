@@ -5,12 +5,13 @@ import { render, fireEvent, waitFor } from '@testing-library/react-native';
 import SavedListsModal from '../SavedListsModal';
 import { lists } from '../../services/lists';
 import { product } from '../../services/__tests__/fixtures';
+import { touchablesIn } from '../../__tests__/helpers/touchables';
 
 const cart = [{ product: product({ id: 'a' }), quantity: 2 }];
-const setup = (items = cart) => {
+const setup = async (items = cart) => {
   const onCartChanged = jest.fn();
   const onClose = jest.fn();
-  const utils = render(<SavedListsModal visible onClose={onClose} cartItems={items} onCartChanged={onCartChanged} />);
+  const utils = await render(<SavedListsModal visible onClose={onClose} cartItems={items} onCartChanged={onCartChanged} />);
   return { ...utils, onCartChanged, onClose };
 };
 
@@ -20,29 +21,29 @@ beforeEach(async () => {
 
 describe('SavedListsModal', () => {
   it('shows empty state', async () => {
-    const { findByText } = setup();
+    const { findByText } = await setup();
     expect(await findByText(/No saved lists yet/)).toBeTruthy();
   });
 
   it('saves the current basket under a name', async () => {
-    const { getByPlaceholderText, getByText, findByText } = setup();
-    fireEvent.changeText(getByPlaceholderText(/Name this basket/), 'Weekly');
-    fireEvent.press(getByText('Save'));
+    const { getByPlaceholderText, getByText, findByText } = await setup();
+    await fireEvent.changeText(getByPlaceholderText(/Name this basket/), 'Weekly');
+    await fireEvent.press(getByText('Save'));
     expect(await findByText('Weekly')).toBeTruthy();
     expect((await lists.getAll())[0].name).toBe('Weekly');
   });
 
   it('lists existing saved lists', async () => {
     await lists.save('Staples', cart);
-    const { findByText } = setup();
+    const { findByText } = await setup();
     expect(await findByText('Staples')).toBeTruthy();
   });
 
   it('asks before loading a list and can add it to the basket', async () => {
     await lists.save('Staples', cart);
     const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
-    const { findByText, onCartChanged } = setup();
-    fireEvent.press(await findByText('Staples'));
+    const { findByText, onCartChanged } = await setup();
+    await fireEvent.press(await findByText('Staples'));
     expect(alert).toHaveBeenCalled();
     const buttons = alert.mock.calls[0][2]!;
     await buttons.find(b => b.text === 'Add to basket')!.onPress!();
@@ -52,8 +53,8 @@ describe('SavedListsModal', () => {
   it('replaces the basket when loading with an empty basket (no prompt)', async () => {
     await lists.save('Staples', cart);
     const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
-    const { findByText, onCartChanged, onClose } = setup([]);
-    fireEvent.press(await findByText('Staples'));
+    const { findByText, onCartChanged, onClose } = await setup([]);
+    await fireEvent.press(await findByText('Staples'));
     await waitFor(() => expect(onCartChanged).toHaveBeenCalled());
     expect(alert).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalled();
@@ -63,8 +64,8 @@ describe('SavedListsModal', () => {
     await lists.save('Staples', cart);
     const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
     const other = [{ product: product({ id: 'z' }), quantity: 5 }];
-    const { findByText, onCartChanged } = setup(other);
-    fireEvent.press(await findByText('Staples'));
+    const { findByText, onCartChanged } = await setup(other);
+    await fireEvent.press(await findByText('Staples'));
     await alert.mock.calls[0][2]!.find(b => b.text === 'Replace')!.onPress!();
     await waitFor(() => expect(onCartChanged).toHaveBeenCalled());
     expect(onCartChanged.mock.calls[0][0].map((l: any) => l.product.id)).toEqual(['a']);
@@ -73,10 +74,10 @@ describe('SavedListsModal', () => {
   it('asks before overwriting a list with the same name (case-insensitive) and only saves on Replace', async () => {
     await lists.save('Weekly', [{ product: product({ id: 'old' }), quantity: 1 }]);
     const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
-    const { getByPlaceholderText, getByText, findByText } = setup();
+    const { getByPlaceholderText, getByText, findByText } = await setup();
     await findByText('Weekly');
-    fireEvent.changeText(getByPlaceholderText(/Name this basket/), 'weekly');
-    fireEvent.press(getByText('Save'));
+    await fireEvent.changeText(getByPlaceholderText(/Name this basket/), 'weekly');
+    await fireEvent.press(getByText('Save'));
     await waitFor(() => expect(alert).toHaveBeenCalled());
     expect(alert.mock.calls[0][0]).toBe('Replace list?');
     expect((await lists.getAll())[0].items[0].product.id).toBe('old'); // not yet
@@ -85,22 +86,21 @@ describe('SavedListsModal', () => {
   });
 
   it('hides the save row for an empty basket, and ignores a blank name', async () => {
-    const empty = setup([]);
+    const empty = await setup([]);
     expect(empty.queryByPlaceholderText(/Name this basket/)).toBeNull();
-    const { getByPlaceholderText, getByText } = setup();
-    fireEvent.changeText(getByPlaceholderText(/Name this basket/), '   ');
-    fireEvent.press(getByText('Save'));
+    const { getByPlaceholderText, getByText } = await setup();
+    await fireEvent.changeText(getByPlaceholderText(/Name this basket/), '   ');
+    await fireEvent.press(getByText('Save'));
     expect(await lists.getAll()).toEqual([]);
   });
 
   it('deletes a list only after confirmation', async () => {
     await lists.save('Staples', cart);
     const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
-    const { findByText, UNSAFE_getAllByType, queryByText } = setup();
+    const { findByText, container, queryByText } = await setup();
     await findByText('Staples');
-    const { TouchableOpacity } = require('react-native');
-    const touchables = UNSAFE_getAllByType(TouchableOpacity);
-    fireEvent.press(touchables[touchables.length - 1]); // the row's delete icon
+    const touchables = touchablesIn(container);
+    await fireEvent.press(touchables[touchables.length - 1]); // the row's delete icon
     expect(alert.mock.calls[0][0]).toBe('Delete list');
     expect((await lists.getAll()).length).toBe(1);
     await alert.mock.calls[0][2]!.find(b => b.text === 'Delete')!.onPress!();
@@ -110,14 +110,13 @@ describe('SavedListsModal', () => {
 
   it('shows relative ages and pluralised counts', async () => {
     await lists.save('One', cart);
-    const { findByText } = setup();
+    const { findByText } = await setup();
     expect(await findByText(/1 item · 2 units · just now/)).toBeTruthy();
   });
 
   it('closes via the close button', async () => {
-    const { UNSAFE_getAllByType, onClose } = setup();
-    const { TouchableOpacity } = require('react-native');
-    fireEvent.press(UNSAFE_getAllByType(TouchableOpacity).find((t: any) => t.props.hitSlop)!);
+    const { container, onClose } = await setup();
+    await fireEvent.press(touchablesIn(container).find(t => t.props.hitSlop)!);
     expect(onClose).toHaveBeenCalled();
   });
 });

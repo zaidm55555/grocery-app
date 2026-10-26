@@ -248,7 +248,8 @@ export default function WebViewScreen() {
   const platform = (params.platform as Platform) || 'blinkit';
   const isExport = params.mode === 'export';
   const launchedSwiggySession = useRef(false);
-  const webViewRef = useRef<WebView>(null);
+  // `<object>`: see the react-native-webview 14.0.x typing note in BlinkitBridgeWebView.
+  const webViewRef = useRef<WebView<object>>(null);
   const cartAppliedRef = useRef(isExport ? false : true);
 
   // Swiggy login/address work happens inside the single persistent bridge
@@ -799,7 +800,7 @@ export default function WebViewScreen() {
       </View>
 
       <View style={styles.webContainer}>
-        <WebView
+        <WebView<object>
           ref={webViewRef}
           source={{ uri: currentMeta.url }}
           injectedJavaScript={isExportMode ? undefined : currentMeta.injectScript}

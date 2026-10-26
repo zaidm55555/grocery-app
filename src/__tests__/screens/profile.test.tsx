@@ -28,7 +28,7 @@ beforeEach(async () => {
 });
 
 const renderProfile = async () => {
-  const utils = render(<ProfileScreen />);
+  const utils = await render(<ProfileScreen />);
   await act(async () => { await new Promise(r => setTimeout(r, 0)); });
   return utils;
 };
@@ -51,16 +51,16 @@ describe('Profile screen: accounts', () => {
 
   it('opens the login webview for the chosen platform', async () => {
     const { getByText } = await renderProfile();
-    fireEvent.press(getByText('Login to Link Blinkit'));
+    await fireEvent.press(getByText('Login to Link Blinkit'));
     expect(mockPush).toHaveBeenCalledWith({ pathname: '/webview', params: { platform: 'blinkit' } });
-    fireEvent.press(getByText('Login to Link Swiggy'));
+    await fireEvent.press(getByText('Login to Link Swiggy'));
     expect(mockPush).toHaveBeenLastCalledWith({ pathname: '/webview', params: { platform: 'swiggy' } });
   });
 
   it('asks for confirmation before disconnecting, and only removes the token when confirmed', async () => {
     await storage.saveToken('swiggy', 's');
     const { getByText } = await renderProfile();
-    fireEvent.press(getByText('Disconnect Account'));
+    await fireEvent.press(getByText('Disconnect Account'));
     const [title, , buttons] = (Alert.alert as jest.Mock).mock.calls[0];
     expect(title).toBe('Unlink Account');
     expect(await storage.getToken('swiggy')).toBe('s'); // not yet
@@ -72,7 +72,7 @@ describe('Profile screen: accounts', () => {
   it('cancelling the disconnect keeps the session', async () => {
     await storage.saveToken('swiggy', 's');
     const { getByText } = await renderProfile();
-    fireEvent.press(getByText('Disconnect Account'));
+    await fireEvent.press(getByText('Disconnect Account'));
     const buttons = (Alert.alert as jest.Mock).mock.calls[0][2];
     expect(buttons.find((b: any) => b.text === 'Cancel').onPress).toBeUndefined();
     expect(await storage.getToken('swiggy')).toBe('s');
@@ -81,7 +81,7 @@ describe('Profile screen: accounts', () => {
   it('resets all data after confirmation', async () => {
     await storage.saveToken('blinkit', 'b');
     const { getByText } = await renderProfile();
-    fireEvent.press(getByText('Reset App Data'));
+    await fireEvent.press(getByText('Reset App Data'));
     const buttons = (Alert.alert as jest.Mock).mock.calls[0][2];
     await act(async () => { await buttons.find((b: any) => b.text === 'Reset Everything').onPress(); });
     expect(await storage.getToken('blinkit')).toBeNull();
@@ -118,7 +118,7 @@ describe('Profile screen: location', () => {
     jest.spyOn(locationUtils, 'getFastLocation').mockResolvedValue({ latitude: 22.5, longitude: 73.2 });
     const reset = jest.spyOn(addressSync, 'notifyLocationReset');
     const { getByText } = await renderProfile();
-    await act(async () => { fireEvent.press(getByText('Fetch Current GPS Location')); });
+    await act(async () => { await fireEvent.press(getByText('Fetch Current GPS Location')); });
     await waitFor(() => expect(Alert.alert).toHaveBeenCalledWith('Location & Addresses Synced', expect.stringContaining('Alkapuri')));
     expect(await storage.getLocation()).toMatchObject({ latitude: 22.5, longitude: 73.2, address: 'Alkapuri, Vadodara' });
     expect(addressSync.syncDeliveryAddresses).toHaveBeenCalledWith(22.5, 73.2, true);
@@ -128,7 +128,7 @@ describe('Profile screen: location', () => {
   it('explains when location permission is denied and saves nothing', async () => {
     (Location.requestForegroundPermissionsAsync as jest.Mock).mockResolvedValue({ status: 'denied' });
     const { getByText } = await renderProfile();
-    await act(async () => { fireEvent.press(getByText('Fetch Current GPS Location')); });
+    await act(async () => { await fireEvent.press(getByText('Fetch Current GPS Location')); });
     expect(Alert.alert).toHaveBeenCalledWith('Permission Denied', expect.any(String));
     expect(await storage.getLocation()).toBeNull();
   });
@@ -136,14 +136,14 @@ describe('Profile screen: location', () => {
   it('explains when GPS returns nothing', async () => {
     jest.spyOn(locationUtils, 'getFastLocation').mockResolvedValue(null);
     const { getByText } = await renderProfile();
-    await act(async () => { fireEvent.press(getByText('Fetch Current GPS Location')); });
+    await act(async () => { await fireEvent.press(getByText('Fetch Current GPS Location')); });
     expect(Alert.alert).toHaveBeenCalledWith('Location Error', expect.stringContaining('Unable to retrieve'));
   });
 
   it('reports an error when fetching throws, and re-enables the button', async () => {
     jest.spyOn(locationUtils, 'getFastLocation').mockRejectedValue(new Error('boom'));
     const { getByText } = await renderProfile();
-    await act(async () => { fireEvent.press(getByText('Fetch Current GPS Location')); });
+    await act(async () => { await fireEvent.press(getByText('Fetch Current GPS Location')); });
     expect(Alert.alert).toHaveBeenCalledWith('Location Error', 'Failed to retrieve GPS location.');
     expect(getByText('Fetch Current GPS Location')).toBeTruthy();
   });

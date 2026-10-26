@@ -152,7 +152,8 @@ const COPY = {
 };
 
 export default function SwiggyBridgeWebView() {
-  const webViewRef = useRef<WebView>(null);
+  // `<object>`: see the react-native-webview 14.0.x typing note in BlinkitBridgeWebView.
+  const webViewRef = useRef<WebView<object>>(null);
   const mode = useSyncExternalStore(subscribeSwiggySetupMode, getSwiggySetupMode);
   const modeRef = useRef(mode);
   useEffect(() => {
@@ -249,7 +250,7 @@ export default function SwiggyBridgeWebView() {
         </SafeAreaView>
       )}
 
-      <WebView
+      <WebView<object>
         ref={webViewRef}
         source={{ uri: 'https://www.swiggy.com/instamart' }}
         injectedJavaScript={BRIDGE_SCRIPT}

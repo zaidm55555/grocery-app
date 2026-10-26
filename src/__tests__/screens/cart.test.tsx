@@ -1,7 +1,7 @@
 import React from 'react';
 import { Alert, Linking } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { render, fireEvent, waitFor, act, within } from '@testing-library/react-native';
+import { render, fireEvent, waitFor, act } from '@testing-library/react-native';
 import CartScreen from '../../app/(tabs)/cart';
 import { storage } from '../../services/storage';
 import { api, CartCalculation } from '../../services/api';
@@ -10,6 +10,7 @@ import * as blinkitExport from '../../services/blinkitExport';
 import * as swiggyExport from '../../services/swiggyExport';
 import * as Clipboard from 'expo-clipboard';
 import { product, variant, calc } from '../../services/__tests__/fixtures';
+import { touchablesIn } from '../helpers/touchables';
 
 const mockPush = jest.fn();
 jest.mock('expo-router', () => {
@@ -66,7 +67,7 @@ const seed = async (items: any[], loc = { latitude: 22.3, longitude: 73.1 }) => 
   await storage.saveCart(items);
 };
 const renderCart = async () => {
-  const utils = render(<CartScreen />);
+  const utils = await render(<CartScreen />);
   await act(async () => { await new Promise(r => setTimeout(r, 0)); });
   return utils;
 };
@@ -134,7 +135,7 @@ describe('Cart screen: location mismatch', () => {
     await seed([salt()]);
     await AsyncStorage.setItem('@cart_location_mismatch', 'true');
     const { findByText } = await renderCart();
-    fireEvent.press(await findByText('Clear Basket & Search Again'));
+    await fireEvent.press(await findByText('Clear Basket & Search Again'));
     await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/(tabs)'));
     expect(await storage.getCart()).toEqual([]);
     expect(await AsyncStorage.getItem('@cart_location_mismatch')).toBeNull();
@@ -147,8 +148,8 @@ describe('Cart screen: quantities and clearing', () => {
     const { findByText, getByText } = await renderCart();
     await findByText('Items in Basket (1)');
     const before = (api.calculateCart as jest.Mock).mock.calls.length;
-    const plus = within(getByText('2').parent!.parent!).UNSAFE_getAllByType(require('react-native').TouchableOpacity)[1];
-    await act(async () => { fireEvent.press(plus); });
+    const plus = touchablesIn(getByText('2').parent!)[1];
+    await act(async () => { await fireEvent.press(plus); });
     await waitFor(async () => expect((await storage.getCart())[0].quantity).toBe(3));
     expect((api.calculateCart as jest.Mock).mock.calls.length).toBeGreaterThan(before);
   });
@@ -157,8 +158,8 @@ describe('Cart screen: quantities and clearing', () => {
     await seed([salt({}, {}, 1)]);
     const { findByText, getByText } = await renderCart();
     await findByText('Items in Basket (1)');
-    const minus = within(getByText('1').parent!.parent!).UNSAFE_getAllByType(require('react-native').TouchableOpacity)[0];
-    await act(async () => { fireEvent.press(minus); });
+    const minus = touchablesIn(getByText('1').parent!)[0];
+    await act(async () => { await fireEvent.press(minus); });
     await waitFor(async () => expect(await storage.getCart()).toEqual([]));
     expect(await findByText('Your basket is empty')).toBeTruthy();
   });
@@ -167,19 +168,18 @@ describe('Cart screen: quantities and clearing', () => {
     await seed([salt({ availableStock: 2 }, { availableStock: 2 }, 2)]);
     const { findByText, getByText } = await renderCart();
     await findByText('Items in Basket (1)');
-    const plus = within(getByText('2').parent!.parent!).UNSAFE_getAllByType(require('react-native').TouchableOpacity)[1];
-    await act(async () => { fireEvent.press(plus); });
+    const plus = touchablesIn(getByText('2').parent!)[1];
+    await act(async () => { await fireEvent.press(plus); });
     expect(Alert.alert).toHaveBeenCalledWith('Stock Limit Reached', 'Maximum available stock of 2 units reached across stores.');
     expect((await storage.getCart())[0].quantity).toBe(2);
   });
 
   it('clears the basket only after confirmation', async () => {
     await seed([salt()]);
-    const { findByText, UNSAFE_getAllByType } = await renderCart();
+    const { findByText, container } = await renderCart();
     await findByText('Items in Basket (1)');
-    const { TouchableOpacity } = require('react-native');
-    const trash = UNSAFE_getAllByType(TouchableOpacity).filter((t: any) => t.props.hitSlop)[1]; // [lists, clear]
-    fireEvent.press(trash);
+    const trash = touchablesIn(container).filter(t => t.props.hitSlop)[1]; // [lists, clear]
+    await fireEvent.press(trash);
     const buttons = (Alert.alert as jest.Mock).mock.calls[0][2];
     expect((Alert.alert as jest.Mock).mock.calls[0][0]).toBe('Clear Cart');
     expect((await storage.getCart()).length).toBe(1);
@@ -244,7 +244,7 @@ describe('Cart screen: stock / skipped-app presentation', () => {
     const first = await renderCart();
     await first.findAllByText('To pay');
     expect(first.queryByText('25 in stock')).toBeNull();
-    first.unmount();
+    await first.unmount();
 
     await seed([salt({ availableStock: 25 }, { availableStock: 25 }, 22)]);
     const second = await renderCart();
@@ -314,13 +314,12 @@ describe('Cart screen: platform cards', () => {
 
   it('refresh re-prices only that platform', async () => {
     await seed([salt()]);
-    const { findAllByText, UNSAFE_getAllByType } = await renderCart();
+    const { findAllByText, container } = await renderCart();
     await findAllByText('To pay');
     (api.calculateCart as jest.Mock).mockClear();
-    const { TouchableOpacity } = require('react-native');
-    const reload = UNSAFE_getAllByType(TouchableOpacity).filter((t: any) => t.props.hitSlop)
-      .filter((t: any) => t.props.style && JSON.stringify(t.props.style).includes('0.5') === false)[2];
-    await act(async () => { fireEvent.press(reload); });
+    const reload = touchablesIn(container).filter(t => t.props.hitSlop)
+      .filter(t => t.props.style && JSON.stringify(t.props.style).includes('0.5') === false)[2];
+    await act(async () => { await fireEvent.press(reload); });
     const call = (api.calculateCart as jest.Mock).mock.calls[0];
     expect(call[2]).toBeDefined(); // targetPlatform passed
   });
@@ -328,7 +327,7 @@ describe('Cart screen: platform cards', () => {
 
 describe('Cart screen: export to Blinkit', () => {
   const press = async (utils: any, label = 'Export Basket to Blinkit') => {
-    await act(async () => { fireEvent.press(await utils.findByText(label)); });
+    await act(async () => { await fireEvent.press(await utils.findByText(label)); });
   };
 
   it('copies the share link and opens it', async () => {
@@ -382,7 +381,7 @@ describe('Cart screen: export to Blinkit', () => {
     await press(utils);
     expect(await utils.findByText('Before opening Blinkit')).toBeTruthy();
     expect(Linking.openURL).not.toHaveBeenCalled();
-    fireEvent.press(await utils.findByText(/^Continue/));
+    await fireEvent.press(await utils.findByText(/^Continue/));
     await waitFor(() => expect(Linking.openURL).toHaveBeenCalledWith('https://blinkit.com/s/2'));
   });
 
@@ -423,7 +422,7 @@ describe('Cart screen: export to Blinkit', () => {
 });
 
 describe('Cart screen: export to Swiggy', () => {
-  const press = async (utils: any) => { await act(async () => { fireEvent.press(await utils.findByText('Export Basket to Instamart')); }); };
+  const press = async (utils: any) => { await act(async () => { await fireEvent.press(await utils.findByText('Export Basket to Instamart')); }); };
 
   it('opens the export webview with the committed cart', async () => {
     await seed([salt()]);
@@ -451,7 +450,7 @@ describe('Cart screen: export to Swiggy', () => {
     await press(utils);
     expect(await utils.findByText('Before opening Instamart')).toBeTruthy();
     expect(mockPush).not.toHaveBeenCalled();
-    fireEvent.press(await utils.findByText(/^Continue/));
+    await fireEvent.press(await utils.findByText(/^Continue/));
     expect(mockPush.mock.calls[0][0].params.cart).toBe('');
   });
 
@@ -489,9 +488,11 @@ describe('Cart screen: export to Swiggy', () => {
     let resolve!: (v: any) => void;
     exportSwiggy.mockReturnValue(new Promise(r => { resolve = r; }));
     const utils = await renderCart();
-    await press(utils);
+    // RNTL 14's fireEvent awaits the handler's promise, which here only settles once the export does.
+    const exporting = fireEvent.press(await utils.findByText('Export Basket to Instamart'));
     expect(await utils.findByText('Exporting to Instamart…')).toBeTruthy();
     expect(exportSwiggy).toHaveBeenCalledTimes(1);
     await act(async () => { resolve({ items: [], cartUrl: '', missing: [], outOfStock: [], clamped: [] }); });
+    await exporting;
   });
 });
