@@ -1,10 +1,9 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { StyleSheet, View, Text, ScrollView, TouchableOpacity, ActivityIndicator, Alert, Switch, TextInput } from 'react-native';
+import { StyleSheet, View, Text, ScrollView, TouchableOpacity, ActivityIndicator, Alert, Switch } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { MapPin, Link2, Link2Off, Compass, Trash2, CheckCircle2, Sparkles } from 'lucide-react-native';
+import { MapPin, Link2, Link2Off, Compass, Trash2, CheckCircle2 } from 'lucide-react-native';
 import * as Location from 'expo-location';
 import { storage, Platform, LocationData } from '../../services/storage';
-import { aiKey, maskKey, looksLikeGroqKey } from '../../services/aiKey';
 import { isDemoMode, loadDemoMode, setDemoMode } from '../../services/demo';
 import { colors, fonts, platformThemes } from '../../constants/theme';
 import { resolveAreaName, getFastLocation } from '../../utils/location';
@@ -20,17 +19,11 @@ export default function ProfileScreen() {
   const [locLoading, setLocLoading] = useState(false);
   const [demo, setDemo] = useState(isDemoMode());
   useEffect(() => { loadDemoMode().then(setDemo); }, []);
-  // Masked Groq key for AI mode (the full key never sits in UI state after saving).
-  const [groqKeyMasked, setGroqKeyMasked] = useState<string | null>(null);
-  const [keyDraft, setKeyDraft] = useState('');
-  const [keySaving, setKeySaving] = useState(false);
 
   const loadData = async () => {
     const blinkitToken = await storage.getToken('blinkit');
     const swiggyToken = await storage.getToken('swiggy');
     const userLoc = await storage.getLocation();
-    const groqKey = await aiKey.get().catch(() => null);
-    setGroqKeyMasked(groqKey ? maskKey(groqKey) : null);
 
     setTokens({
       blinkit: blinkitToken,
@@ -148,44 +141,11 @@ export default function ProfileScreen() {
           style: 'destructive',
           onPress: async () => {
             await storage.clearAll();
-            await aiKey.clear();
             loadData();
           }
         }
       ]
     );
-  };
-
-  const saveGroqKey = async () => {
-    const draft = keyDraft.trim();
-    if (!looksLikeGroqKey(draft)) {
-      Alert.alert('Invalid key', 'A Groq API key starts with gsk_. Create one at console.groq.com/keys.');
-      return;
-    }
-    setKeySaving(true);
-    try {
-      await aiKey.save(draft);
-      setKeyDraft('');
-      setGroqKeyMasked(maskKey(draft));
-    } catch (e: any) {
-      Alert.alert('Could not save key', String(e?.message || e));
-    } finally {
-      setKeySaving(false);
-    }
-  };
-
-  const removeGroqKey = () => {
-    Alert.alert('Remove Groq key', 'AI mode will stop working until you add a key again.', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Remove',
-        style: 'destructive',
-        onPress: async () => {
-          await aiKey.clear();
-          setGroqKeyMasked(null);
-        },
-      },
-    ]);
   };
 
   return (
@@ -240,53 +200,6 @@ export default function ProfileScreen() {
         <Switch value={demo} onValueChange={(v) => { setDemo(v); setDemoMode(v); }} />
       </View>
 
-      {/* AI mode (Groq) key */}
-      <View style={styles.card}>
-        <View style={styles.cardHeader}>
-          <Sparkles size={20} color={colors.accentPrimary} />
-          <Text style={styles.cardTitle}>AI mode · Groq API key</Text>
-        </View>
-        <Text style={styles.cardDescription}>
-          AI mode turns a request like &quot;dal tadka for 4 and a litre of milk&quot; into basket items using your own Groq key.
-          The key is stored encrypted on this device and sent only to api.groq.com. A key kept on a phone can still be
-          extracted from a rooted or jailbroken device, so use one you can revoke.
-        </Text>
-        {groqKeyMasked ? (
-          <View style={styles.connectedCard}>
-            <View style={styles.statusIndicatorRow}>
-              <View style={styles.onlineDot} />
-              <Text style={styles.connectedTitle}>Key saved · {groqKeyMasked}</Text>
-            </View>
-            <TouchableOpacity style={[styles.unlinkButton, { marginTop: 12 }]} onPress={removeGroqKey}>
-              <Trash2 size={15} color="#EF4444" style={styles.btnIcon} />
-              <Text style={styles.unlinkText}>Remove key</Text>
-            </TouchableOpacity>
-          </View>
-        ) : (
-          <>
-            <TextInput
-              style={styles.keyInput}
-              value={keyDraft}
-              onChangeText={setKeyDraft}
-              placeholder="gsk_…"
-              placeholderTextColor={colors.textMuted}
-              secureTextEntry
-              autoCapitalize="none"
-              autoCorrect={false}
-              autoComplete="off"
-              textContentType="none"
-              accessibilityLabel="Groq API key"
-            />
-            <TouchableOpacity
-              style={[styles.primaryButton, styles.keySaveButton, (!keyDraft.trim() || keySaving) && styles.disabledButton]}
-              onPress={saveGroqKey}
-              disabled={!keyDraft.trim() || keySaving}
-            >
-              {keySaving ? <ActivityIndicator size="small" color="#FFF" /> : <Text style={styles.buttonText}>Save key</Text>}
-            </TouchableOpacity>
-          </>
-        )}
-      </View>
 
       {/* Platform Cards */}
       <Text style={styles.sectionTitle}>Link Platform Accounts</Text>
@@ -477,21 +390,6 @@ const styles = StyleSheet.create({
   },
   disabledButton: {
     backgroundColor: '#3f3366',
-  },
-  keyInput: {
-    backgroundColor: colors.bgDark,
-    borderWidth: 1,
-    borderColor: colors.glassBorder,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    height: 44,
-    color: colors.textPrimary,
-    fontFamily: fonts.bodyMedium,
-    fontSize: 13,
-    marginBottom: 10,
-  },
-  keySaveButton: {
-    backgroundColor: colors.accentPrimary,
   },
   btnIcon: {
     marginRight: 8,

@@ -19,7 +19,6 @@ interface Props {
   onCommitCart: (cart: CartLine[]) => Promise<void>;
   /** Why AI mode cannot search right now (no location / no linked store), else null. */
   blockedReason?: string | null;
-  onOpenProfile: () => void;
   onViewBasket: () => void;
 }
 
@@ -33,7 +32,7 @@ function progressLabel(p: AiProgress | null): string {
 
 const rupees = (n: number) => `₹${Math.round(n * 100) / 100}`;
 
-export default function AiModeSheet({ visible, onClose, getCart, onCommitCart, blockedReason, onOpenProfile, onViewBasket }: Props) {
+export default function AiModeSheet({ visible, onClose, getCart, onCommitCart, blockedReason, onViewBasket }: Props) {
   const [phase, setPhase] = useState<Phase>('input');
   const [text, setText] = useState('');
   const [hasKey, setHasKey] = useState<boolean | null>(null);
@@ -41,7 +40,7 @@ export default function AiModeSheet({ visible, onClose, getCart, onCommitCart, b
   const [result, setResult] = useState<AiBasketResult | null>(null);
   // applied[i] is what picks[i] put in the basket; null once the user removed it.
   const [applied, setApplied] = useState<(AppliedLine | null)[]>([]);
-  const [error, setError] = useState<{ message: string; auth: boolean } | null>(null);
+  const [error, setError] = useState<{ message: string } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const busyRef = useRef(false);
 
@@ -93,7 +92,7 @@ export default function AiModeSheet({ visible, onClose, getCart, onCommitCart, b
       setPhase('review');
     } catch (e: any) {
       if (abortRef.current !== ctrl || (e instanceof GroqError && e.kind === 'aborted')) return;
-      setError({ message: String(e?.message || 'Something went wrong.'), auth: e instanceof GroqError && e.kind === 'auth' });
+      setError({ message: String(e?.message || 'Something went wrong.') });
       setPhase('error');
     } finally {
       // A cancelled run already released these; don't clobber a newer run's state.
@@ -175,11 +174,8 @@ export default function AiModeSheet({ visible, onClose, getCart, onCommitCart, b
                   <View style={styles.noticeCard}>
                     <KeyRound size={16} color={colors.amber} />
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.noticeTitle}>Groq API key needed</Text>
-                      <Text style={styles.noticeText}>AI mode uses your own Groq key. Add it in Profile; it is stored encrypted on this device.</Text>
-                      <TouchableOpacity style={styles.noticeBtn} onPress={() => { handleClose(); onOpenProfile(); }}>
-                        <Text style={styles.noticeBtnText}>Add key in Profile</Text>
-                      </TouchableOpacity>
+                      <Text style={styles.noticeTitle}>Groq API key not configured</Text>
+                      <Text style={styles.noticeText}>Set EXPO_PUBLIC_GROQ_API_KEY in .env.local and restart the bundler.</Text>
                     </View>
                   </View>
                 )}
@@ -233,11 +229,6 @@ export default function AiModeSheet({ visible, onClose, getCart, onCommitCart, b
                 <AlertCircle size={22} color={colors.rose} />
                 <Text style={styles.errorText}>{error.message}</Text>
                 <View style={styles.footerRow}>
-                  {error.auth && (
-                    <TouchableOpacity style={styles.secondaryBtn} onPress={() => { handleClose(); onOpenProfile(); }}>
-                      <Text style={styles.secondaryBtnText}>Open Profile</Text>
-                    </TouchableOpacity>
-                  )}
                   <TouchableOpacity style={styles.secondaryBtn} onPress={() => setPhase('input')}>
                     <Text style={styles.secondaryBtnText}>Try again</Text>
                   </TouchableOpacity>
@@ -365,8 +356,6 @@ const styles = StyleSheet.create({
   },
   noticeTitle: { fontFamily: fonts.heading, fontSize: 13, color: colors.textPrimary, marginBottom: 2 },
   noticeText: { fontFamily: fonts.body, fontSize: 12, color: colors.textSecondary, lineHeight: 17 },
-  noticeBtn: { alignSelf: 'flex-start', marginTop: 8, paddingVertical: 6, paddingHorizontal: 10, borderRadius: 8, backgroundColor: 'rgba(245, 158, 11, 0.18)' },
-  noticeBtnText: { fontFamily: fonts.bodySemiBold, fontSize: 12, color: colors.amber },
   input: {
     minHeight: 96,
     fontFamily: fonts.body,

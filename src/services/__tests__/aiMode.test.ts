@@ -101,7 +101,7 @@ describe('buildAiBasket', () => {
   });
 
   it('propagates Groq errors (e.g. a bad key)', async () => {
-    const chat = jest.fn(async () => { throw new GroqError('Groq rejected the API key. Check it in Profile.', 'auth', 401); });
+    const chat = jest.fn(async () => { throw new GroqError('Groq rejected the API key. Check EXPO_PUBLIC_GROQ_API_KEY.', 'auth', 401); });
     await expect(buildAiBasket('milk', { apiKey: KEY, search: async () => [], chat })).rejects.toMatchObject({ kind: 'auth' });
   });
 

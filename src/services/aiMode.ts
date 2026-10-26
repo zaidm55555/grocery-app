@@ -58,7 +58,7 @@ export async function buildAiBasket(text: string, deps: AiBasketDeps): Promise<A
   const chat = deps.chat ?? groqJson;
   const input = cleanText(text, MAX_INPUT_CHARS);
   if (!input) throw new AiModeError('Type what you need first.');
-  if (!deps.apiKey) throw new AiModeError('Add your Groq API key in Profile to use AI mode.');
+  if (!deps.apiKey) throw new AiModeError('Groq API key not configured (set EXPO_PUBLIC_GROQ_API_KEY in .env.local).');
 
   deps.onProgress?.({ stage: 'parsing' });
   const parsed = await chat({

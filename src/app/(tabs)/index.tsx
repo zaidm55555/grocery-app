@@ -1204,7 +1204,6 @@ export default function SearchScreen() {
         getCart={() => cartItemsRef.current}
         onCommitCart={commitCart}
         blockedReason={aiBlockedReason}
-        onOpenProfile={() => router.push('/(tabs)/profile')}
         onViewBasket={() => router.navigate('/(tabs)/cart')}
       />
 

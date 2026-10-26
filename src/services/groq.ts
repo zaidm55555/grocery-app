@@ -1,6 +1,6 @@
 // Minimal Groq chat-completions client for AI mode. Plain fetch against the
 // OpenAI-compatible endpoint keeps the bundle free of SDKs and makes it easy to
-// mock. The key comes from the caller (see aiKey.ts for why it is client-held).
+// mock. The key comes from the caller (see aiKey.ts for why it is client-held, and why only for now).
 
 // Production model with strict JSON-schema structured outputs on Groq
 // (https://console.groq.com/docs/structured-outputs). Groq's recommended
@@ -97,7 +97,7 @@ export async function groqJson(req: GroqJsonRequest): Promise<unknown> {
   }
 
   if (res.status === 401 || res.status === 403) {
-    throw new GroqError('Groq rejected the API key. Check it in Profile.', 'auth', res.status);
+    throw new GroqError('Groq rejected the API key. Check EXPO_PUBLIC_GROQ_API_KEY.', 'auth', res.status);
   }
   if (res.status === 429) {
     throw new GroqError('Groq rate limit reached. Wait a minute and try again.', 'rate_limit', res.status);

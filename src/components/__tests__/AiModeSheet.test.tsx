@@ -32,7 +32,6 @@ const setup = async (props: Partial<React.ComponentProps<typeof AiModeSheet>> = 
   let cart = initial;
   const onCommitCart = jest.fn(async (next: CartLine[]) => { cart = next; });
   const onClose = jest.fn();
-  const onOpenProfile = jest.fn();
   const onViewBasket = jest.fn();
   const utils = await render(
     <AiModeSheet
@@ -40,12 +39,11 @@ const setup = async (props: Partial<React.ComponentProps<typeof AiModeSheet>> = 
       onClose={onClose}
       getCart={() => cart}
       onCommitCart={onCommitCart}
-      onOpenProfile={onOpenProfile}
       onViewBasket={onViewBasket}
       {...props}
     />
   );
-  return { ...utils, onCommitCart, onClose, onOpenProfile, onViewBasket, cart: () => cart };
+  return { ...utils, onCommitCart, onClose, onViewBasket, cart: () => cart };
 };
 
 const lines = (cart: CartLine[]) => cart.map(l => [l.product.id, l.quantity]);
@@ -61,13 +59,12 @@ beforeEach(() => {
 });
 
 describe('AiModeSheet', () => {
-  it('asks for a Groq key when none is saved and links to Profile', async () => {
+  it('says the Groq key is not configured when the env var is unset, without a Profile link', async () => {
     mockGet.mockResolvedValue(null);
     const u = await setup();
-    expect(await u.findByText('Groq API key needed')).toBeTruthy();
-    await fireEvent.press(u.getByText('Add key in Profile'));
-    expect(u.onClose).toHaveBeenCalled();
-    expect(u.onOpenProfile).toHaveBeenCalled();
+    expect(await u.findByText('Groq API key not configured')).toBeTruthy();
+    expect(u.getByText(/EXPO_PUBLIC_GROQ_API_KEY in \.env\.local/)).toBeTruthy();
+    expect(u.queryByText(/Profile/)).toBeNull();
   });
 
   it('shows why it cannot run and does not run', async () => {
@@ -127,12 +124,12 @@ describe('AiModeSheet', () => {
     expect(u.onViewBasket).toHaveBeenCalled();
   });
 
-  it('shows an auth error with a way to fix the key, and lets the user retry', async () => {
-    mockBuild.mockRejectedValue(new GroqError('Groq rejected the API key. Check it in Profile.', 'auth', 401));
+  it('shows an auth error and lets the user retry', async () => {
+    mockBuild.mockRejectedValue(new GroqError('Groq rejected the API key. Check EXPO_PUBLIC_GROQ_API_KEY.', 'auth', 401));
     const u = await setup();
     await runRequest(u);
-    expect(await u.findByText('Groq rejected the API key. Check it in Profile.')).toBeTruthy();
-    expect(u.getByText('Open Profile')).toBeTruthy();
+    expect(await u.findByText('Groq rejected the API key. Check EXPO_PUBLIC_GROQ_API_KEY.')).toBeTruthy();
+    expect(u.queryByText('Open Profile')).toBeNull();
     await fireEvent.press(u.getByText('Try again'));
     expect(u.getByText('Build my basket')).toBeTruthy();
     expect(u.onCommitCart).not.toHaveBeenCalled();
