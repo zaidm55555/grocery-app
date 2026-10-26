@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { StyleSheet, View, Text, TextInput, FlatList, TouchableOpacity, ActivityIndicator, Image, Keyboard, KeyboardAvoidingView, Platform as RNPlatform, Pressable, Modal, Dimensions, Alert, type ViewInstance } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Search, MapPin, X, Plus, Minus, ChevronDown, Check, Zap, ShoppingCart, ShoppingBag, LogIn, Link2Off, Compass, ChevronRight, AlertCircle } from 'lucide-react-native';
+import { Search, MapPin, X, Plus, Minus, ChevronDown, Check, Zap, ShoppingCart, ShoppingBag, LogIn, Link2Off, Compass, ChevronRight, AlertCircle, Sparkles } from 'lucide-react-native';
 import { api, UnifiedProduct, PlatformVariant, getProductOverallMax, getItemPlatformLimit, getProductPlatformLimit, resolvePlatformProduct } from '../../services/api';
 import { isDemoMode, loadDemoMode, DEMO_LOCATION } from '../../services/demo';
 import { storage, Platform, LocationData } from '../../services/storage';
@@ -12,6 +12,7 @@ import { pickBestMatch } from '../../utils/matcher';
 import MatchModal, { MatchFlowState, MatchTarget, MatchCell } from '../../components/MatchModal';
 import VariantPickerModal from '../../components/VariantPickerModal';
 import SharedListingSheet from '../../components/SharedListingSheet';
+import AiModeSheet from '../../components/AiModeSheet';
 import { lineIdxsForListing, listingQty } from '../../utils/sharedListing';
 import { shouldShowBlinkitDirectNote } from '../../utils/stockNotes';
 import { resolveAreaName } from '../../utils/location';
@@ -199,6 +200,7 @@ export default function SearchScreen() {
   // A listing that several basket lines were auto-matched to; +/− on it opens a per-line chooser.
   const [sharedListing, setSharedListing] = useState<UnifiedProduct | null>(null);
   const [matchToast, setMatchToast] = useState<{ platform: Platform; name: string } | null>(null);
+  const [aiOpen, setAiOpen] = useState(false);
 
   const matchFlowRef = useRef<MatchFlowState | null>(null);
   matchFlowRef.current = matchFlow;
@@ -754,6 +756,13 @@ export default function SearchScreen() {
     return g.items[0].platform + '|' + (g.items[0].originalId || g.items[0].id || familyKey(g.items[0]));
   }, []);
 
+  // AI mode runs the same live search, so it needs what a normal search needs.
+  const aiBlockedReason = !location && !isDemoMode()
+    ? 'Set your delivery location in Profile first.'
+    : !tokens.blinkit && !tokens.swiggy
+      ? 'Link Blinkit or Instamart in Profile (or turn on demo mode) first.'
+      : null;
+
   return (
     <KeyboardAvoidingView
       style={styles.container}
@@ -864,6 +873,14 @@ export default function SearchScreen() {
                 )}
               </TouchableOpacity>
             </View>
+
+            {/* AI mode entry */}
+            <TouchableOpacity style={styles.aiModeBtn} onPress={() => setAiOpen(true)} activeOpacity={0.8} accessibilityLabel="Open AI mode">
+              <Sparkles size={15} color={colors.accentPrimary} />
+              <Text style={styles.aiModeTitle}>AI mode</Text>
+              <Text style={styles.aiModeSub} numberOfLines={1}>Describe a meal or a list, we fill the basket</Text>
+              <ChevronRight size={14} color={colors.textMuted} />
+            </TouchableOpacity>
 
             {/* Quick searches */}
             {products.length === 0 && (
@@ -1181,6 +1198,16 @@ export default function SearchScreen() {
         onClose={() => setSharedListing(null)}
       />
 
+      <AiModeSheet
+        visible={aiOpen}
+        onClose={() => setAiOpen(false)}
+        getCart={() => cartItemsRef.current}
+        onCommitCart={commitCart}
+        blockedReason={aiBlockedReason}
+        onOpenProfile={() => router.push('/(tabs)/profile')}
+        onViewBasket={() => router.navigate('/(tabs)/cart')}
+      />
+
       {matchFlow && (
         <MatchModal
           flow={matchFlow}
@@ -1386,6 +1413,31 @@ const styles = StyleSheet.create({
     fontFamily: fonts.bodySemiBold,
     fontSize: 13,
     color: '#FFF',
+  },
+  aiModeBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    marginHorizontal: 16,
+    marginTop: -6,
+    marginBottom: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.borderGlow,
+    backgroundColor: 'rgba(99, 102, 241, 0.08)',
+  },
+  aiModeTitle: {
+    fontFamily: fonts.bodySemiBold,
+    fontSize: 12.5,
+    color: colors.textPrimary,
+  },
+  aiModeSub: {
+    flex: 1,
+    fontFamily: fonts.body,
+    fontSize: 11.5,
+    color: colors.textSecondary,
   },
   quickRow: {
     flexDirection: 'row',

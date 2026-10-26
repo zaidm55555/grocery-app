@@ -50,6 +50,12 @@
             "enableShrinkResourcesInReleaseBuilds": true
           }
         }
+      ],
+      [
+        "expo-secure-store",
+        {
+          "faceIDPermission": false
+        }
       ]
     ],
     "experiments": {

@@ -8,6 +8,8 @@ import { api, UnifiedProduct } from '../../services/api';
 import * as locationUtils from '../../utils/location';
 import { product } from '../../services/__tests__/fixtures';
 import { touchablesIn } from '../helpers/touchables';
+import { aiKey } from '../../services/aiKey';
+import * as aiMode from '../../services/aiMode';
 
 const mockPush = jest.fn();
 const mockNavigate = jest.fn();
@@ -646,5 +648,45 @@ describe('Search screen: one Instamart listing shared by two basket lines', () =
     await act(async () => { await fireEvent.press(touchablesBesideText(u, '2')[1]); });
     await waitFor(async () => expect((await storage.getCart())[0].quantity).toBe(3));
     expect(u.queryByTestId('shared-listing-sheet')).toBeNull();
+  });
+});
+
+describe('Search screen: AI mode', () => {
+  const KEY = 'gsk_testkey1234567890abcdef';
+
+  it('explains that a store must be linked first', async () => {
+    jest.spyOn(aiKey, 'get').mockResolvedValue(KEY);
+    await storage.saveLocation(LOC);
+    const u = await renderSearch();
+    await act(async () => { fireEvent.press(u.getByLabelText('Open AI mode')); });
+    expect(await u.findByText('Link Blinkit or Instamart in Profile (or turn on demo mode) first.')).toBeTruthy();
+  });
+
+  it('explains that a location is needed first', async () => {
+    jest.spyOn(aiKey, 'get').mockResolvedValue(KEY);
+    await linkBoth();
+    const u = await renderSearch();
+    await act(async () => { fireEvent.press(u.getByLabelText('Open AI mode')); });
+    expect(await u.findByText('Set your delivery location in Profile first.')).toBeTruthy();
+  });
+
+  it('puts the AI picks in the basket and opens it from the review', async () => {
+    jest.spyOn(aiKey, 'get').mockResolvedValue(KEY);
+    const milk = bl('milk', 'Amul Taaza Milk', { quantity: '500 ml' });
+    const build = jest.spyOn(aiMode, 'buildAiBasket').mockResolvedValue({
+      requested: [{ name: 'Milk', query: 'milk', amount: '1 litre' }],
+      picks: [{ index: 0, item: { name: 'Milk', query: 'milk', amount: '1 litre' }, product: milk, units: 2, reason: '' }],
+      unmatched: [],
+    });
+    await storage.saveLocation(LOC);
+    await linkBoth();
+    const u = await renderSearch();
+    await act(async () => { fireEvent.press(u.getByLabelText('Open AI mode')); });
+    fireEvent.changeText(await u.findByLabelText('What do you need?'), 'a litre of milk');
+    await act(async () => { fireEvent.press(u.getByText('Build my basket')); });
+    expect(build).toHaveBeenCalledWith('a litre of milk', expect.objectContaining({ apiKey: KEY }));
+    await waitFor(async () => expect((await storage.getCart()).map((l: any) => [l.product.id, l.quantity])).toEqual([['blinkit-milk', 2]]));
+    await act(async () => { fireEvent.press(await u.findByText('View basket')); });
+    expect(mockNavigate).toHaveBeenCalledWith('/(tabs)/cart');
   });
 });
