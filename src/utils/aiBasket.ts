@@ -6,7 +6,7 @@ import { UnifiedProduct, PlatformVariant, getItemPlatformLimit, isKnownUnavailab
 import type { Platform } from '../services/storage';
 import type { CartLine } from '../services/lists';
 import { PLATFORM_ORDER } from '../constants/theme';
-import { pickBestMatch } from './matcher';
+import { decideMatch } from './matcher';
 import { liveKey } from './productKey';
 import { stampIfVerified } from './lineFreshness';
 
@@ -298,7 +298,9 @@ export function productToVariant(p: UnifiedProduct): PlatformVariant {
 /**
  * Adds the same product's listing on the other store(s) as a platform price, so
  * the basket can compare stores, using the deterministic auto-matcher over the
- * search results already fetched for this item (no extra network call).
+ * search results already fetched for this item (no extra network call). Nobody
+ * reviews these links, so only an 'auto'-band match is attached: a different
+ * pack size, extra variant words or a close runner-up leave the store unlinked.
  */
 export function attachTwins(product: UnifiedProduct, pool: UnifiedProduct[]): UnifiedProduct {
   const prices: Partial<Record<Platform, PlatformVariant>> = { ...(product.platformPrices || {}) };
@@ -306,9 +308,9 @@ export function attachTwins(product: UnifiedProduct, pool: UnifiedProduct[]): Un
   for (const platform of PLATFORM_ORDER) {
     if (platform === product.platform || prices[platform]) continue;
     const others = (pool || []).filter(p => isObj(p) && p.platform === platform && typeof p.id === 'string');
-    const best = pickBestMatch<UnifiedProduct>({ name: product.title, unit: product.quantity, price: product.price }, others);
-    if (best) {
-      prices[platform] = productToVariant(best.candidate);
+    const decision = decideMatch<UnifiedProduct>({ name: product.title, unit: product.quantity, price: product.price }, others);
+    if (decision.band === 'auto' && decision.best) {
+      prices[platform] = productToVariant(decision.best.candidate);
       changed = true;
     }
   }

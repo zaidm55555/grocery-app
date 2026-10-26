@@ -72,6 +72,26 @@ describe('refreshBasketLines', () => {
     expect(items[0].product.platformPrices).toBeUndefined();
   });
 
+  it('only relinks to an auto-band match: a different pack size is dropped, not linked', async () => {
+    const bad = variant({ id: 'swiggy-9', title: 'Aashirvaad Atta', quantity: '5 kg', productId: 's9' });
+    search.mockImplementation(async (platform) =>
+      platform === 'blinkit'
+        ? [live()]
+        : [product({ id: 'swiggy-6', platform: 'swiggy', productId: 's6', title: 'Tata Salt', quantity: '5 kg', price: 140 })]);
+    const { items } = await refreshBasketLines([{ product: product({ productId: 'p1', platformPrices: { swiggy: bad } }), quantity: 1 }]);
+    expect(items[0].product.platformPrices).toBeUndefined();
+  });
+
+  it('keeps a plausible stored link (a suggestion the user confirmed) and refreshes it', async () => {
+    const linked = variant({ id: 'swiggy-4', originalId: '4', title: 'Tata Salt', quantity: '500 g', productId: 's4', price: 15 });
+    search.mockImplementation(async (platform) =>
+      platform === 'blinkit'
+        ? [live()]
+        : [product({ id: 'swiggy-4', originalId: '4', platform: 'swiggy', productId: 's4', title: 'Tata Salt', quantity: '500 g', price: 16 })]);
+    const { items } = await refreshBasketLines([{ product: product({ productId: 'p1', platformPrices: { swiggy: linked } }), quantity: 1 }]);
+    expect(items[0].product.platformPrices?.swiggy).toMatchObject({ id: 'swiggy-4', price: 16 });
+  });
+
   it('keeps a manually picked link even though it scores as a weak match', async () => {
     const picked = variant({ id: 'swiggy-9', title: 'Aashirvaad Atta', quantity: '5 kg', productId: 's9', originalId: '9', manual: true });
     search.mockImplementation(async (platform) =>
