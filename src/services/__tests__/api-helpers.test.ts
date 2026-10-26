@@ -2,7 +2,7 @@ import {
   resolvePlatformProduct, getItemPlatformLimit, isKnownUnavailable, getProductPlatformLimit,
   getProductOverallMax, findStoreInfo, extractStockCount, instamartNormKey, pickInstamartCandidate,
   parseBlinkitBill, parseSwiggyBill, findSwiggyBillNode, parseBlinkitProducts, extractSwiggyStockAndLimit,
-  invalidateAddressSessionCache,
+  invalidateAddressSessionCache, extractSwiggySearchProducts,
 } from '../api';
 import { product, variant, calc } from './fixtures';
 
@@ -144,6 +144,13 @@ describe('instamart candidate picking', () => {
     expect(pickInstamartCandidate(cands, 'Pav Bread', '400 g', 40)).toBeNull();
     expect(pickInstamartCandidate([], 'Pav Bread', '200 g')).toBeNull();
   });
+  it('finds the same product even when a near miss ranks higher', () => {
+    const list = [
+      { productId: 'x', name: 'Amul Butter', unit: '100 g x 2', price: 116 },
+      { productId: 'y', name: 'Amul Butter', unit: '100 g', price: 58 },
+    ];
+    expect(pickInstamartCandidate(list, 'Amul Butter', '100 g', 58)).toBe(list[1]);
+  });
 });
 
 describe('parseSwiggyBill / findSwiggyBillNode', () => {
@@ -207,6 +214,38 @@ describe('parseBlinkitProducts', () => {
   it('returns [] for junk', () => {
     expect(parseBlinkitProducts(null)).toEqual([]);
     expect(parseBlinkitProducts({ a: 1 })).toEqual([]);
+  });
+
+  const soldOut = { name: { text: 'Amul Butter' }, price: '₹58', unit: '100 g', id: 9, out_of_stock: true };
+  it('drops sold-out listings by default', () => {
+    expect(parseBlinkitProducts({ layout: [{ data: soldOut }] })).toEqual([]);
+  });
+  it('keeps them flagged inStock:false when asked (match search)', () => {
+    const [p] = parseBlinkitProducts({ layout: [{ data: soldOut }] }, { includeOutOfStock: true });
+    expect(p).toMatchObject({ name: 'Amul Butter', productId: '9', inStock: false });
+  });
+  it('an in-stock copy wins over a sold-out one seen first', () => {
+    const inStock = { ...soldOut, out_of_stock: false, id: 10 };
+    const out = parseBlinkitProducts({ layout: [{ data: soldOut }, { data: inStock }] }, { includeOutOfStock: true });
+    expect(out).toHaveLength(1);
+    expect(out[0].inStock).toBeUndefined();
+    expect(out[0].productId).toBe('10');
+  });
+});
+
+describe('extractSwiggySearchProducts: out-of-stock option', () => {
+  const variation = (inStock: boolean) => ({
+    displayName: 'Tata Salt', skuId: inStock ? 'A' : 'B', quantityDescription: '1 kg', inStock,
+    price: { offerPrice: { units: '28' }, mrp: { units: '30' } },
+  });
+  const json = (inStock: boolean) => ({ data: { widgets: [{ productId: 'P1', displayName: 'Tata Salt', variations: [variation(inStock)] }] } });
+  it('drops sold-out variations by default', () => {
+    expect(extractSwiggySearchProducts(json(false), 'salt')).toEqual([]);
+    expect(extractSwiggySearchProducts(json(true), 'salt')[0].inStock).toBe(true);
+  });
+  it('keeps them flagged inStock:false when asked', () => {
+    const [p] = extractSwiggySearchProducts(json(false), 'salt', { includeOutOfStock: true });
+    expect(p).toMatchObject({ name: 'Tata Salt', unit: '1 kg', inStock: false });
   });
 });
 
