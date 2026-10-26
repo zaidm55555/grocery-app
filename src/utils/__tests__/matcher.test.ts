@@ -1,4 +1,7 @@
-import { matchScore, pickBestMatch, nameTokens, nameSimilarity, sizeScore, isSameProduct } from '../matcher';
+import {
+  matchScore, pickBestMatch, nameTokens, nameSimilarity, sizeScore, isSameProduct, scoreMatch, decideMatch,
+  rankCandidates, buildQueryLadder, AUTO_MIN, SUGGEST_MIN,
+} from '../matcher';
 
 type P = { name: string; unit: string; price?: number };
 const THRESHOLD = 0.5;
@@ -117,5 +120,224 @@ describe('pickBestMatch', () => {
   it('works with UnifiedProduct-shaped rows (title/quantity)', () => {
     const pick = pickBestMatch({ name: 'Tata Salt', unit: '1 kg' }, [{ title: 'Tata Salt', quantity: '1 kg', price: 28 }]);
     expect(pick?.candidate.title).toBe('Tata Salt');
+  });
+});
+
+describe('nameTokens: normalisation fixes', () => {
+  it('joins apostrophes instead of splitting them', () => {
+    expect(nameTokens("Lay's Magic Masala")).toEqual(['lays', 'magic', 'masala']);
+    expect(nameTokens("Haldiram's Bhujia")).toEqual(['haldiram', 'bhujia']);
+  });
+  it('folds accents instead of dropping the letter', () => {
+    expect(nameTokens('Nestlé Milkmaid')).toEqual(['nestle', 'milkmaid']);
+  });
+  it('strips pack sizes anywhere in the title', () => {
+    expect(nameTokens('Amul Taaza 500 ml Toned Milk')).toEqual(['amul', 'taaza', 'toned', 'milk']);
+    expect(nameTokens('Coca-Cola 6 x 300 ml Can')).toEqual(['cocacola']);
+  });
+  it.each([
+    ['Haldi', 'Turmeric'], ['Jeera Powder', 'Cumin Powder'], ['Pyaz', 'Onion'], ['Aloo', 'Potato'], ['Bhindi', 'Okra'],
+    ['Lady Finger', 'Okra'], ['Whole Wheat Flour', 'Atta'], ['Coke', 'Coca Cola'], ['Thumbs Up', 'Thums Up'],
+    ['Ashirwad Atta', 'Aashirvaad Atta'], ['Kali Mirch', 'Black Pepper'], ['Dhaniya Patta', 'Coriander Leaves'],
+  ])('treats %s and %s as the same words', (a, b) => {
+    expect(nameTokens(a)).toEqual(nameTokens(b));
+  });
+});
+
+describe('nameSimilarity: strict symmetric similarity', () => {
+  it('matches single-token generics with a Hindi alias', () => {
+    expect(nameSimilarity('Onion', 'Onion (Pyaz)')).toBe(1);
+  });
+  it('still rejects one-sided qualifiers and conflicting variants', () => {
+    expect(nameSimilarity('Coca-Cola', 'Coca-Cola Zero')).toBe(0);
+    expect(nameSimilarity('Amul Taaza Toned Milk', 'Amul Gold Full Cream Milk')).toBe(0);
+  });
+});
+
+describe('scoreMatch', () => {
+  const t = (name: string, unit: string, price = 0, inStock?: boolean) => ({ name, unit, price, ...(inStock === undefined ? {} : { inStock }) });
+
+  it.each([
+    ['different brand', t('Tata Salt', '1 kg', 28), t('Aashirvaad Salt', '1 kg', 28), /different brand \(Tata vs Aashirvaad\)/],
+    ['one-sided zero', t('Coca-Cola', '750 ml', 40), t('Coca-Cola Zero', '750 ml', 40), /"zero" variant on one side only/],
+    ['conflicting variant', t('Amul Toned Milk', '500 ml'), t('Amul Full Cream Milk', '500 ml'), /different variant \(toned vs fullcream\)/],
+    ['weight vs volume (ltr)', t('Tata Salt', '1 kg'), t('Tata Salt', '1 ltr'), /weight vs volume \(1 kg vs 1 L\)/],
+    ['two-sided different words', t('English Oven Pav Bread', '400 g'), t('English Oven Milk Bread', '400 g'), /different words \(pav vs milk\)/],
+    ['no words in common', t('Atta', '1 kg'), t('Maida', '1 kg'), /different product/],
+  ])('rejects: %s', (_label, a, b, reason) => {
+    const d = scoreMatch(a, b);
+    expect(d).toMatchObject({ rejected: true, score: 0, autoEligible: false });
+    expect(d.reasons[0]).toMatch(reason);
+  });
+
+  it('explains a different pack size with the price difference', () => {
+    const d = scoreMatch(t('Aashirvaad Atta', '500 g', 40), t('Aashirvaad Atta', '1 kg', 52));
+    expect(d.rejected).toBe(false);
+    expect(d.autoEligible).toBe(false);
+    expect(d.reasons[0]).toBe('different size 500 g vs 1 kg, +₹12');
+  });
+
+  it('cannot compare pieces with kilograms: suggestion only (B1)', () => {
+    const d = scoreMatch(t('Onion', '1 kg', 40), t('Onion', '3 pcs', 40));
+    expect(d.autoEligible).toBe(false);
+    expect(d.reasons[0]).toBe("can't compare 1 kg with 3 pcs");
+    expect(d.score).toBeLessThan(AUTO_MIN);
+    expect(d.score).toBeGreaterThanOrEqual(SUGGEST_MIN);
+  });
+
+  it('a superset variant is never auto-eligible (B2)', () => {
+    const d = scoreMatch(t('Cadbury Dairy Milk', '50 g', 45), t('Cadbury Dairy Milk Silk', '50 g', 45));
+    expect(d.autoEligible).toBe(false);
+    expect(d.score).toBeLessThan(AUTO_MIN);
+    expect(d.reasons).toContain('extra words here: silk');
+  });
+
+  it('price per unit matters (B3)', () => {
+    const fair = scoreMatch(t('Amul Butter', '100 g', 58), t('Amul Butter', '100 g', 60));
+    const steep = scoreMatch(t('Amul Butter', '100 g', 58), t('Amul Butter', '100 g', 150));
+    expect(fair.score - steep.score).toBeGreaterThan(0.1);
+    expect(steep.autoEligible).toBe(false);
+    expect(steep.reasons).toContain('unit price 2.59× higher');
+  });
+
+  it('a multipack of the same size is a different listing (B5)', () => {
+    const d = scoreMatch(t("Lay's Classic Salted", '52 g', 20), t('Lays Classic Salted', '52 g (Pack of 3)', 60));
+    expect(d.autoEligible).toBe(false);
+    expect(d.reasons[0]).toBe('different size 52 g vs 3 × 52 g, +₹40');
+  });
+
+  it('an unknown pack size ("1 unit") is not a size of one (N7)', () => {
+    const d = scoreMatch(t('Amul Butter', '100 g', 58), t('Amul Butter', '1 unit', 58));
+    expect(d.parts.size).toBe(0.5);
+    expect(d.reasons).toContain('pack size unknown');
+  });
+
+  it('flags an out-of-stock twin instead of hiding it', () => {
+    const d = scoreMatch(t('Tata Salt', '1 kg', 28), t('Tata Salt', '1 kg', 28, false));
+    expect(d.rejected).toBe(false);
+    expect(d.autoEligible).toBe(false);
+    expect(d.reasons).toContain('out of stock');
+  });
+
+  it('a generic title vs a branded one is a suggestion', () => {
+    const d = scoreMatch(t('Toned Milk', '500 ml', 27), t('Amul Taaza Toned Milk', '500 ml', 28));
+    expect(d.autoEligible).toBe(false);
+    expect(d.score).toBeGreaterThanOrEqual(SUGGEST_MIN);
+    expect(d.reasons).toContain('brand only on this listing (Amul)');
+  });
+
+  it('parent brand mentions agree with the product line', () => {
+    expect(scoreMatch(t('Nestle Maggi Masala Noodles', '70 g', 14), t('Maggi Masala Noodles', '70 g', 14)).autoEligible).toBe(true);
+    expect(scoreMatch(t('Bournvita', '500 g', 230), t('Cadbury Bournvita Health Drink', '500 g', 228)).autoEligible).toBe(true);
+    expect(scoreMatch(t('Kurkure Masala Munch', '90 g'), t("Lay's Magic Masala", '90 g')).rejected).toBe(true);
+  });
+});
+
+describe('decideMatch', () => {
+  const c = (id: string, name: string, unit: string, price: number, inStock?: boolean) => ({ id, name, unit, price, ...(inStock === undefined ? {} : { inStock }) });
+  const target = { name: 'Amul Butter', unit: '100 g', price: 58 };
+
+  it('auto: exact twin well ahead of the rest', () => {
+    const d = decideMatch(target, [c('a', 'Amul Cheese', '100 g', 60), c('b', 'Amul Pasteurised Butter', '100 g', 60), c('c', 'Amul Butter', '500 g', 285)]);
+    expect(d.band).toBe('auto');
+    expect(d.best?.candidate.id).toBe('b');
+    expect(d.alternatives.map(a => a.candidate.id)).toEqual(['c']);
+    expect(d.ranked.map(r => r.candidate.id)).toEqual(['b', 'c', 'a']);
+    expect(d.ranked[2].rejected).toBe(true);
+  });
+
+  it('suggest: only a different size exists, with the reason', () => {
+    const d = decideMatch(target, [c('c', 'Amul Butter', '500 g', 285)]);
+    expect(d.band).toBe('suggest');
+    expect(d.best?.candidate.id).toBe('c');
+    expect(d.reasons[0]).toBe('different size 100 g vs 500 g, +₹227');
+  });
+
+  it('suggest: two different listings score alike (B4 ambiguity is used, not ignored)', () => {
+    const d = decideMatch({ name: 'Amul Milk', unit: '500 ml', price: 30 }, [
+      c('x', 'Amul Taaza Milk', '500 ml', 30),
+      c('y', 'Amul Gold Milk', '500 ml', 30),
+    ]);
+    expect(d.band).toBe('suggest');
+    expect(d.reasons.some(r => r.startsWith('close runner-up: '))).toBe(true);
+  });
+
+  it('the same listing twice does not block auto; the closer price wins', () => {
+    const d = decideMatch(target, [c('x', 'Amul Butter', '100 g', 62), c('y', 'Amul Butter', '100 g', 58)]);
+    expect(d.band).toBe('auto');
+    expect(d.best?.candidate.id).toBe('y');
+  });
+
+  it('prefers an in-stock listing on a tie', () => {
+    const d = decideMatch(target, [c('x', 'Amul Butter', '100 g', 58, false), c('y', 'Amul Butter', '100 g', 58)]);
+    expect(d.best?.candidate.id).toBe('y');
+    expect(d.ranked[1].reasons).toContain('out of stock');
+  });
+
+  it('none: nothing similar, or nothing at all', () => {
+    expect(decideMatch(target, [c('m', 'Maggi Noodles', '70 g', 14)])).toMatchObject({ band: 'none', best: null });
+    expect(decideMatch(target, [])).toMatchObject({ band: 'none', best: null, reasons: ['no similar product'] });
+    expect(decideMatch(target, null).ranked).toEqual([]);
+  });
+
+  it('alternatives are the top 3 viable, sorted by score', () => {
+    const d = decideMatch(target, [
+      c('1', 'Amul Butter', '500 g', 285), c('2', 'Amul Butter', '100 g', 58), c('3', 'Amul Butter', '200 g', 110),
+      c('4', 'Amul Butter', '1 kg', 560), c('5', 'Amul Butter', '50 g', 30),
+    ]);
+    const scores = d.alternatives.map(a => a.score);
+    expect(d.alternatives).toHaveLength(3);
+    expect([...scores].sort((a, b) => b - a)).toEqual(scores);
+  });
+
+  it('thresholds are configurable', () => {
+    const d = decideMatch(target, [c('c', 'Amul Butter', '500 g', 285)], { suggestMin: 0.95 });
+    expect(d.band).toBe('none');
+  });
+});
+
+describe('rankCandidates', () => {
+  it('orders by score, rejected last, keeping input order on full ties', () => {
+    const r = rankCandidates({ name: 'Tata Salt', unit: '1 kg', price: 28 }, [
+      { title: 'Aashirvaad Salt', quantity: '1 kg', price: 28 },
+      { title: 'Tata Salt', quantity: '500 g', price: 15 },
+      { title: 'Tata Salt', quantity: '1 kg', price: 28 },
+    ]);
+    expect(r.map(x => `${x.candidate.title} ${x.candidate.quantity}`)).toEqual(['Tata Salt 1 kg', 'Tata Salt 500 g', 'Aashirvaad Salt 1 kg']);
+  });
+});
+
+describe('isSameProduct stays strict', () => {
+  it('rejects a superset variant and the ltr/kg class conflict', () => {
+    expect(isSameProduct({ name: 'Cadbury Dairy Milk', unit: '50 g' }, { name: 'Cadbury Dairy Milk Silk', unit: '50 g' })).toBe(false);
+    expect(isSameProduct({ name: 'Tata Salt', unit: '1 kg' }, { name: 'Tata Salt', unit: '1 ltr' })).toBe(false);
+    expect(isSameProduct({ name: 'Onion', unit: '1 kg' }, { name: 'Onion', unit: '3 pcs' })).toBe(false);
+  });
+  it('accepts spelling-only differences at the same size', () => {
+    expect(isSameProduct({ name: "Lay's Magic Masala", unit: '50 g' }, { name: 'Lays Magic Masala', unit: '50 g' })).toBe(true);
+    expect(isSameProduct({ name: 'Eggs', unit: '12 pcs' }, { name: 'Eggs', unit: '1 dozen' })).toBe(true);
+  });
+});
+
+describe('buildQueryLadder', () => {
+  it('goes from the full title to the head noun', () => {
+    expect(buildQueryLadder('Amul Taaza Homogenised Toned Milk 500 ml')).toEqual([
+      'Amul Taaza Homogenised Toned Milk 500 ml',
+      'amul taaza toned milk',
+      'amul taaza toned',
+      'milk',
+    ]);
+  });
+  it('keeps multi-word brands together and drops brackets', () => {
+    expect(buildQueryLadder("Mother Dairy Classic Curd (Dahi) 400 g")).toEqual([
+      'Mother Dairy Classic Curd (Dahi) 400 g',
+      'mother dairy curd',
+      'curd',
+    ]);
+  });
+  it('drops duplicate and empty rungs', () => {
+    expect(buildQueryLadder('Onion')).toEqual(['Onion']);
+    expect(buildQueryLadder('Onion (Pyaz)')).toEqual(['Onion (Pyaz)', 'onion']);
+    expect(buildQueryLadder('')).toEqual([]);
   });
 });
