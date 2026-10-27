@@ -223,6 +223,28 @@ describe('scoreMatch', () => {
     expect(scoreMatch(t('Amul Milk', '1 L', 60), t('Amul Flavoured Milk', '1 L', 62)).rejected).toBe(false);
   });
 
+  it('across brands, every product word must agree once the brand is set aside', () => {
+    // A category, form or packaging word on one side only is a suggestion at most...
+    for (const [a, b, word] of [
+      ['Amul Butter', 'Butter Biscuits', 'biscuit'], ['Amul Butter', 'Cooking Butter', 'cooking'],
+      ['Tata Tea', 'Instant Tea', 'instant'], ['Tata Tea', 'Tea Bags', 'bag'], ['Tata Tea', 'Tea Cup', 'cup'],
+      ['Colgate Toothpaste', 'Toothpaste Combo', 'combo'], ['Amul Butter', 'Mother Dairy Butter Cookies', 'cookie'],
+    ]) {
+      const d = scoreMatch(t(a, '100 g', 60), t(b, '100 g', 60));
+      expect(d).toMatchObject({ rejected: false, autoEligible: false });
+      expect(d.reasons).toContain(`extra words here: ${word}`);
+      // ...from either side
+      expect(scoreMatch(t(b, '100 g', 60), t(a, '100 g', 60)).reasons).toContain(`missing words: ${word}`);
+    }
+    // ...while plain descriptors and packaging may differ.
+    for (const [a, b] of [['Tata Iodised Salt', 'Salt'], ['Amul Butter', 'Pasteurised Butter'], ['Real Orange Juice', 'Natural Orange Juice'],
+      ['Aashirvaad Shudh Chakki Atta', 'Pillsbury Chakki Fresh Atta'], ['Fortune Sunflower Oil', 'Sunflower Oil (Pouch)']]) {
+      expect(scoreMatch(t(a, '1 kg', 100), t(b, '1 kg', 100)).autoEligible).toBe(true);
+    }
+    // Within one brand those words are ignored as before.
+    expect(scoreMatch(t('Tata Tea Premium', '500 g', 270), t('Tata Tea Premium Leaf Tea Pouch', '500 g', 275)).autoEligible).toBe(true);
+  });
+
   it('explains a different pack size with the price difference', () => {
     const d = scoreMatch(t('Aashirvaad Atta', '500 g', 40), t('Aashirvaad Atta', '1 kg', 52));
     expect(d.rejected).toBe(false);
@@ -398,6 +420,22 @@ describe('decideMatch across brands', () => {
     const strict = decideMatch({ name: 'Indian Style Paneer', unit: '200 g' }, paneer, { crossBrand: false });
     expect(strict.band).toBe('suggest');
     expect(strict.reasons.some(r => r.startsWith('close runner-up: '))).toBe(true);
+  });
+  // Recorded before the cross-brand product-word check existed: the strict path must not move.
+  it.each([
+    ['Amul Butter', '100 g', 58, 'Butter Biscuits', '100 g', 58, 'suggest', 0.91, false, ['no brand on this listing']],
+    ['Tata Tea', '250 g', 140, 'Tea Bags', '250 g', 140, 'suggest', 0.91, false, ['no brand on this listing']],
+    ['Tata Salt', '1 kg', 28, 'Salt', '1 kg', 27, 'suggest', 0.91, false, ['no brand on this listing']],
+    ['Colgate Toothpaste', '150 g', 120, 'Toothpaste Combo', '150 g', 120, 'suggest', 0.91, false, ['no brand on this listing']],
+    ['Amul Milk', '500 ml', 30, 'Milk Drink', '500 ml', 30, 'suggest', 0.91, false, ['no brand on this listing']],
+    ['Haldi Powder', '100 g', 35, 'Tata Sampann Haldi Powder', '100 g', 38, 'suggest', 0.753, false,
+      ['brand only on this listing (Tatasampann)', 'extra words here: tatasampann']],
+    ['Tata Salt', '1 kg', 28, 'Aashirvaad Salt', '1 kg', 28, 'none', 0, true, ['different brand (Tata vs Aashirvaad)']],
+    ['Amul Butter', '100 g', 58, 'Mother Dairy Butter Cookies', '100 g', 58, 'none', 0, true, ['different brand (Amul vs Motherdairy)']],
+  ] as const)('crossBrand: false is unchanged: %s ~ %s', (a, au, ap, b, bu, bp, band, score, rejected, reasons) => {
+    const target = { name: a, unit: au, price: ap }, candidate = { name: b, unit: bu, price: bp };
+    expect(decideMatch(target, [candidate], { crossBrand: false }).band).toBe(band);
+    expect(scoreMatch(target, candidate, { crossBrand: false })).toMatchObject({ score, rejected, autoEligible: false, reasons: [...reasons] });
   });
 });
 

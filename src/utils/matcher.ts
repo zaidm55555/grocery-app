@@ -7,8 +7,9 @@
 //    variant words, pack size, unit price and stock, with hard rejects for things
 //    that can never be the same product (Zero vs regular, different product
 //    words, weight vs volume...). Brand is a soft factor here (ALLOW_CROSS_BRAND):
-//    another brand's listing of the same product type, at the same size and a
-//    close unit price, may link, always with a 'different brand (X → Y)'
+//    another brand's listing of the same product type (every product word
+//    agreeing once the brands are set aside, HARMLESS descriptors aside), at the
+//    same size and a close unit price, may link, always with a 'different brand (X → Y)'
 //    reason, and a same-brand listing always outranks it. `decideMatch` turns
 //    the scores into a band:
 //    'auto' (safe to link without asking), 'suggest' (show it, user confirms) or
@@ -227,6 +228,23 @@ const GENERIC = new Set([
 ]);
 // "hybrid" (tomato) is the default variety on both apps, so it is descriptive.
 
+// Of the GENERIC and STOPWORDS words, the ones that never change which product
+// a listing is: marketing and quality words, processing every listing of the
+// staple has, packaging that is never itself the product, filler and offers.
+// Within one brand every GENERIC / STOPWORDS word is ignored as usual. Across
+// brands (or a brand on one listing only) the product words must agree once
+// the brand is set aside, and these are the only words that may still differ:
+// any other one ("Butter Biscuits", "Instant Tea", "Tea Bags", "Toothpaste
+// Combo", "Cooking Butter") caps the pair at a suggestion.
+const HARMLESS = [
+  'premium', 'pure', 'shudh', 'natural', 'classic', 'original', 'regular', 'new', 'improved', 'best', 'quality',
+  'superior', 'value', 'family', 'healthy', 'tasty', 'delicious', 'rich', 'taste', 'fresh', 'india', 'indian',
+  'farm', 'grown', 'hybrid', 'iodised', 'pasteurised', 'homogenised', 'refined', 'chakki', 'edible', 'hygienic',
+  'packed', 'packaged', 'pack', 'packet', 'pkt', 'pouch', 'carton', 'tetra', 'tetrapak', 'pak', 'pc', 'pcs', 'piece',
+  'of', 'with', 'and', 'the', 'a', 'an', 'for', 'in', 'by', 'from', 'to', 'on', 'approx', 'each', 'per', 'net', 'wt',
+  'qty', 'x', 'buy', 'get', 'offer', 'save', 'off', 'rs', 'inr', 'mrp', 'free', 'only',
+];
+
 // Origin / growing words: they say how a product was grown, never who made it,
 // so a title leading with one has no brand there ("Desi Tomato", "Organic Ginger").
 const ORIGIN = ['desi', 'organic', 'farm', 'homegrown', 'hydroponic'];
@@ -337,6 +355,7 @@ const rawTokens = (str: string | undefined, strict = false) => phraseTokens(stri
 const norm = (list: Iterable<string>) => new Set([...list].map(normalizeWord));
 const STOP_NORM = new Set([...STOPWORDS, ...norm(STOPWORDS)]);
 const GENERIC_NORM = new Set([...GENERIC, ...norm(GENERIC)]);
+const HARMLESS_NORM = new Set([...HARMLESS, ...norm(HARMLESS)]);
 const HARD_NORM = new Set([...HARD_QUALIFIERS, ...norm(HARD_QUALIFIERS)]);
 const CROSS_KIND_NORM = new Set([...CROSS_KIND, ...norm(CROSS_KIND)]);
 const CONFLICT_GROUPS = CONFLICT_GROUPS_RAW.map(g => [...new Set(g.map(normalizeWord))]);
@@ -582,6 +601,11 @@ export function sizeScore(target: MatchableItem, candidate: MatchableItem): numb
 interface Analysed extends TitleParts {
   brands: string[];
   distinctive: Set<string>;
+  /**
+   * STOPWORDS words in the title that are not HARMLESS ("Tea Cup", "Tea Bags",
+   * "Toothpaste Combo"). Ignored within one brand; product words across brands.
+   */
+  stopTypes: string[];
   qty: ParsedQuantity | null;
   price: number;
   inStock: boolean;
@@ -594,8 +618,10 @@ type AnalysedBase = Omit<Analysed, 'tokens' | 'brands' | 'distinctive'>;
 const isUmbrella = (t: string) => BRAND_PARENT.has(t) && !BRAND_PARENT.get(t);
 
 function analyse(item: MatchableItem): Analysed {
-  const { tokens, aliases, alts, bracketOnly } = parseTitle(itemName(item));
-  return withTokens(tokens, { aliases, alts, bracketOnly, qty: quantityOf(item), price: Number(item.price) || 0, inStock: item.inStock !== false });
+  const name = itemName(item);
+  const { tokens, aliases, alts, bracketOnly } = parseTitle(name);
+  const stopTypes = [...new Set(rawTokens(name).filter(t => STOP_NORM.has(t) && !HARMLESS_NORM.has(t)))];
+  return withTokens(tokens, { aliases, alts, bracketOnly, stopTypes, qty: quantityOf(item), price: Number(item.price) || 0, inStock: item.inStock !== false });
 }
 
 function withTokens(tokens: string[], base: AnalysedBase): Analysed {
@@ -608,6 +634,13 @@ function withTokens(tokens: string[], base: AnalysedBase): Analysed {
 }
 
 const allWords = (x: Analysed) => new Set([...x.tokens, ...x.aliases]);
+
+// What the product is, read strictly for another brand's twin (`x` with its
+// brand set aside): the distinctive words plus every GENERIC / STOPWORDS word
+// that is not HARMLESS ("Biscuits", "Instant", "Cooking", "Bags", "Combo").
+const typeWords = (x: Analysed) => new Set([
+  ...x.distinctive, ...x.tokens.filter(t => GENERIC_NORM.has(t) && !HARMLESS_NORM.has(t)), ...x.stopTypes,
+]);
 
 // Reads `x` the way `other` is written: of each slash pair, the side `other`
 // does not use becomes an alias ("Sabja/ Basil Seeds" vs "Basil Seeds"), and
@@ -866,6 +899,16 @@ function scoreAnalysed(rawA: Analysed, rawB: Analysed, crossBrand: boolean): Mat
     if (priceGate && !DA.size) {
       capped = true;
       reasons.push('only the product category matches');
+    } else if (priceGate) {
+      // Across brands the product words must agree, plain descriptors aside:
+      // "Amul Butter" vs "Butter Biscuits", "Tata Tea" vs "Tea Bags".
+      const TA = typeWords(NA), TB = typeWords(NB);
+      const plusA = [...TA].filter(t => !TB.has(t)), plusB = [...TB].filter(t => !TA.has(t));
+      if (plusA.length || plusB.length) {
+        capped = true;
+        reasons.push(plusA.length && plusB.length ? `different words (${plusA.join(' ')} vs ${plusB.join(' ')})`
+          : plusB.length ? `extra words here: ${plusB.join(', ')}` : `missing words: ${plusA.join(', ')}`);
+      }
     }
   }
   name *= nameMult;
