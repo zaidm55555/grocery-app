@@ -110,6 +110,8 @@ export const MATCH_PAIRS: MatchPair[] = [
   p('auto', 'N1', ['Ariel Matic Top Load Detergent Powder', '1 kg', 250], ['Ariel Matic Top Load Washing Powder', '1 kg', 245]),
   p('auto', 'N3', ['Tide Plus Double Power Jasmine & Rose', '1 kg', 120], ['Tide Plus Double Power Detergent Powder Jasmine and Rose', '1 kg', 118]),
   p('auto', 'N1', ['Dove Cream Beauty Bathing Bar', '100 g', 60], ['Dove Cream Beauty Bar', '100 g', 58]),
+  // Known miss (suggest): "Pears" is not a known brand, so no shared brand vouches
+  // for "Soap" vs "Bathing Bar" and the differing product words cap it.
   p('auto', 'N3', ['Pears Pure & Gentle Soap', '125 g', 55], ['Pears Pure and Gentle Bathing Bar', '125 g', 54]),
   p('auto', 'N3', ["Ching's Secret Schezwan Chutney", '250 g', 90], ['Chings Secret Schezwan Chutney', '250 g', 88]),
   p('auto', 'N1', ['Fortune Sunlite Refined Sunflower Oil', '1 L', 155], ['Fortune Sunlite Refined Sunflower Oil', '910 ml', 145]),
@@ -365,6 +367,8 @@ export const MATCH_PAIRS: MatchPair[] = [
   p('auto', 'xbrand', ['Aashirvaad Atta', '5 kg', 260], ['Pillsbury Chakki Fresh Atta', '5 kg', 245]),
   p('auto', 'xbrand', ['Fortune Sunflower Oil', '1 L', 155], ['Saffola Sunflower Oil', '1 L', 165]),
   p('auto', 'xbrand', ['Fortune Kachi Ghani Mustard Oil', '1 L', 175], ['Dhara Kachi Ghani Mustard Oil', '1 L', 170]),
+  // Known miss (suggest): across brands a product line after the brand ("Good
+  // Day") is a product word, and only this side has one.
   p('auto', 'xbrand', ['Britannia Good Day Butter Cookies', '200 g', 35], ['Sunfeast Butter Cookies', '200 g', 30]),
   p('auto', 'xbrand', ["Lay's Classic Salted", '52 g', 20], ['Uncle Chipps Classic Salted', '52 g', 20]),
   p('auto', 'xbrand', ['Coca-Cola', '750 ml', 40], ['Thums Up', '750 ml', 40]),
@@ -374,6 +378,9 @@ export const MATCH_PAIRS: MatchPair[] = [
   p('auto', 'xbrand', ['India Gate Basmati Rice', '5 kg', 800], ['Kohinoor Basmati Rice', '5 kg', 760]),
   p('auto', 'xbrand', ['Amul Taaza Toned Milk', '500 ml', 27], ['Nandini Taaza Toned Milk', '500 ml', 26]),
   p('auto', 'xbrand', ['Amul Butter', '100 g', 58], ['Mother Dairy Butter', '100 g', 56]),
+  // Known miss (suggest): "Mineral" vs "Drinking" differ once the brands are set
+  // aside (they are separate FSSAI categories); folding both into "water" would
+  // move the crossBrand: false path, so it stays a suggestion.
   p('auto', 'xbrand', ['Bisleri Mineral Water', '1 L', 20], ['Kinley Drinking Water', '1 L', 20]),
   p('auto', 'xbrand', ['Eggoz Eggs', '6 pcs', 60], ['Eggs', '6 pcs', 55]),
   // Neither title names a known brand: an unknown extra word may be a type word.
@@ -488,4 +495,60 @@ export const MATCH_PAIRS: MatchPair[] = [
   p('auto', 'xbrand', ['Tata Tea Premium', '250 g', 140], ['Red Label Tea', '250 g', 138]),
   p('auto', 'xbrand', ['Real Orange Juice', '1 L', 120], ['Natural Orange Juice', '1 L', 115]),
   p('auto', 'xbrand', ['Eggoz Farm Fresh Eggs', '6 pcs', 60], ['Henfruit Eggs', '6 pcs', 58]),
+
+  // ---------- nobrand: no brand on either title, so nothing vouches for the
+  // product but its words: they must agree (plain descriptors aside), however
+  // well size and price agree. Either order.
+  p('none', 'nobrand', ['Butter', '100 g', 58], ['Butter Biscuits', '100 g', 58]),
+  p('none', 'nobrand', ['Butter Biscuits', '100 g', 58], ['Butter', '100 g', 58]),
+  p('none', 'nobrand', ['Butter', '100 g', 58], ['Butter Cookies', '100 g', 58]),
+  p('suggest', 'nobrand', ['Butter', '100 g', 58], ['Cooking Butter', '100 g', 58]),
+  p('none', 'nobrand', ['Onion', '1 kg', 40], ['Onion Powder', '1 kg', 40]),
+  p('none', 'nobrand', ['Onion Powder', '1 kg', 40], ['Onion', '1 kg', 40]),
+  p('none', 'nobrand', ['Milk', '500 g', 60], ['Milk Powder', '500 g', 60]),
+  p('none', 'nobrand', ['Milk Powder', '500 g', 60], ['Milk', '500 g', 60]),
+  p('none', 'nobrand', ['Salt', '1 kg', 28], ['Salt Biscuits', '1 kg', 28]),
+  p('none', 'nobrand', ['Tea', '250 g', 140], ['Tea Cup', '250 g', 140]),
+  p('none', 'nobrand', ['Tea Cup', '250 g', 140], ['Tea', '250 g', 140]),
+  p('suggest', 'nobrand', ['Tea', '250 g', 140], ['Tea Bags', '250 g', 140]),
+  p('none', 'nobrand', ['Tea', '250 g', 140], ['Instant Tea', '250 g', 140]),
+  p('none', 'nobrand', ['Ginger', '100 g', 30], ['Ginger Powder', '100 g', 30]),
+  p('none', 'nobrand', ['Garlic', '200 g', 40], ['Garlic Powder', '200 g', 40]),
+  p('none', 'nobrand', ['Coffee', '100 g', 300], ['Coffee Biscuits', '100 g', 300]),
+  p('suggest', 'nobrand', ['Coffee', '100 g', 300], ['Instant Coffee', '100 g', 300]),
+  p('none', 'nobrand', ['Noodles', '70 g', 14], ['Cup Noodles', '70 g', 14]),
+  p('none', 'nobrand', ['Basmati Rice', '1 kg', 180], ['Instant Basmati Rice', '1 kg', 180]),
+  p('none', 'nobrand', ['Chocolate', '100 g', 100], ['Chocolate Biscuits', '100 g', 100]),
+  p('suggest', 'nobrand', ['Orange Juice', '1 L', 120], ['Orange Drink', '1 L', 120]),
+  p('none', 'nobrand', ['Peanuts', '500 g', 90], ['Peanut Chips', '500 g', 90]),
+  p('none', 'nobrand', ['Cheese', '200 g', 120], ['Cheese Biscuits', '200 g', 120]),
+  p('suggest', 'nobrand', ['Sugar', '1 kg', 48], ['Sugar Sachets', '1 kg', 48]),
+  p('suggest', 'nobrand', ['Jaggery', '1 kg', 80], ['Jaggery Powder', '1 kg', 80]),
+  // An unknown brand on both titles vouches for nothing either.
+  p('suggest', 'nobrand', ['Licious Chicken Curry Cut', '500 g', 200], ['Licious Chicken Curry Cut Combo', '500 g', 200]),
+  p('auto', 'nobrand', ['Butter', '100 g', 58], ['Pasteurised Butter', '100 g', 56]),
+  p('auto', 'nobrand', ['Salt', '1 kg', 28], ['Iodised Salt', '1 kg', 27]),
+  p('auto', 'nobrand', ['Onion', '1 kg', 40], ['Fresh Onion', '1 kg', 42]),
+  p('auto', 'nobrand', ['Basmati Rice', '1 kg', 180], ['Premium Basmati Rice', '1 kg', 175]),
+  p('auto', 'nobrand', ['Toned Milk', '500 ml', 27], ['Toned Milk (Pouch)', '500 ml', 27]),
+
+  // ---------- line words: across brands, a product line named after the brand
+  // ("Britannia Good Day", "Kelloggs Chocos") says which product it is, so the
+  // other title must name it too. Within one brand or line it changes nothing.
+  p('none', 'xbrand', ['Amul Butter', '100 g', 58], ['Britannia Good Day Butter', '100 g', 58]),
+  p('none', 'xbrand', ['Britannia Good Day Butter', '100 g', 58], ['Amul Butter', '100 g', 58]),
+  p('none', 'xbrand', ['Kelloggs Cornflakes', '500 g', 180], ['Bagrrys Chocos Cornflakes', '500 g', 180]),
+  p('none', 'xbrand', ['Bagrrys Corn Flakes', '500 g', 180], ['Kelloggs Chocos Corn Flakes', '500 g', 180]),
+  p('none', 'xbrand', ['Cornflakes', '500 g', 180], ['Kelloggs Chocos Cornflakes', '500 g', 180]),
+  p('none', 'xbrand', ['Amul Chocolate', '100 g', 100], ['Cadbury Bournvita Chocolate', '100 g', 100]),
+  p('none', 'xbrand', ['Amul Chocolate', '100 g', 100], ['Cadbury Oreo Chocolate', '100 g', 100]),
+  p('none', 'xbrand', ['Mother Dairy Milk', '400 g', 140], ['Nestle Milkmaid Milk', '400 g', 140]),
+  p('none', 'xbrand', ['Amul Butter', '100 g', 58], ['Parle Monaco Butter', '100 g', 58]),
+  p('suggest', 'xbrand', ['Kissan Tomato Ketchup', '500 g', 120], ['Nestle Maggi Tomato Ketchup', '500 g', 125]),
+  p('auto', 'line', ['Nestle Maggi Masala Noodles', '70 g', 14], ['Maggi Masala Noodles', '70 g', 14]),
+  p('auto', 'line', ['Britannia Good Day Butter Cookies', '200 g', 35], ['Good Day Butter Cookies', '200 g', 35]),
+  p('auto', 'line', ['Kelloggs Chocos', '375 g', 190], ['Chocos', '375 g', 185]),
+  p('auto', 'line', ['Brooke Bond Red Label Tea', '500 g', 280], ['Red Label Tea', '500 g', 275]),
+  // Same brand: a category word is still read as restating the line (as before).
+  p('auto', 'line', ['Maggi Masala Noodles', '70 g', 14], ['Maggi Masala Instant Noodles', '70 g', 14]),
 ];

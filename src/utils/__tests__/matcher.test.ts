@@ -245,6 +245,36 @@ describe('scoreMatch', () => {
     expect(scoreMatch(t('Tata Tea Premium', '500 g', 270), t('Tata Tea Premium Leaf Tea Pouch', '500 g', 275)).autoEligible).toBe(true);
   });
 
+  it('with no brand on either title, every product word must agree too', () => {
+    for (const [a, b, word] of [['Butter', 'Butter Biscuits', 'biscuit'], ['Tea', 'Tea Cup', 'cup'], ['Onion', 'Onion Powder', 'powder'],
+      ['Milk', 'Milk Powder', 'powder'], ['Salt', 'Salt Biscuits', 'biscuit'], ['Noodles', 'Cup Noodles', 'cup']]) {
+      for (const crossBrand of [true, false]) {
+        const d = scoreMatch(t(a, '100 g', 60), t(b, '100 g', 60), { crossBrand });
+        expect(d).toMatchObject({ rejected: false, autoEligible: false, reasons: [`extra words here: ${word}`] });
+        expect(scoreMatch(t(b, '100 g', 60), t(a, '100 g', 60), { crossBrand }).reasons).toEqual([`missing words: ${word}`]);
+      }
+    }
+    for (const [a, b] of [['Salt', 'Iodised Salt'], ['Butter', 'Pasteurised Butter'], ['Indian Style Paneer', 'Paneer'],
+      ['Eggs', 'Farm Eggs Tray'], ['Toned Milk', 'Toned Milk (Pouch)']]) {
+      expect(scoreMatch(t(a, '1 kg', 100), t(b, '1 kg', 100)).autoEligible).toBe(true);
+    }
+    // A shared brand still vouches for its product as before.
+    expect(scoreMatch(t('Maggi Masala Noodles', '70 g', 14), t('Maggi Masala Instant Noodles', '70 g', 14)).autoEligible).toBe(true);
+  });
+
+  it('across brands, a product line named after the brand is a product word', () => {
+    const goodDay = scoreMatch(t('Amul Butter', '100 g', 58), t('Britannia Good Day Butter', '100 g', 58));
+    expect(goodDay).toMatchObject({ rejected: false, autoEligible: false, brandRelation: 'different' });
+    expect(goodDay.reasons).toEqual(['different brand (Amul → Britannia)', 'extra words here: goodday']);
+    expect(scoreMatch(t('Kelloggs Cornflakes', '500 g', 180), t('Bagrrys Chocos Cornflakes', '500 g', 180)).reasons)
+      .toContain('extra words here: choco');
+    expect(scoreMatch(t('Cornflakes', '500 g', 180), t('Kelloggs Chocos Cornflakes', '500 g', 180)).autoEligible).toBe(false);
+    // The brand the listing is sold under is not a product word, and one line agrees with itself and its parent.
+    expect(scoreMatch(t('Maggi Masala Noodles', '70 g', 14), t('Yippee Masala Noodles', '70 g', 14)).autoEligible).toBe(true);
+    expect(scoreMatch(t('Nestle Maggi Masala Noodles', '70 g', 14), t('Maggi Masala Noodles', '70 g', 14)).autoEligible).toBe(true);
+    expect(scoreMatch(t('Britannia Good Day Butter Cookies', '200 g', 35), t('Good Day Butter Cookies', '200 g', 35)).autoEligible).toBe(true);
+  });
+
   it('explains a different pack size with the price difference', () => {
     const d = scoreMatch(t('Aashirvaad Atta', '500 g', 40), t('Aashirvaad Atta', '1 kg', 52));
     expect(d.rejected).toBe(false);
@@ -436,6 +466,26 @@ describe('decideMatch across brands', () => {
     const target = { name: a, unit: au, price: ap }, candidate = { name: b, unit: bu, price: bp };
     expect(decideMatch(target, [candidate], { crossBrand: false }).band).toBe(band);
     expect(scoreMatch(target, candidate, { crossBrand: false })).toMatchObject({ score, rejected, autoEligible: false, reasons: [...reasons] });
+  });
+  it.each([
+    ['Amul Butter', '100 g', 58, 'Britannia Good Day Butter', '100 g', 58, 'none', 0, false, true, ['different brand (Amul vs Britannia)']],
+    ['Butter', '100 g', 58, 'Pasteurised Butter', '100 g', 56, 'auto', 0.94, true, false, []],
+    ['Indian Style Paneer', '200 g', 90, 'Paneer', '200 g', 90, 'auto', 0.94, true, false, []],
+  ] as const)('crossBrand: false is unchanged: %s ~ %s (strict)', (a, au, ap, b, bu, bp, band, score, autoEligible, rejected, reasons) => {
+    const target = { name: a, unit: au, price: ap }, candidate = { name: b, unit: bu, price: bp };
+    expect(decideMatch(target, [candidate], { crossBrand: false }).band).toBe(band);
+    expect(scoreMatch(target, candidate, { crossBrand: false })).toMatchObject({ score, rejected, autoEligible, reasons: [...reasons] });
+  });
+  // The one change on the strict path, and only a tightening: with no brand on either
+  // title, a product word on one side only (auto before, same score) now asks.
+  it.each([
+    ['Butter', 'Butter Biscuits', 'extra words here: biscuit'],
+    ['Tea', 'Tea Cup', 'extra words here: cup'],
+    ['Onion Powder', 'Onion', 'missing words: powder'],
+  ])('crossBrand: false only tightens: %s ~ %s is a suggestion now', (a, b, reason) => {
+    const target = { name: a, unit: '100 g', price: 58 }, candidate = { name: b, unit: '100 g', price: 58 };
+    expect(decideMatch(target, [candidate], { crossBrand: false }).band).toBe('suggest');
+    expect(scoreMatch(target, candidate, { crossBrand: false })).toMatchObject({ score: 0.97, rejected: false, autoEligible: false, reasons: [reason] });
   });
 });
 

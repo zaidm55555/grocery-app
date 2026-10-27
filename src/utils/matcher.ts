@@ -231,16 +231,20 @@ const GENERIC = new Set([
 // Of the GENERIC and STOPWORDS words, the ones that never change which product
 // a listing is: marketing and quality words, processing every listing of the
 // staple has, packaging that is never itself the product, filler and offers.
-// Within one brand every GENERIC / STOPWORDS word is ignored as usual. Across
-// brands (or a brand on one listing only) the product words must agree once
-// the brand is set aside, and these are the only words that may still differ:
-// any other one ("Butter Biscuits", "Instant Tea", "Tea Bags", "Toothpaste
-// Combo", "Cooking Butter") caps the pair at a suggestion.
+// Within one brand every GENERIC / STOPWORDS word is ignored as usual. When no
+// shared brand vouches for the product (another brand, a brand on one listing
+// only, or no brand on either) the product words must agree once the brand is
+// set aside, and these are the only words that may still differ: any other
+// one ("Butter Biscuits", "Instant Tea", "Tea Bags", "Toothpaste Combo",
+// "Cooking Butter") caps the pair at a suggestion. "Style" only carries the
+// word before it ("Indian Style" is as harmless as "Indian", "Greek Style"
+// differs by "Greek"); a tray only holds the product ("Farm Eggs Tray").
 const HARMLESS = [
   'premium', 'pure', 'shudh', 'natural', 'classic', 'original', 'regular', 'new', 'improved', 'best', 'quality',
   'superior', 'value', 'family', 'healthy', 'tasty', 'delicious', 'rich', 'taste', 'fresh', 'india', 'indian',
   'farm', 'grown', 'hybrid', 'iodised', 'pasteurised', 'homogenised', 'refined', 'chakki', 'edible', 'hygienic',
-  'packed', 'packaged', 'pack', 'packet', 'pkt', 'pouch', 'carton', 'tetra', 'tetrapak', 'pak', 'pc', 'pcs', 'piece',
+  'style', 'packed', 'packaged', 'pack', 'packet', 'pkt', 'pouch', 'carton', 'tetra', 'tetrapak', 'pak', 'tray',
+  'pc', 'pcs', 'piece',
   'of', 'with', 'and', 'the', 'a', 'an', 'for', 'in', 'by', 'from', 'to', 'on', 'approx', 'each', 'per', 'net', 'wt',
   'qty', 'x', 'buy', 'get', 'offer', 'save', 'off', 'rs', 'inr', 'mrp', 'free', 'only',
 ];
@@ -635,12 +639,18 @@ function withTokens(tokens: string[], base: AnalysedBase): Analysed {
 
 const allWords = (x: Analysed) => new Set([...x.tokens, ...x.aliases]);
 
-// What the product is, read strictly for another brand's twin (`x` with its
-// brand set aside): the distinctive words plus every GENERIC / STOPWORDS word
-// that is not HARMLESS ("Biscuits", "Instant", "Cooking", "Bags", "Combo").
-const typeWords = (x: Analysed) => new Set([
-  ...x.distinctive, ...x.tokens.filter(t => GENERIC_NORM.has(t) && !HARMLESS_NORM.has(t)), ...x.stopTypes,
+// The GENERIC / STOPWORDS words of `x` that are not HARMLESS ("Biscuits",
+// "Instant", "Cooking", "Bags", "Combo"): the product words that the distinctive
+// set leaves out, for when no shared brand vouches for the product.
+const looseWords = (x: Analysed) => new Set([
+  ...x.tokens.filter(t => GENERIC_NORM.has(t) && !HARMLESS_NORM.has(t)), ...x.stopTypes,
 ]);
+
+// Product lines named after the listing's brand ("Britannia Good Day", "Nestle
+// Maggi", "Bagrrys Chocos"). The first brand is who sells it; a line after it
+// names the product (Good Day is a cookie), so across brands it is a product word.
+const subLines = (x: Analysed) =>
+  x.brands.slice(1).filter(b => !isUmbrella(b) && !ancestors(x.brands[0]).includes(b));
 
 // Reads `x` the way `other` is written: of each slash pair, the side `other`
 // does not use becomes an alias ("Sabja/ Basil Seeds" vs "Basil Seeds"), and
@@ -869,6 +879,24 @@ function scoreAnalysed(rawA: Analysed, rawB: Analysed, crossBrand: boolean): Mat
   const onlyA = [...DA].filter(t => !DB.has(t));
   const onlyB = [...DB].filter(t => !DA.has(t));
   let name: number;
+  // When no shared brand vouches for the product (another brand, a brand on one
+  // listing only, or no brand on either), every product word must agree,
+  // HARMLESS descriptors aside: "Amul Butter" or "Butter" vs "Butter Biscuits",
+  // "Tea" vs "Tea Cup", "Onion" vs "Onion Powder". Across brands a product line
+  // after the brand counts too ("Amul Butter" vs "Britannia Good Day Butter").
+  const strictWords = priceGate > 0 || (!A.brands.length && !B.brands.length);
+  const capLooseWords = () => {
+    const wa = looseWords(NA), wb = looseWords(NB);
+    if (priceGate) {
+      subLines(A).forEach(t => wa.add(t));
+      subLines(B).forEach(t => wb.add(t));
+    }
+    const plusA = [...wa].filter(t => !wb.has(t)), plusB = [...wb].filter(t => !wa.has(t));
+    if (!plusA.length && !plusB.length) return;
+    capped = true;
+    reasons.push(plusA.length && plusB.length ? `different words (${plusA.join(' ')} vs ${plusB.join(' ')})`
+      : plusB.length ? `extra words here: ${plusB.join(', ')}` : `missing words: ${plusA.join(', ')}`);
+  };
   if (DA.size && DB.size && !shared.length) return reject('different product');
   // Another brand whose title has product words only on one side ("Amul Butter"
   // vs "Maggi Noodles"): nothing says it is the same kind of product.
@@ -884,6 +912,7 @@ function scoreAnalysed(rawA: Analysed, rawB: Analysed, crossBrand: boolean): Mat
     name = 1;
     parts.variant = 1;
     reasons.push(`bracket read as a translation (${(onlyA.length ? onlyA : onlyB).join(' ')}): same size and price`);
+    capLooseWords();
   } else if (onlyA.length || onlyB.length) {
     const extras = onlyA.length ? onlyA : onlyB;
     name = 1 - Math.min(0.5, 0.25 * extras.length);
@@ -899,16 +928,8 @@ function scoreAnalysed(rawA: Analysed, rawB: Analysed, crossBrand: boolean): Mat
     if (priceGate && !DA.size) {
       capped = true;
       reasons.push('only the product category matches');
-    } else if (priceGate) {
-      // Across brands the product words must agree, plain descriptors aside:
-      // "Amul Butter" vs "Butter Biscuits", "Tata Tea" vs "Tea Bags".
-      const TA = typeWords(NA), TB = typeWords(NB);
-      const plusA = [...TA].filter(t => !TB.has(t)), plusB = [...TB].filter(t => !TA.has(t));
-      if (plusA.length || plusB.length) {
-        capped = true;
-        reasons.push(plusA.length && plusB.length ? `different words (${plusA.join(' ')} vs ${plusB.join(' ')})`
-          : plusB.length ? `extra words here: ${plusB.join(', ')}` : `missing words: ${plusA.join(', ')}`);
-      }
+    } else if (strictWords) {
+      capLooseWords();
     }
   }
   name *= nameMult;
