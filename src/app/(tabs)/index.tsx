@@ -16,6 +16,7 @@ import SharedListingSheet from '../../components/SharedListingSheet';
 import AiModeSheet from '../../components/AiModeSheet';
 import { lineIdxsForListing, listingQty } from '../../utils/sharedListing';
 import { shouldShowBlinkitDirectNote } from '../../utils/stockNotes';
+import { emptySearchOutcome, splitSearchErrors } from '../../utils/searchOutcome';
 import { resolveAreaName } from '../../utils/location';
 import { isBlinkitBridgeConnected, subscribeBlinkitBridgeStatus } from '../../services/blinkitBridge';
 import { isAddressSyncing, waitForAddressSync, subscribeAddressSync, syncDeliveryAddresses, subscribeLocationReset } from '../../services/addressSync';
@@ -171,6 +172,12 @@ export default function SearchScreen() {
   const [cartItems, setCartItems] = useState<{ product: UnifiedProduct; quantity: number }[]>([]);
   const [storeFilter, setStoreFilter] = useState<StoreFilter>('all');
   const [platformErrors, setPlatformErrors] = useState<Partial<Record<Platform, string>>>({});
+  // The query of the search that last ran: the field's text can change after it,
+  // and typed text that was never searched must not read as "no results".
+  const [searchedQuery, setSearchedQuery] = useState<string | null>(null);
+  const [searchFailed, setSearchFailed] = useState(false);
+  // Bumped by every search and clear, so a superseded search's late answers are dropped.
+  const searchRunRef = useRef(0);
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const pillRef = useRef<ViewInstance>(null);
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
@@ -218,7 +225,10 @@ export default function SearchScreen() {
   const lastLocationRef = useRef<{ latitude: number; longitude: number } | null>(null);
 
   const resetSearchState = useCallback(() => {
+    searchRunRef.current++;
     setQuery('');
+    setSearchedQuery(null);
+    setSearchFailed(false);
     setLoading(false);
     setProducts([]);
     setPlatformErrors({});
@@ -295,33 +305,42 @@ export default function SearchScreen() {
     }, [])
   );
 
-  const performSearch = async (searchTerm: string) => {
-    if (!searchTerm.trim()) return;
-    await loadDemoMode();
+  const performSearch = async (rawTerm: string) => {
+    const searchTerm = rawTerm.trim();
+    if (!searchTerm) return;
+    const runId = ++searchRunRef.current;
+    const isCurrent = () => runId === searchRunRef.current;
     Keyboard.dismiss();
-    if (!location && !isDemoMode()) {
-      setProducts([]);
-      return;
-    }
-
-    // Search should not work until Swiggy and Blinkit are done pulling address details
-    if (isAddressSyncing()) {
-      setAddressSyncing(true);
-      setLoading(true);
-      setProducts([]);
-      await waitForAddressSync();
-      setAddressSyncing(false);
-      const freshLoc = await storage.getLocation();
-      if (freshLoc) setLocation(freshLoc);
-    }
-
+    // Loading from the tap on, before any await: the screen must never claim
+    // "no results" for a search that is still on its way.
+    setSearchedQuery(searchTerm);
+    setSearchFailed(false);
     setLoading(true);
     setProducts([]);
     setPlatformErrors({});
     setPendingPlatforms(PLATFORM_ORDER);
     try {
+      await loadDemoMode();
+      if (!isCurrent()) return;
+      if (!location && !isDemoMode()) {
+        setSearchedQuery(null); // nothing was searched (the empty state asks for GPS)
+        return;
+      }
+
+      // Search should not work until Swiggy and Blinkit are done pulling address details
+      if (isAddressSyncing()) {
+        setAddressSyncing(true);
+        await waitForAddressSync();
+        if (!isCurrent()) return;
+        setAddressSyncing(false);
+        const freshLoc = await storage.getLocation();
+        if (!isCurrent()) return;
+        if (freshLoc) setLocation(freshLoc);
+      }
+
       // Each platform's results stream in as soon as they arrive
       await api.search(searchTerm, (platform, results, platformError) => {
+        if (!isCurrent()) return;
         setProducts(prev => [...prev, ...results]);
         setPendingPlatforms(prev => prev.filter(p => p !== platform));
         if (platformError) {
@@ -330,16 +349,30 @@ export default function SearchScreen() {
       });
     } catch (err) {
       console.error(err);
+      if (isCurrent()) setSearchFailed(true);
     } finally {
-      setLoading(false);
-      setPendingPlatforms([]);
+      if (isCurrent()) {
+        setLoading(false);
+        setPendingPlatforms([]);
+      }
     }
   };
 
+  const handleRetrySearch = () => {
+    const term = searchedQuery ?? query;
+    setQuery(term);
+    performSearch(term);
+  };
+
   const handleClear = () => {
+    searchRunRef.current++;
     setQuery('');
+    setSearchedQuery(null);
+    setSearchFailed(false);
+    setLoading(false);
     setProducts([]);
     setPlatformErrors({});
+    setPendingPlatforms([]);
   };
 
   const handleQuickSearch = (term: string) => {
@@ -736,6 +769,8 @@ export default function SearchScreen() {
   }, [cartItems, sharedListing]);
 
   const filterLabel = storeFilter === 'all' ? 'All Stores' : platformThemes[storeFilter].name;
+  // "Can't deliver here" vs "the request failed" (network, Cloudflare, HTTP error).
+  const { location: locationErrors, failed: failedErrors } = splitSearchErrors(platformErrors);
 
   const handleCardPress = useCallback((p: UnifiedProduct) => {
     setVariantBase(p);
@@ -812,6 +847,11 @@ export default function SearchScreen() {
       </View>
 
       <FlatList
+        // The search bar lives in this list's header. With the default ('never'),
+        // a tap while the keyboard is up only dismisses the keyboard, so the
+        // first Search tap never ran the search (and the typed query read as
+        // "No Live Results"). 'handled' lets buttons take that first tap.
+        keyboardShouldPersistTaps="handled"
         data={filteredProducts.length > 0 ? productGroups : []}
         keyExtractor={groupKey}
         renderItem={renderProductCard}
@@ -918,7 +958,7 @@ export default function SearchScreen() {
             </View>
 
             {/* Platform range warnings when a platform is too far */}
-            {Object.entries(platformErrors).map(([plat, err]) => {
+            {Object.entries(locationErrors).map(([plat, err]) => {
               if (!err) return null;
               if (storeFilter !== 'all' && storeFilter !== plat) return null;
               const p = plat as Platform;
@@ -937,6 +977,29 @@ export default function SearchScreen() {
                       {cleanMsg || `Cannot search on your current location for ${theme.name}.`}
                     </Text>
                   </View>
+                </View>
+              );
+            })}
+
+            {/* A store's search failed while the other store answered (with no cards at all, the empty state offers the retry) */}
+            {!loading && filteredProducts.length > 0 && Object.keys(failedErrors).map((plat) => {
+              const p = plat as Platform;
+              if (storeFilter !== 'all' && storeFilter !== p) return null;
+              const theme = platformThemes[p];
+              return (
+                <View key={`failed-${p}`} style={[styles.platformWarningCard, { borderColor: theme.borderColor, backgroundColor: theme.bgLight }]}>
+                  <AlertCircle size={16} color={colors.amber} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontFamily: fonts.bodySemiBold, color: colors.amber, fontSize: 12, marginBottom: 2 }}>
+                      {theme.name} — search failed
+                    </Text>
+                    <Text style={styles.platformWarningText}>
+                      Couldn&apos;t reach {theme.name}, so its prices are missing.
+                    </Text>
+                  </View>
+                  <TouchableOpacity onPress={handleRetrySearch} accessibilityLabel={`Retry ${theme.name} search`}>
+                    <Text style={{ fontFamily: fonts.bodySemiBold, color: theme.color, fontSize: 12 }}>Retry</Text>
+                  </TouchableOpacity>
                 </View>
               );
             })}
@@ -964,11 +1027,11 @@ export default function SearchScreen() {
                     <Zap size={17} color={colors.emerald} />
                   </View>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.liveTitle} numberOfLines={1}>Live Results for “{query}”</Text>
+                    <Text style={styles.liveTitle} numberOfLines={1}>Live Results for “{searchedQuery ?? query}”</Text>
                     <Text style={styles.liveHint}>
-                      {storeFilter === 'all' && platformErrors.swiggy && !platformErrors.blinkit
+                      {storeFilter === 'all' && locationErrors.swiggy && !locationErrors.blinkit
                         ? 'Showing Blinkit results only • Cannot search Instamart on current location'
-                        : storeFilter === 'all' && platformErrors.blinkit && !platformErrors.swiggy
+                        : storeFilter === 'all' && locationErrors.blinkit && !locationErrors.swiggy
                         ? 'Showing Instamart results only • Cannot search Blinkit on current location'
                         : 'Tap + to add the exact product — the other app gets auto-matched.'}
                     </Text>
@@ -1076,49 +1139,60 @@ export default function SearchScreen() {
                 );
               }
 
-              if (query.trim().length > 0) {
-                const hasSwiggyError = !!platformErrors.swiggy;
-                const hasBlinkitError = !!platformErrors.blinkit;
-                const bothOutOfRange = hasSwiggyError && hasBlinkitError;
+              const outcome = emptySearchOutcome({
+                searchedQuery,
+                searchFailed,
+                platformErrors,
+                linked: { blinkit: !!tokens.blinkit, swiggy: !!tokens.swiggy },
+                storeFilter,
+              });
 
-                const activeTooFar = storeFilter !== 'all'
-                  ? platformErrors[storeFilter]
-                  : bothOutOfRange
-                    ? 'BOTH_TOO_FAR'
-                    : (!tokens.blinkit && hasSwiggyError)
-                      ? platformErrors.swiggy
-                      : (!tokens.swiggy && hasBlinkitError)
-                        ? platformErrors.blinkit
-                        : null;
-
-                if (activeTooFar) {
-                  const isBoth = storeFilter === 'all' && (activeTooFar === 'BOTH_TOO_FAR' || (hasSwiggyError && hasBlinkitError));
-                  const targetPlat = storeFilter !== 'all' ? storeFilter : (hasSwiggyError ? 'swiggy' : 'blinkit');
-                  const targetTheme = platformThemes[targetPlat];
-                  const theme = isBoth
-                    ? { color: '#EF4444', bgLight: 'rgba(239, 68, 68, 0.12)', borderColor: 'rgba(239, 68, 68, 0.3)' }
-                    : targetTheme;
-                  return (
-                    <View style={styles.emptyContainer}>
-                      <View style={[styles.emptyIconCircle, { backgroundColor: theme.bgLight, borderColor: theme.borderColor }]}>
-                        <MapPin size={32} color={theme.color} />
-                      </View>
-                      <Text style={styles.emptyTitle}>Cannot Search on Current Location</Text>
-                      <Text style={styles.emptySubtitle}>
-                        {isBoth
-                          ? 'Cannot search on your current location for Blinkit or Instamart.'
-                          : `Cannot search on your current location for ${targetTheme.name}.`}
-                      </Text>
+              if (outcome.kind === 'out_of_range') {
+                const isBoth = outcome.platforms.length > 1;
+                const targetTheme = platformThemes[outcome.platforms[0]];
+                const theme = isBoth
+                  ? { color: '#EF4444', bgLight: 'rgba(239, 68, 68, 0.12)', borderColor: 'rgba(239, 68, 68, 0.3)' }
+                  : targetTheme;
+                return (
+                  <View style={styles.emptyContainer}>
+                    <View style={[styles.emptyIconCircle, { backgroundColor: theme.bgLight, borderColor: theme.borderColor }]}>
+                      <MapPin size={32} color={theme.color} />
                     </View>
-                  );
-                }
+                    <Text style={styles.emptyTitle}>Cannot Search on Current Location</Text>
+                    <Text style={styles.emptySubtitle}>
+                      {isBoth
+                        ? 'Cannot search on your current location for Blinkit or Instamart.'
+                        : `Cannot search on your current location for ${targetTheme.name}.`}
+                    </Text>
+                  </View>
+                );
+              }
 
+              if (outcome.kind === 'failed') {
+                const names = outcome.platforms.map(p => platformThemes[p].name).join(' or ');
+                return (
+                  <View style={styles.emptyContainer}>
+                    <View style={[styles.emptyIconCircle, { backgroundColor: 'rgba(245, 158, 11, 0.12)', borderColor: 'rgba(245, 158, 11, 0.3)' }]}>
+                      <AlertCircle size={32} color={colors.amber} />
+                    </View>
+                    <Text style={styles.emptyTitle}>Search Didn&apos;t Go Through</Text>
+                    <Text style={styles.emptySubtitle}>
+                      We couldn&apos;t reach {names} for “{searchedQuery}”. Check your connection and try again.
+                    </Text>
+                    <TouchableOpacity style={styles.loginRedirectBtn} onPress={handleRetrySearch} accessibilityLabel="Retry search">
+                      <Text style={styles.loginRedirectBtnText}>Try Again</Text>
+                    </TouchableOpacity>
+                  </View>
+                );
+              }
+
+              if (outcome.kind === 'no_results') {
                 return (
                   <View style={styles.emptyContainer}>
                     <Text style={styles.emptyEmoji}>🔍</Text>
                     <Text style={styles.emptyTitle}>No Live Results Found</Text>
                     <Text style={styles.emptySubtitle}>
-                      We couldn&apos;t find any live products matching “{query}” in your local store.
+                      We couldn&apos;t find any live products matching “{searchedQuery}” in your local store.
                     </Text>
                   </View>
                 );

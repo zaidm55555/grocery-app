@@ -5,6 +5,7 @@ import { priceBlinkitCart } from './blinkitPricing';
 import { requestViaBlinkitBridge, isBlinkitBridgeConnected, waitForBlinkitBridge, recoverBlinkitBridge, waitForBlinkitBridgeReady } from './blinkitBridge';
 import { pickBestMatch, isSameProduct } from '../utils/matcher';
 import { stripSizeToken } from '../utils/productKey';
+import { isLocationSearchError } from '../utils/searchOutcome';
 import { loadDemoMode, demoSearch, demoCalculate, DEMO_LOCATION, DEMO_BLINKIT_AUTH_KEY, setDemoSwiggyLocation } from './demo';
 
 /** Search-result parsing: by default sold-out listings are dropped. */
@@ -283,7 +284,12 @@ function bridgedBlinkitSearch(url: string, headers: Record<string, string>, stat
       if (res.status === 200) {
         try {
           const json = JSON.parse(res.text);
-          blinkitSearchCache.set(key, { at: Date.now(), json });
+          // Only a result that lists products is reused: an empty answer (e.g. from a
+          // page whose session isn't set up yet) must not stick for a minute, so
+          // searching again really asks again.
+          if (parseBlinkitProducts(json, { includeOutOfStock: true }).length > 0) {
+            blinkitSearchCache.set(key, { at: Date.now(), json });
+          }
           return json;
         } catch { return null; }
       }
@@ -1132,12 +1138,12 @@ export const api = {
           results = await this.fetchDirectAPI(platform, query, token, location);
         } catch (error: any) {
           const msg = error?.message || String(error);
-          if (msg.includes('_TOO_FAR') || msg.includes('_NO_ADDRESS') || msg.includes('_UNAVAILABLE')) {
-          } else {
+          if (!isLocationSearchError(msg)) {
             console.warn(`[Search Warning - ${platform} for "${query}"]: ${msg}`);
           }
           results = [];
-          platformError = error?.message;
+          // Always a message: the screen tells "can't deliver here" from "failed, retry".
+          platformError = msg;
         }
       }
 

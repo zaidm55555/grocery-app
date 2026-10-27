@@ -52,6 +52,18 @@ describe('api.search', () => {
     expect(cb).toHaveBeenCalledWith('blinkit', [bl], undefined);
   });
 
+  it('reports a failed request (not just "no products") so the screen can offer a retry, even without a message', async () => {
+    await storage.saveToken('blinkit', 'b');
+    jest.spyOn(api, 'fetchDirectAPI')
+      .mockRejectedValueOnce(new Error('Blinkit API error: 403'))
+      .mockRejectedValueOnce('socket hang up');
+    const cb = jest.fn();
+    await api.search('paneer', cb);
+    expect(cb).toHaveBeenCalledWith('blinkit', [], 'Blinkit API error: 403');
+    await api.search('paneer', cb);
+    expect(cb).toHaveBeenLastCalledWith('blinkit', [], 'socket hang up');
+  });
+
   it('only warns on unexpected errors, not on expected availability errors', async () => {
     await storage.saveToken('blinkit', 'b');
     const warn = jest.spyOn(console, 'warn');
