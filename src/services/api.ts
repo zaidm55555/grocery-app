@@ -65,6 +65,9 @@ export interface PlatformVariant {
   // Such a pick is often a different-looking product (that is why auto-match
   // found nothing), so a refresh must not discard it as a weak link.
   manual?: boolean;
+  // Linked across brands by the matcher, e.g. "different brand (Tata → Aashirvaad)",
+  // so the basket can say the other store's listing is a substitute.
+  matchNote?: string;
 }
 
 // Effective product used when pricing a cart line on a given platform:

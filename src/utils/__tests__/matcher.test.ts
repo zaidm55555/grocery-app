@@ -1,6 +1,6 @@
 import {
   matchScore, pickBestMatch, nameTokens, nameSimilarity, sizeScore, isSameProduct, scoreMatch, decideMatch,
-  rankCandidates, buildQueryLadder, parseTitle, AUTO_MIN, SUGGEST_MIN,
+  rankCandidates, buildQueryLadder, parseTitle, AUTO_MIN, SUGGEST_MIN, CROSS_BRAND_PRICE_TOLERANCE,
 } from '../matcher';
 
 type P = { name: string; unit: string; price?: number };
@@ -20,7 +20,7 @@ const different: [P, P][] = [
   [{ name: 'English Oven Pav Bread', unit: '400 g', price: 40 }, { name: 'English Oven Milk Bread', unit: '400 g', price: 40 }],
   [{ name: 'Amul Butter Salted', unit: '100 g', price: 58 }, { name: 'Amul Butter Unsalted', unit: '100 g', price: 58 }],
   [{ name: 'Amul Toned Milk', unit: '500 ml', price: 30 }, { name: 'Amul Full Cream Milk', unit: '500 ml', price: 36 }],
-  [{ name: 'Tata Salt', unit: '1 kg', price: 28 }, { name: 'Aashirvaad Salt', unit: '1 kg', price: 28 }],
+  [{ name: 'Tata Salt', unit: '1 kg', price: 28 }, { name: 'Aashirvaad Sugar', unit: '1 kg', price: 48 }],
   [{ name: 'Coca-Cola', unit: '750 ml', price: 40 }, { name: 'Coca-Cola Zero', unit: '750 ml', price: 40 }],
   [{ name: 'Atta', unit: '1 kg', price: 60 }, { name: 'Maida', unit: '1 kg', price: 60 }],
   [{ name: 'Red Chilli Powder', unit: '100 g', price: 40 }, { name: 'Green Chilli Powder', unit: '100 g', price: 40 }],
@@ -158,7 +158,10 @@ describe('scoreMatch', () => {
   const t = (name: string, unit: string, price = 0, inStock?: boolean) => ({ name, unit, price, ...(inStock === undefined ? {} : { inStock }) });
 
   it.each([
-    ['different brand', t('Tata Salt', '1 kg', 28), t('Aashirvaad Salt', '1 kg', 28), /different brand \(Tata vs Aashirvaad\)/],
+    ['different brand and product', t('Tata Salt', '1 kg', 28), t('Aashirvaad Atta', '1 kg', 60), /different product/],
+    ['different brand, only one has product words', t('Amul Butter', '100 g', 58), t('Maggi Noodles', '100 g', 20), /different product/],
+    ['different brand, zero on one side', t('Coca-Cola Zero', '750 ml', 40), t('Thums Up', '750 ml', 40), /"zero" variant on one side only/],
+    ['soap vs shampoo', t('Dove Soap', '100 g', 60), t('Dove Shampoo', '100 g', 60), /different variant \(soap vs shampoo\)/],
     ['one-sided zero', t('Coca-Cola', '750 ml', 40), t('Coca-Cola Zero', '750 ml', 40), /"zero" variant on one side only/],
     ['conflicting variant', t('Amul Toned Milk', '500 ml'), t('Amul Full Cream Milk', '500 ml'), /different variant \(toned vs fullcream\)/],
     ['weight vs volume (ltr)', t('Tata Salt', '1 kg'), t('Tata Salt', '1 ltr'), /weight vs volume \(1 kg vs 1 L\)/],
@@ -168,6 +171,45 @@ describe('scoreMatch', () => {
     const d = scoreMatch(a, b);
     expect(d).toMatchObject({ rejected: true, score: 0, autoEligible: false });
     expect(d.reasons[0]).toMatch(reason);
+  });
+
+  it('a different brand is soft: same type, size and close price may auto-link, said first', () => {
+    const d = scoreMatch(t('Tata Salt', '1 kg', 28), t('Aashirvaad Salt', '1 kg', 28));
+    expect(d).toMatchObject({ rejected: false, autoEligible: true, brandRelation: 'different' });
+    expect(d.reasons[0]).toBe('different brand (Tata → Aashirvaad)');
+    expect(d.score).toBeGreaterThanOrEqual(AUTO_MIN);
+    // the old hard reject is one option away
+    expect(scoreMatch(t('Tata Salt', '1 kg', 28), t('Aashirvaad Salt', '1 kg', 28), { crossBrand: false }))
+      .toMatchObject({ rejected: true, reasons: ['different brand (Tata vs Aashirvaad)'] });
+  });
+
+  it('across brands, a unit price beyond the tolerance or another size is only a suggestion', () => {
+    const r = 1 + CROSS_BRAND_PRICE_TOLERANCE;
+    const pricey = scoreMatch(t('Tata Salt', '1 kg', 28), t('Aashirvaad Salt', '1 kg', Math.ceil(28 * r) + 1));
+    expect(pricey.autoEligible).toBe(false);
+    expect(pricey.reasons[0]).toMatch(/^different brand/);
+    expect(pricey.reasons.some(x => x.startsWith('unit price'))).toBe(true);
+    const sized = scoreMatch(t('Tata Salt', '1 kg', 28), t('Aashirvaad Salt', '500 g', 15));
+    expect(sized.autoEligible).toBe(false);
+    expect(sized.reasons.slice(0, 2)).toEqual(['different brand (Tata → Aashirvaad)', 'different size 1 kg vs 500 g, −₹13']);
+  });
+
+  it('a brand-only title keeps its kind of product (cola vs orange soda)', () => {
+    expect(scoreMatch(t('Coca-Cola', '750 ml', 40), t('Thums Up', '750 ml', 40)).autoEligible).toBe(true);
+    expect(scoreMatch(t('Sprite', '750 ml', 40), t('Fanta', '750 ml', 40)).rejected).toBe(true);
+  });
+
+  it('a brand on one listing only can auto-link when everything else agrees', () => {
+    const d = scoreMatch(t('Paneer', '200 g', 90), t('Milky Mist Paneer', '200 g', 95));
+    expect(d).toMatchObject({ autoEligible: true, brandRelation: 'one-sided' });
+    expect(d.reasons).toContain('brand only on this listing (Milky Mist)');
+  });
+
+  it('an unknown leading word against a brand needs a tight price to be set aside', () => {
+    expect(scoreMatch(t('Nilgiris Paneer', '200 g', 85), t('Amul Paneer', '200 g', 90)).autoEligible).toBe(true);
+    const shallot = scoreMatch(t('Sambar Onion', '500 g', 45), t('Nectr Onion', '500 g', 22));
+    expect(shallot.autoEligible).toBe(false);
+    expect(shallot.reasons[0]).toBe('brand may differ (Sambar vs Nectr)');
   });
 
   it('explains a different pack size with the price difference', () => {
@@ -303,7 +345,45 @@ describe('rankCandidates', () => {
       { title: 'Tata Salt', quantity: '500 g', price: 15 },
       { title: 'Tata Salt', quantity: '1 kg', price: 28 },
     ]);
-    expect(r.map(x => `${x.candidate.title} ${x.candidate.quantity}`)).toEqual(['Tata Salt 1 kg', 'Tata Salt 500 g', 'Aashirvaad Salt 1 kg']);
+    // Another brand at the same size now outranks the same brand at half the size.
+    expect(r.map(x => `${x.candidate.title} ${x.candidate.quantity}`)).toEqual(['Tata Salt 1 kg', 'Aashirvaad Salt 1 kg', 'Tata Salt 500 g']);
+  });
+  it('a same-brand twin outranks an otherwise equal listing of another brand', () => {
+    const r = rankCandidates({ name: 'Tata Salt', unit: '1 kg', price: 28 }, [
+      { title: 'Aashirvaad Salt', quantity: '1 kg', price: 28 },
+      { title: 'Tata Iodised Salt', quantity: '1 kg', price: 28 },
+    ]);
+    expect(r.map(x => x.candidate.title)).toEqual(['Tata Iodised Salt', 'Aashirvaad Salt']);
+    expect(r[0].score).toBeGreaterThan(r[1].score);
+  });
+});
+
+describe('decideMatch across brands', () => {
+  const target = { name: 'Tata Salt', unit: '1 kg', price: 28 };
+  it('auto-links another brand when it is the only twin, saying so', () => {
+    const d = decideMatch(target, [{ name: 'Aashirvaad Salt', unit: '1 kg', price: 27 }]);
+    expect(d.band).toBe('auto');
+    expect(d.reasons[0]).toBe('different brand (Tata → Aashirvaad)');
+  });
+  it('another brand never blocks the same-brand twin', () => {
+    const d = decideMatch(target, [{ name: 'Aashirvaad Salt', unit: '1 kg', price: 28 }, { name: 'Tata Salt', unit: '1 kg', price: 28 }]);
+    expect(d.band).toBe('auto');
+    expect(d.best?.candidate.name).toBe('Tata Salt');
+  });
+  it('asks when the same brand is listed in another size', () => {
+    const d = decideMatch(target, [{ name: 'Aashirvaad Salt', unit: '1 kg', price: 28 }, { name: 'Tata Salt', unit: '500 g', price: 15 }]);
+    expect(d.band).toBe('suggest');
+    expect(d.reasons).toContain('same brand listed: Tata Salt 500 g');
+  });
+  it('can be switched off per call', () => {
+    expect(decideMatch(target, [{ name: 'Aashirvaad Salt', unit: '1 kg', price: 28 }], { crossBrand: false }).band).toBe('none');
+  });
+});
+
+describe('isSameProduct never crosses brands', () => {
+  it('Tata Salt is not Aashirvaad Salt', () => {
+    expect(isSameProduct({ name: 'Tata Salt', unit: '1 kg', price: 28 }, { name: 'Aashirvaad Salt', unit: '1 kg', price: 28 })).toBe(false);
+    expect(isSameProduct({ name: 'Coca-Cola', unit: '750 ml' }, { name: 'Thums Up', unit: '750 ml' })).toBe(false);
   });
 });
 

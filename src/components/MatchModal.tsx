@@ -196,6 +196,7 @@ export default function MatchModal({ flow, onChoose, onRetry, onSkip, onConfirm 
               <Check size={9} color="#000" />
               <Text style={s.autoBadgeText}>
                 auto-matched{typeof chosenPick === 'object' && chosenPick.score ? ` · ${Math.round(chosenPick.score * 100)}%` : ''}
+                {activePick?.reasons?.[0]?.startsWith('different brand') ? ' · other brand' : ''}
               </Text>
             </View>
           )}

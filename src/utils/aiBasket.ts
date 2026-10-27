@@ -6,7 +6,7 @@ import { UnifiedProduct, PlatformVariant, getItemPlatformLimit, isKnownUnavailab
 import type { Platform } from '../services/storage';
 import type { CartLine } from '../services/lists';
 import { PLATFORM_ORDER } from '../constants/theme';
-import { decideMatch } from './matcher';
+import { brandNote, decideMatch } from './matcher';
 import { liveKey } from './productKey';
 import { stampIfVerified } from './lineFreshness';
 
@@ -338,8 +338,9 @@ export function answeringPlatforms(results: UnifiedProduct[][]): Set<Platform> {
   return new Set(PLATFORM_ORDER.filter(pl => results.some(rows => poolFor(Array.isArray(rows) ? rows : [], pl).length > 0)));
 }
 
-export function withTwin(product: UnifiedProduct, platform: Platform, twin: UnifiedProduct): UnifiedProduct {
-  return { ...product, platformPrices: { ...(product.platformPrices || {}), [platform]: productToVariant(twin) } };
+export function withTwin(product: UnifiedProduct, platform: Platform, twin: UnifiedProduct, matchNote?: string): UnifiedProduct {
+  const variant = { ...productToVariant(twin), ...(matchNote ? { matchNote } : {}) };
+  return { ...product, platformPrices: { ...(product.platformPrices || {}), [platform]: variant } };
 }
 
 /**
@@ -354,7 +355,7 @@ export function attachTwins(product: UnifiedProduct, pool: UnifiedProduct[]): Un
   let out = product;
   for (const platform of missingTwinPlatforms(product)) {
     const decision = decideMatch<UnifiedProduct>(twinTarget(product), poolFor(pool, platform));
-    if (decision.band === 'auto' && decision.best) out = withTwin(out, platform, decision.best.candidate);
+    if (decision.band === 'auto' && decision.best) out = withTwin(out, platform, decision.best.candidate, brandNote(decision.best));
   }
   return out;
 }

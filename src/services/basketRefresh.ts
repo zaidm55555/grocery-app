@@ -8,7 +8,7 @@
 // when a listing can't be found it is flagged unavailable instead.
 import { api, UnifiedProduct, PlatformVariant, CartCalculation, getProductPlatformLimit } from './api';
 import { Platform } from './storage';
-import { scoreMatch, pickBestMatch, isSameProduct, decideMatch, SUGGEST_MIN } from '../utils/matcher';
+import { scoreMatch, pickBestMatch, isSameProduct, decideMatch, brandNote, SUGGEST_MIN } from '../utils/matcher';
 import { stripSizeToken } from '../utils/productKey';
 import { needsRefresh } from '../utils/lineFreshness';
 
@@ -94,13 +94,18 @@ async function refreshLine(line: Line): Promise<Line> {
       const cands = await searchLive(pl, stored.title);
       if (cands.length === 0) continue; // search gave nothing — keep what we have
       const live = findLive(stored, cands);
-      prices[pl] = live ? { ...toVariant(live), ...(stored.manual ? { manual: true } : {}) } : unavailable(stored);
+      prices[pl] = live
+        ? { ...toVariant(live), ...(stored.manual ? { manual: true } : {}), ...(stored.matchNote ? { matchNote: stored.matchNote } : {}) }
+        : unavailable(stored);
     } else {
       // Bad link from an older matcher: replace with a proper match for the
       // SOURCE product, or drop the link rather than keep a different product.
       const cands = await searchLive(pl, src.title);
       const decision = decideMatch({ name: src.title, unit: src.quantity, price: src.price }, cands);
-      if (decision.band === 'auto' && decision.best) prices[pl] = toVariant(decision.best.candidate);
+      if (decision.band === 'auto' && decision.best) {
+        const note = brandNote(decision.best);
+        prices[pl] = { ...toVariant(decision.best.candidate), ...(note ? { matchNote: note } : {}) };
+      }
       else if (cands.length > 0) delete prices[pl];
     }
   }

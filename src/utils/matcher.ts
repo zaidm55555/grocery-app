@@ -5,12 +5,17 @@
 //    store to its twin on another. Titles are normalised (accents, apostrophes,
 //    Hindi/English synonyms, sizes stripped), then scored on brand, name overlap,
 //    variant words, pack size, unit price and stock, with hard rejects for things
-//    that can never be the same product (different brand, Zero vs regular,
-//    weight vs volume...). `decideMatch` turns the scores into a band:
+//    that can never be the same product (Zero vs regular, different product
+//    words, weight vs volume...). Brand is a soft factor here (ALLOW_CROSS_BRAND):
+//    another brand's listing of the same product type, at the same size and a
+//    close unit price, may link, always with a 'different brand (X → Y)'
+//    reason, and a same-brand listing always outranks it. `decideMatch` turns
+//    the scores into a band:
 //    'auto' (safe to link without asking), 'suggest' (show it, user confirms) or
 //    'none'.
 //  - `isSameProduct`: a strict identity check (wording differences only, same
 //    pack size) used to re-find a stored listing in its own store's results.
+//    It never crosses brands.
 //
 // `matchScore` / `pickBestMatch` remain for older callers and sit on top of the
 // same scoring.
@@ -27,6 +32,17 @@ export const AUTO_MARGIN = 0.1;
 const AMBIGUOUS_MARGIN = 0.05;
 // Same-product check used to re-validate stored basket links.
 const SAME_PRODUCT_NAME = 0.85;
+/**
+ * Cross-store twins may be another brand's listing of the same product (the
+ * user's call: "a different brand is fine as long as the other things match").
+ * false restores the old hard reject on a different brand everywhere.
+ */
+export const ALLOW_CROSS_BRAND = true;
+/**
+ * A twin whose brand differs (or is only on one listing) auto-links only when
+ * its unit price is within this fraction of the target's; beyond it, suggest.
+ */
+export const CROSS_BRAND_PRICE_TOLERANCE = 0.3;
 
 // Accepts both match targets ({name, unit}) and UnifiedProduct rows ({title, quantity}).
 export interface MatchableItem {
@@ -186,6 +202,18 @@ const BRANDS: [string, string?][] = [
   ['hamdard'], ['bhagyalakshmi'], ['jk'], ['nectr'],
 ];
 
+// Lines whose name is the whole title ("Coca-Cola", "Sprite"): with the brand
+// set aside, the kind of product they are, so another brand's twin has words
+// to agree (Coca-Cola ~ Thums Up) or differ (Sprite vs Fanta) on.
+const BRAND_TYPES_RAW: [string, string][] = [
+  ['coca cola', 'cola'], ['pepsi', 'cola'], ['thums up', 'cola'],
+  ['sprite', 'lemonsoda'], ['7up', 'lemonsoda'], ['limca', 'lemonsoda'], ['fanta', 'orangesoda'], ['mirinda', 'orangesoda'],
+  ['maaza', 'mangodrink'], ['frooti', 'mangodrink'], ['lays', 'potatochip'], ['uncle chipps', 'potatochip'],
+  ['pringles', 'potatochip'], ['kurkure', 'cornpuff'], ['doritos', 'nachochip'], ['cornitos', 'nachochip'],
+  ['bisleri', 'water'], ['kinley', 'water'], ['aquafina', 'water'], ['redbull', 'energydrink'],
+  ['monster', 'energydrink'], ['sting', 'energydrink'],
+];
+
 // Descriptor / packaging / category words: present on one side only, they say
 // nothing about which product it is ("Fresh", "Premium", "Chips", "Iodised").
 const GENERIC = new Set([
@@ -233,6 +261,7 @@ const CONFLICT_GROUPS_RAW: string[][] = [
   ['liquid', 'powder', 'gel', 'spray', 'tablet', 'cube', 'bar'],
   ['whole', 'seed', 'powder', 'crushed', 'split', 'flake', 'leaf', 'paste'],
   ['desi', 'hybrid'],
+  ['soap', 'shampoo', 'conditioner', 'handwash', 'bodywash', 'facewash', 'toothpaste'],
 ];
 
 // ---------- Normalisation ----------
@@ -311,6 +340,9 @@ const isDescriptorLead = (t: string) => GENERIC_NORM.has(t) || ORIGIN_NORM.has(t
 const brandToken = (b: string) => rawTokens(b).join('');
 const BRAND_PARENT = new Map<string, string | null>();
 BRANDS.forEach(([b, parent]) => BRAND_PARENT.set(brandToken(b), parent ? brandToken(parent) : null));
+const BRAND_TYPES = new Map(BRAND_TYPES_RAW.map(([b, type]) => [brandToken(b), type]));
+// How a brand token reads in a reason ("motherdairy" -> "Mother Dairy").
+const BRAND_LABEL = new Map(BRANDS.map(([b]) => [brandToken(b), b.replace(/\b[a-z]/g, c => c.toUpperCase())]));
 
 const dedupe = (list: string[]) => list.filter((t, i) => !STOP_NORM.has(t) && list.indexOf(t) === i);
 
@@ -623,12 +655,41 @@ function brandsAgree(a: string[], b: string[]): boolean {
 }
 
 const pretty = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
+const brandName = (t: string) => BRAND_LABEL.get(t) ?? pretty(t);
+
+// `x` with its brand set aside: the leading run of known brands (and their
+// parents) goes, or `lead` (an unknown word in the brand's place), and a line
+// that is its own product ("Coca-Cola") leaves the kind of product it is.
+function withoutBrand(x: Analysed, lead?: string): Analysed {
+  let i = 0;
+  while (i < x.tokens.length && BRAND_PARENT.has(x.tokens[i])) i++;
+  const run = i ? x.tokens.slice(0, i) : x.brands.slice(0, 1);
+  const drop = new Set(run.flatMap(ancestors));
+  if (lead) drop.add(lead);
+  const implied = run.map(b => BRAND_TYPES.get(b)).filter((t): t is string => !!t);
+  return withTokens(dedupe([...x.tokens.filter(t => !drop.has(t)), ...implied]), x);
+}
+
+/**
+ * How the two brands compare: 'same' (they agree, or neither title names one),
+ * 'one-sided' (only one listing names a brand), 'unverified' (a known brand
+ * against an unknown leading word, probably another brand) or 'different'.
+ */
+export type BrandRelation = 'same' | 'one-sided' | 'unverified' | 'different';
+// Brand agreement rank: a lower tier always beats a higher one on equal footing.
+const BRAND_TIER: Record<BrandRelation, number> = { same: 0, 'one-sided': 1, unverified: 1, different: 2 };
+
+export interface ScoreOptions {
+  /** Let another brand's listing be the twin (default ALLOW_CROSS_BRAND). */
+  crossBrand?: boolean;
+}
 
 export interface MatchDetail {
   /** 0..1; 0 when rejected. */
   score: number;
-  /** Can never be the same product (different brand, variant, weight vs volume...). */
+  /** Can never be the same product (variant, product words, weight vs volume...). */
   rejected: boolean;
+  brandRelation: BrandRelation;
   /** Nothing caps this pair below 'auto' (exact pack size, no unexplained words...). */
   autoEligible: boolean;
   /** Human-readable notes, most important first. */
@@ -648,8 +709,8 @@ function rupees(n: number): string {
 }
 
 /** Full scoring of `candidate` as the twin of `target`, with the reasons behind it. */
-export function scoreMatch(target: MatchableItem, candidate: MatchableItem): MatchDetail {
-  return scoreAnalysed(analyse(target), analyse(candidate));
+export function scoreMatch(target: MatchableItem, candidate: MatchableItem, opts: ScoreOptions = {}): MatchDetail {
+  return scoreAnalysed(analyse(target), analyse(candidate), opts.crossBrand ?? ALLOW_CROSS_BRAND);
 }
 
 // Unit price within this ratio corroborates that a bracket is only a gloss.
@@ -669,31 +730,67 @@ function bracketGloss(A: Analysed, B: Analysed, extras: string[]): boolean {
   return Math.max(ua, ub) / Math.min(ua, ub) <= GLOSS_PRICE_RATIO;
 }
 
-function scoreAnalysed(rawA: Analysed, rawB: Analysed): MatchDetail {
+function scoreAnalysed(rawA: Analysed, rawB: Analysed, crossBrand: boolean): MatchDetail {
   const [oA, oB] = [readOrigin(rawA, allWords(rawB)), readOrigin(rawB, allWords(rawA))];
   const [A, B] = joinCompounds(readAgainst(oA, allWords(oB)), readAgainst(oB, allWords(oA)));
   const parts = { brand: 0, name: 0, variant: 0, size: 0, price: 0, stock: 0 };
   const reasons: string[] = [];
   let capped = false;
-  const reject = (why: string): MatchDetail => ({ score: 0, rejected: true, autoEligible: false, reasons: [why, ...reasons], parts });
+  let brandRelation: BrandRelation = 'same';
+  const reject = (why: string): MatchDetail => ({ score: 0, rejected: true, autoEligible: false, brandRelation, reasons: [why, ...reasons], parts });
 
   if (!A.tokens.length || !B.tokens.length) return reject('no name to compare');
   const setA = new Set(A.tokens), setB = new Set(B.tokens);
 
-  // Brand
+  // Brand. Across brands (crossBrand) the product words are compared with the
+  // brands set aside (NA / NB), and auto needs every other signal to agree:
+  // pack size within 10%, unit price within CROSS_BRAND_PRICE_TOLERANCE, in stock.
   let nameMult = 1;
+  let NA = A, NB = B;
+  let priceGate = 0; // > 0: the unit-price ratio auto needs
+  let brandNote = ''; // shown first: the user must see a brand swap
   if (A.brands.length && B.brands.length) {
-    if (!brandsAgree(A.brands, B.brands)) return reject(`different brand (${pretty(A.brands[0])} vs ${pretty(B.brands[0])})`);
-    parts.brand = 1;
+    if (!brandsAgree(A.brands, B.brands)) {
+      if (!crossBrand) return reject(`different brand (${pretty(A.brands[0])} vs ${pretty(B.brands[0])})`);
+      brandRelation = 'different';
+      brandNote = `different brand (${brandName(A.brands[0])} → ${brandName(B.brands[0])})`;
+      reasons.push(brandNote);
+      parts.brand = 0.3;
+      [NA, NB] = [withoutBrand(A), withoutBrand(B)];
+      priceGate = 1 + CROSS_BRAND_PRICE_TOLERANCE;
+      if (!NA.tokens.length || !NB.tokens.length) return reject(`${brandNote}: no product words to compare`);
+    } else {
+      parts.brand = 1;
+    }
   } else if (A.brands.length || B.brands.length) {
     const [branded, bare] = A.brands.length ? [setA, B.tokens] : [setB, A.tokens];
     parts.brand = 0.4;
-    capped = true;
     if (bare.length > 1 && !branded.has(bare[0]) && !isDescriptorLead(bare[0])) {
-      nameMult = 0.6;
-      reasons.push(`brand may differ (${pretty(bare[0])} vs ${pretty((A.brands[0] || B.brands[0]))})`);
+      brandRelation = 'unverified';
+      brandNote = `brand may differ (${pretty(bare[0])} vs ${crossBrand ? brandName(A.brands[0] || B.brands[0]) : pretty(A.brands[0] || B.brands[0])})`;
+      reasons.push(brandNote);
+      // An unknown leading word in the brand's place is probably another brand,
+      // but it could be a product word ("Sambar Onion"): it is set aside only
+      // when the rest agrees word for word, and then auto needs a tight price.
+      const [sA, sB] = A.brands.length ? [withoutBrand(A), withoutBrand(B, bare[0])] : [withoutBrand(A, bare[0]), withoutBrand(B)];
+      const same = (x: Set<string>, y: Set<string>) => x.size > 0 && x.size === y.size && [...x].every(t => y.has(t));
+      if (crossBrand && !SIGNAL.has(bare[0]) && same(sA.distinctive, sB.distinctive)) {
+        [NA, NB] = [sA, sB];
+        priceGate = GLOSS_PRICE_RATIO;
+      } else {
+        nameMult = 0.6;
+        capped = true;
+      }
     } else {
-      reasons.push(A.brands.length ? 'no brand on this listing' : `brand only on this listing (${pretty(B.brands[0])})`);
+      brandRelation = 'one-sided';
+      reasons.push(A.brands.length ? 'no brand on this listing' : `brand only on this listing (${crossBrand ? brandName(B.brands[0]) : pretty(B.brands[0])})`);
+      if (crossBrand) {
+        [NA, NB] = [withoutBrand(A), withoutBrand(B)];
+        priceGate = 1 + CROSS_BRAND_PRICE_TOLERANCE;
+        if (!NA.tokens.length || !NB.tokens.length) return reject('no product words to compare');
+      } else {
+        capped = true;
+      }
     }
   } else if (A.tokens[0] === B.tokens[0]) {
     parts.brand = 0.8;
@@ -724,12 +821,15 @@ function scoreAnalysed(rawA: Analysed, rawB: Analysed): MatchDetail {
   if (conflict) return reject(`different variant (${conflict[0]} vs ${conflict[1]})`);
 
   // Name overlap on the distinctive words (brand and descriptors excluded)
-  const DA = A.distinctive, DB = B.distinctive;
+  const DA = NA.distinctive, DB = NB.distinctive;
   const shared = [...DA].filter(t => DB.has(t));
   const onlyA = [...DA].filter(t => !DB.has(t));
   const onlyB = [...DB].filter(t => !DA.has(t));
   let name: number;
   if (DA.size && DB.size && !shared.length) return reject('different product');
+  // Another brand whose title has product words only on one side ("Amul Butter"
+  // vs "Maggi Noodles"): nothing says it is the same kind of product.
+  if (brandRelation === 'different' && !DA.size !== !DB.size) return reject('different product');
   if (onlyA.length && onlyB.length) {
     name = (shared.length / Math.min(DA.size, DB.size)) * 0.5;
     parts.variant = 0.2;
@@ -748,9 +848,15 @@ function scoreAnalysed(rawA: Analysed, rawB: Analysed): MatchDetail {
     capped = true;
     reasons.push(onlyB.length ? `extra words here: ${onlyB.join(', ')}` : `missing words: ${onlyA.join(', ')}`);
   } else {
-    const anyShared = A.tokens.some(t => setB.has(t));
+    const anyShared = NA.tokens.some(t => NB.tokens.includes(t));
     name = DA.size || anyShared || brandsAgree(A.brands, B.brands) ? 1 : 0.5;
     parts.variant = 1;
+    // Another brand with only a category word in common ("Soap", "Namkeen")
+    // says nothing about which product it is.
+    if (priceGate && !DA.size) {
+      capped = true;
+      reasons.push('only the product category matches');
+    }
   }
   name *= nameMult;
   if (name < 0.5) return reject(reasons.pop() || 'different product');
@@ -794,13 +900,15 @@ function scoreAnalysed(rawA: Analysed, rawB: Analysed): MatchDetail {
   }
 
   // Price per unit of pack size when the sizes compare, else the raw price.
+  // Across brands, a unit price we cannot compare cannot corroborate the twin.
+  if (priceGate && !(A.price && B.price && cmp.ratio !== undefined && cmp.a && cmp.b)) capped = true;
   if (!A.price || !B.price) {
     parts.price = 0.6;
   } else if (cmp.ratio !== undefined && cmp.a && cmp.b) {
     const ua = A.price / cmp.a, ub = B.price / cmp.b;
     const r = Math.max(ua, ub) / Math.min(ua, ub);
     parts.price = priceCurve(r);
-    if (r > 1.75) {
+    if (r > 1.75 || (priceGate && r > priceGate)) {
       capped = true;
       reasons.push(`unit price ${trim(r)}× ${ub > ua ? 'higher' : 'lower'}`);
     }
@@ -819,7 +927,13 @@ function scoreAnalysed(rawA: Analysed, rawB: Analysed): MatchDetail {
 
   const raw = (Object.keys(WEIGHTS) as (keyof typeof WEIGHTS)[]).reduce((s, k) => s + WEIGHTS[k] * parts[k], 0);
   const score = Math.round(raw * 1000) / 1000;
-  return { score, rejected: false, autoEligible: !capped, reasons, parts };
+  if (brandNote) reasons.unshift(...reasons.splice(reasons.indexOf(brandNote), 1));
+  return { score, rejected: false, autoEligible: !capped, brandRelation, reasons, parts };
+}
+
+/** The brand reason to show with a link ('different brand (Tata → Aashirvaad)'), if the brands are not the same. */
+export function brandNote(d: Pick<MatchDetail, 'brandRelation' | 'reasons'>): string | undefined {
+  return d.brandRelation === 'same' ? undefined : d.reasons.find(r => /\bbrand\b/.test(r));
 }
 
 export function matchScore(target: MatchableItem, candidate: MatchableItem): number {
@@ -830,7 +944,8 @@ export function matchScore(target: MatchableItem, candidate: MatchableItem): num
 // `target`, allowing only wording/spelling differences and ~equal pack size?
 export function isSameProduct(target: MatchableItem, candidate: MatchableItem): boolean {
   if (compareQuantity(quantityOf(target), quantityOf(candidate)).status === 'conflict') return false;
-  if (scoreMatch(target, candidate).rejected) return false;
+  // Never across brands: this resolves a stored listing, not a substitute.
+  if (scoreMatch(target, candidate, { crossBrand: false }).rejected) return false;
   return nameSimilarity(itemName(target), itemName(candidate)) >= SAME_PRODUCT_NAME && sizeScore(target, candidate) >= 0.9;
 }
 
@@ -854,7 +969,7 @@ export interface MatchDecision<T> {
   reasons: string[];
 }
 
-export interface DecideOptions {
+export interface DecideOptions extends ScoreOptions {
   autoMin?: number;
   suggestMin?: number;
   margin?: number;
@@ -873,17 +988,27 @@ function equivalent<T extends MatchableItem>(a: RankedCandidate<T>, b: RankedCan
   return key(ta) === key(tb) && (cmp.status === 'same' || cmp.status === 'near');
 }
 
-/** Scores every candidate and sorts best first (ties: in stock, closest size, closest price). */
-export function rankCandidates<T extends MatchableItem>(target: MatchableItem, candidates: T[] | null | undefined): RankedCandidate<T>[] {
+/**
+ * Scores every candidate and sorts best first (ties: brand agreement, in stock,
+ * closest size, closest price). Brand agreement is also in the score, so a
+ * same-brand twin outranks another brand's otherwise equal listing.
+ */
+export function rankCandidates<T extends MatchableItem>(
+  target: MatchableItem,
+  candidates: T[] | null | undefined,
+  opts: ScoreOptions = {},
+): RankedCandidate<T>[] {
   const tPrice = Number(target.price) || 0;
   const A = analyse(target);
+  const crossBrand = opts.crossBrand ?? ALLOW_CROSS_BRAND;
   const rows = (candidates || []).map((candidate, index) => ({
     index,
     size: sizeDistance(target, candidate),
-    ranked: { candidate, ...scoreAnalysed(A, analyse(candidate)) } as RankedCandidate<T>,
+    ranked: { candidate, ...scoreAnalysed(A, analyse(candidate), crossBrand) } as RankedCandidate<T>,
   }));
   rows.sort((a, b) =>
     b.ranked.score - a.ranked.score ||
+    BRAND_TIER[a.ranked.brandRelation] - BRAND_TIER[b.ranked.brandRelation] ||
     Number(b.ranked.candidate.inStock !== false) - Number(a.ranked.candidate.inStock !== false) ||
     a.size - b.size ||
     Math.abs((Number(a.ranked.candidate.price) || 0) - tPrice) - Math.abs((Number(b.ranked.candidate.price) || 0) - tPrice) ||
@@ -895,6 +1020,9 @@ export function rankCandidates<T extends MatchableItem>(target: MatchableItem, c
  * Picks `target`'s twin among `candidates` and says how sure we are:
  * - 'auto': score >= 0.85, pack size within 10%, nothing unexplained, and at
  *   least 0.1 ahead of the next different listing. Safe to link silently.
+ *   Another brand can be 'auto' (its reasons say 'different brand (X → Y)'),
+ *   but only when no listing of a closer brand is a plausible pick, and a
+ *   listing of a farther brand never blocks a closer-brand pick.
  * - 'suggest': score 0.60-0.85, or a capped/ambiguous top pick. Show it with
  *   its reasons and let the user confirm.
  * - 'none': nothing scores 0.60.
@@ -907,7 +1035,7 @@ export function decideMatch<T extends MatchableItem>(
   const autoMin = opts.autoMin ?? AUTO_MIN;
   const suggestMin = opts.suggestMin ?? SUGGEST_MIN;
   const marginMin = opts.margin ?? AUTO_MARGIN;
-  const ranked = rankCandidates(target, candidates);
+  const ranked = rankCandidates(target, candidates, opts);
   const viable = ranked.filter(r => !r.rejected && r.score > 0);
   const top = viable[0];
   if (!top || top.score < suggestMin) {
@@ -919,11 +1047,15 @@ export function decideMatch<T extends MatchableItem>(
       reasons: top ? [`closest is ${Math.round(top.score * 100)}%`, ...top.reasons] : ['no similar product'],
     };
   }
-  const runnerUp = viable.slice(1).find(r => !equivalent(top, r));
+  const tier = BRAND_TIER[top.brandRelation];
+  const runnerUp = viable.slice(1).find(r => !equivalent(top, r) && BRAND_TIER[r.brandRelation] <= tier);
+  // e.g. Aashirvaad Salt 1 kg on top while Tata Salt 500 g is listed: let the user choose.
+  const closerBrand = viable.find(r => BRAND_TIER[r.brandRelation] < tier && r.score >= suggestMin);
   const margin = top.score - (runnerUp?.score ?? 0);
   const reasons = [...top.reasons];
   let band: MatchBand = 'suggest';
-  if (top.score >= autoMin && top.autoEligible && margin >= marginMin) band = 'auto';
+  if (top.score >= autoMin && top.autoEligible && margin >= marginMin && !closerBrand) band = 'auto';
+  else if (closerBrand) reasons.push(`${top.brandRelation === 'different' && closerBrand.brandRelation === 'same' ? 'same brand' : 'also'} listed: ${itemName(closerBrand.candidate)} ${itemUnit(closerBrand.candidate)}`.trim());
   else if (runnerUp && margin < marginMin) reasons.push(`close runner-up: ${itemName(runnerUp.candidate)} ${itemUnit(runnerUp.candidate)}`.trim());
   if (band === 'suggest' && !reasons.length) reasons.push(`${Math.round(top.score * 100)}% match`);
   return { band, best: top, alternatives: viable.filter(r => r !== top).slice(0, 3), ranked, reasons };
@@ -940,8 +1072,12 @@ interface BestMatch<T extends MatchableItem> {
 }
 
 /** Highest-scoring candidate at or above MATCH_THRESHOLD (no banding). */
-export function pickBestMatch<T extends MatchableItem>(target: MatchableItem, candidates: T[] | null | undefined): BestMatch<T> | null {
-  const ranked = rankCandidates(target, candidates);
+export function pickBestMatch<T extends MatchableItem>(
+  target: MatchableItem,
+  candidates: T[] | null | undefined,
+  opts: ScoreOptions = {},
+): BestMatch<T> | null {
+  const ranked = rankCandidates(target, candidates, opts);
   const best = ranked[0];
   if (!best || best.score < MATCH_THRESHOLD) return null;
   const runnerUp = ranked[1]?.score ?? 0;

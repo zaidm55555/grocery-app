@@ -4,6 +4,7 @@
 // The LLM never invents products: it can only point at refs of rows the app
 // fetched itself, and every field it returns is re-validated (utils/aiBasket).
 import { api, UnifiedProduct } from './api';
+import { brandNote } from '../utils/matcher';
 import { isAddressSyncing, waitForAddressSync } from './addressSync';
 import { groqJson, GroqError, GroqJsonRequest } from './groq';
 import { searchForMatch, MatchSearchOptions, MatchSearchResult } from './matchSearch';
@@ -180,7 +181,7 @@ async function linkMissingTwins(
     budget -= Math.max(1, found.searches);
     const { band, best, reasons } = found.decision;
     if (band === 'auto' && best && isUsableResult(best.candidate)) {
-      out[at] = { ...pick, product: withTwin(pick.product, platform, best.candidate) };
+      out[at] = { ...pick, product: withTwin(pick.product, platform, best.candidate, brandNote(best)) };
     } else {
       unlinked.push({
         ...base,

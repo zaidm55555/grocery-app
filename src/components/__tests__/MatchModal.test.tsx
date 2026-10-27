@@ -59,6 +59,14 @@ describe('MatchModal: confirm step', () => {
     expect(onConfirm).toHaveBeenCalled();
   });
 
+  it('an auto-match of another brand says so on the badge and the row', async () => {
+    const best = swiggyProd('s-a', 'Aashirvaad Salt', 28);
+    const cell: MatchCell = { ...okCell(best), ranked: [{ product: best, score: 0.9, reasons: ['different brand (Tata → Aashirvaad)'] }] };
+    const { getByText } = await setup(flow({ results: { t1: { swiggy: cell } } }));
+    expect(getByText(/other brand/)).toBeTruthy();
+    expect(getByText('different brand (Tata → Aashirvaad)')).toBeTruthy();
+  });
+
   it('Skip (footer) and the close button both call onSkip', async () => {
     const { getByText, onSkip } = await setup(flow());
     await fireEvent.press(getByText('Skip'));
@@ -157,9 +165,10 @@ describe('MatchModal: ranking and suggestions', () => {
     const { getByText, getAllByText } = await setup(f);
     await fireEvent.press(getByText('Pick manually'));
     const titles = getAllByText(/Salt$/).map(n => n.props.children).slice(1); // [0] is the target header
-    expect(titles).toEqual(['Tata Iodised Salt', 'Tata Salt', 'Aashirvaad Salt']);
+    // Another brand at the same size ranks above the same brand at half the size.
+    expect(titles).toEqual(['Tata Iodised Salt', 'Aashirvaad Salt', 'Tata Salt']);
     expect(getByText(/different size 1 kg vs 500 g/)).toBeTruthy();
-    expect(getByText(/different brand \(Tata vs Aashirvaad\)/)).toBeTruthy();
+    expect(getByText(/different brand \(Tata → Aashirvaad\)/)).toBeTruthy();
   });
 
   it('uses the ranking stored by the search when present', async () => {
