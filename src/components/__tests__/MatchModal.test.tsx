@@ -67,6 +67,13 @@ describe('MatchModal: confirm step', () => {
     expect(getByText('different brand (Tata → Aashirvaad)')).toBeTruthy();
   });
 
+  it('also flags an auto-match whose brand is only on one listing', async () => {
+    const best = swiggyProd('s-p', 'Paneer', 90);
+    const cell: MatchCell = { ...okCell(best), ranked: [{ product: best, score: 0.9, reasons: ['no brand on this listing'] }] };
+    const { getByText } = await setup(flow({ results: { t1: { swiggy: cell } } }));
+    expect(getByText(/other brand/)).toBeTruthy();
+  });
+
   it('Skip (footer) and the close button both call onSkip', async () => {
     const { getByText, onSkip } = await setup(flow());
     await fireEvent.press(getByText('Skip'));

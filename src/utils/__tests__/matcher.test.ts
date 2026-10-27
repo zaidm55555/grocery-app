@@ -205,11 +205,22 @@ describe('scoreMatch', () => {
     expect(d.reasons).toContain('brand only on this listing (Milky Mist)');
   });
 
-  it('an unknown leading word against a brand needs a tight price to be set aside', () => {
-    expect(scoreMatch(t('Nilgiris Paneer', '200 g', 85), t('Amul Paneer', '200 g', 90)).autoEligible).toBe(true);
-    const shallot = scoreMatch(t('Sambar Onion', '500 g', 45), t('Nectr Onion', '500 g', 22));
-    expect(shallot.autoEligible).toBe(false);
-    expect(shallot.reasons[0]).toBe('brand may differ (Sambar vs Nectr)');
+  it('an unknown leading word is never taken for a brand: at most a suggestion', () => {
+    expect(scoreMatch(t('Nilgiris Paneer', '200 g', 85), t('Amul Paneer', '200 g', 90)).autoEligible).toBe(true); // known brand
+    for (const [a, b] of [['Aashirvaad Salt', 'Rock Salt'], ['Amul Milk', 'Soy Milk'], ['Amul Butter', 'Table Butter'], ['Tata Tea', 'Ice Tea']]) {
+      const d = scoreMatch(t(a, '1 kg', 100), t(b, '1 kg', 100));
+      expect(d.autoEligible).toBe(false);
+    }
+    const tableButter = scoreMatch(t('Amul Butter', '500 g', 285), t('Table Butter', '500 g', 280));
+    expect(tableButter.reasons).toContain('brand may differ (Table vs Amul)');
+  });
+
+  it('across brands, a kind-of-product word on one side only rejects', () => {
+    expect(scoreMatch(t('Amul Milk', '1 L', 60), t('Milk Powder', '1 L', 60)).reasons[0]).toBe('"powder" on one side only');
+    expect(scoreMatch(t('Amul Milk', '1 L', 60), t('Nandini Flavoured Milk', '1 L', 62)).rejected).toBe(true);
+    expect(scoreMatch(t('Colgate Toothpaste', '150 g', 120), t('Sensodyne Sensitive Toothpaste', '150 g', 140)).rejected).toBe(true);
+    // within one brand the usual extra-word cap still applies
+    expect(scoreMatch(t('Amul Milk', '1 L', 60), t('Amul Flavoured Milk', '1 L', 62)).rejected).toBe(false);
   });
 
   it('explains a different pack size with the price difference', () => {
@@ -377,6 +388,16 @@ describe('decideMatch across brands', () => {
   });
   it('can be switched off per call', () => {
     expect(decideMatch(target, [{ name: 'Aashirvaad Salt', unit: '1 kg', price: 28 }], { crossBrand: false }).band).toBe('none');
+  });
+  it('crossBrand: false keeps the old runner-up rule (brand tiers do not apply)', () => {
+    const paneer = [
+      { name: 'Amul Fresh Paneer', unit: '200 g', price: 88 },
+      { name: 'Paneer', unit: '200 g', price: 90 },
+      { name: 'Milky Mist Paneer', unit: '200 g', price: 90, inStock: false },
+    ];
+    const strict = decideMatch({ name: 'Indian Style Paneer', unit: '200 g' }, paneer, { crossBrand: false });
+    expect(strict.band).toBe('suggest');
+    expect(strict.reasons.some(r => r.startsWith('close runner-up: '))).toBe(true);
   });
 });
 

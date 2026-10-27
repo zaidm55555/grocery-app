@@ -86,6 +86,9 @@ const logoStyles = StyleSheet.create({
   },
 });
 
+// A matcher reason saying the pick's brand is not the target's (or is unknown).
+const BRAND_REASON = /^(different brand|brand may differ|no brand on this listing|brand only on this listing)/;
+
 // Score-sorted candidates for a cell: the matcher's ranking when the search
 // stored one, else scored here.
 function rankedFor(t: MatchTarget, cell: MatchCell | undefined): RankedPick[] {
@@ -196,7 +199,7 @@ export default function MatchModal({ flow, onChoose, onRetry, onSkip, onConfirm 
               <Check size={9} color="#000" />
               <Text style={s.autoBadgeText}>
                 auto-matched{typeof chosenPick === 'object' && chosenPick.score ? ` · ${Math.round(chosenPick.score * 100)}%` : ''}
-                {activePick?.reasons?.[0]?.startsWith('different brand') ? ' · other brand' : ''}
+                {activePick?.reasons?.some(r => BRAND_REASON.test(r)) ? ' · other brand' : ''}
               </Text>
             </View>
           )}

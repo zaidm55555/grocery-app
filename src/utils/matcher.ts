@@ -199,7 +199,7 @@ const BRANDS: [string, string?][] = [
   ['jivo'], ['emami'], ['tops'], ['weikfield'], ['keya'], ['tang'],
   ['parleg', 'parle'], ['goodday', 'britannia'], ['mariegold', 'britannia'], ['monaco', 'parle'],
   ['krackjack', 'parle'], ['hide and seek', 'parle'], ['little hearts', 'britannia'], ['nutrichoice', 'britannia'],
-  ['hamdard'], ['bhagyalakshmi'], ['jk'], ['nectr'],
+  ['hamdard'], ['bhagyalakshmi'], ['jk'], ['nectr'], ['nilgiris'], ['real', 'dabur'],
 ];
 
 // Lines whose name is the whole title ("Coca-Cola", "Sprite"): with the brand
@@ -235,6 +235,16 @@ const ORIGIN = ['desi', 'organic', 'farm', 'homegrown', 'hydroponic'];
 const ORIGIN_AS_DESI = ['indian', 'india'];
 
 // One-sided presence of these means a different product ("Coca-Cola" vs "Coca-Cola Zero").
+// Words that name a different kind of a staple ("Rock Salt", "Soy Milk",
+// "Cocoa Butter", "Ice Tea", "Herbal Toothpaste"). Within one brand the usual
+// extra-word cap applies; across brands one of these on one side only rejects.
+const CROSS_KIND = [
+  'rock', 'pink', 'sea', 'himalayan', 'sendha', 'black', 'lite', 'soya', 'oat', 'coconut', 'almond', 'cashew',
+  'rice', 'flavour', 'powder', 'condensed', 'garlic', 'cocoa', 'shea', 'peanut', 'table',
+  'ice', 'iced', 'herbal', 'green', 'masala', 'ginger', 'tulsi', 'lemon', 'kid', 'baby', 'sensitive', 'whitening',
+  'charcoal', 'gel', 'multigrain', 'organic', 'sugarfree', 'brown',
+];
+
 const HARD_QUALIFIERS = new Set([
   'zero', 'diet', 'sugarfree', 'unsalted', 'lite', 'light', 'decaf', 'lowfat', 'fatfree', 'glutenfree',
   'eggless', 'unsweetened', 'lactosefree', 'sugarless', 'lowsodium', 'lesssugar',
@@ -328,6 +338,7 @@ const norm = (list: Iterable<string>) => new Set([...list].map(normalizeWord));
 const STOP_NORM = new Set([...STOPWORDS, ...norm(STOPWORDS)]);
 const GENERIC_NORM = new Set([...GENERIC, ...norm(GENERIC)]);
 const HARD_NORM = new Set([...HARD_QUALIFIERS, ...norm(HARD_QUALIFIERS)]);
+const CROSS_KIND_NORM = new Set([...CROSS_KIND, ...norm(CROSS_KIND)]);
 const CONFLICT_GROUPS = CONFLICT_GROUPS_RAW.map(g => [...new Set(g.map(normalizeWord))]);
 const ORIGIN_NORM = new Set([...ORIGIN, ...norm(ORIGIN)]);
 const ORIGIN_AS_DESI_NORM = new Set([...ORIGIN_AS_DESI, ...norm(ORIGIN_AS_DESI)]);
@@ -769,18 +780,11 @@ function scoreAnalysed(rawA: Analysed, rawB: Analysed, crossBrand: boolean): Mat
       brandRelation = 'unverified';
       brandNote = `brand may differ (${pretty(bare[0])} vs ${crossBrand ? brandName(A.brands[0] || B.brands[0]) : pretty(A.brands[0] || B.brands[0])})`;
       reasons.push(brandNote);
-      // An unknown leading word in the brand's place is probably another brand,
-      // but it could be a product word ("Sambar Onion"): it is set aside only
-      // when the rest agrees word for word, and then auto needs a tight price.
-      const [sA, sB] = A.brands.length ? [withoutBrand(A), withoutBrand(B, bare[0])] : [withoutBrand(A, bare[0]), withoutBrand(B)];
-      const same = (x: Set<string>, y: Set<string>) => x.size > 0 && x.size === y.size && [...x].every(t => y.has(t));
-      if (crossBrand && !SIGNAL.has(bare[0]) && same(sA.distinctive, sB.distinctive)) {
-        [NA, NB] = [sA, sB];
-        priceGate = GLOSS_PRICE_RATIO;
-      } else {
-        nameMult = 0.6;
-        capped = true;
-      }
+      // An unknown leading word may be another brand, but just as often it says
+      // which kind of product it is ("Rock Salt", "Soy Milk", "Ice Tea"), so it
+      // is never set aside: at most a suggestion. Real brands go in BRANDS.
+      nameMult = 0.6;
+      capped = true;
     } else {
       brandRelation = 'one-sided';
       reasons.push(A.brands.length ? 'no brand on this listing' : `brand only on this listing (${crossBrand ? brandName(B.brands[0]) : pretty(B.brands[0])})`);
@@ -817,6 +821,12 @@ function scoreAnalysed(rawA: Analysed, rawB: Analysed, crossBrand: boolean): Mat
   const wordsA = allWords(A), wordsB = allWords(B);
   const q = oneSidedQualifier(wordsA, wordsB);
   if (q) return reject(`"${q}" variant on one side only`);
+  // Across brands, a kind-of-product word on one side only ("Rock Salt",
+  // "Milk Powder", "Herbal Toothpaste") is another product, not a substitute.
+  if (crossBrand && brandRelation !== 'same') {
+    const kind = [...wordsA, ...wordsB].find(t => CROSS_KIND_NORM.has(t) && wordsA.has(t) !== wordsB.has(t));
+    if (kind) return reject(`"${kind}" on one side only`);
+  }
   const conflict = conflictingVariant(wordsA, wordsB);
   if (conflict) return reject(`different variant (${conflict[0]} vs ${conflict[1]})`);
 
@@ -1008,7 +1018,7 @@ export function rankCandidates<T extends MatchableItem>(
   }));
   rows.sort((a, b) =>
     b.ranked.score - a.ranked.score ||
-    BRAND_TIER[a.ranked.brandRelation] - BRAND_TIER[b.ranked.brandRelation] ||
+    (crossBrand ? BRAND_TIER[a.ranked.brandRelation] - BRAND_TIER[b.ranked.brandRelation] : 0) ||
     Number(b.ranked.candidate.inStock !== false) - Number(a.ranked.candidate.inStock !== false) ||
     a.size - b.size ||
     Math.abs((Number(a.ranked.candidate.price) || 0) - tPrice) - Math.abs((Number(b.ranked.candidate.price) || 0) - tPrice) ||
@@ -1047,10 +1057,12 @@ export function decideMatch<T extends MatchableItem>(
       reasons: top ? [`closest is ${Math.round(top.score * 100)}%`, ...top.reasons] : ['no similar product'],
     };
   }
+  // Brand tiers only apply across brands; crossBrand: false is the old strict path.
+  const crossBrand = opts.crossBrand ?? ALLOW_CROSS_BRAND;
   const tier = BRAND_TIER[top.brandRelation];
-  const runnerUp = viable.slice(1).find(r => !equivalent(top, r) && BRAND_TIER[r.brandRelation] <= tier);
+  const runnerUp = viable.slice(1).find(r => !equivalent(top, r) && (!crossBrand || BRAND_TIER[r.brandRelation] <= tier));
   // e.g. Aashirvaad Salt 1 kg on top while Tata Salt 500 g is listed: let the user choose.
-  const closerBrand = viable.find(r => BRAND_TIER[r.brandRelation] < tier && r.score >= suggestMin);
+  const closerBrand = crossBrand ? viable.find(r => BRAND_TIER[r.brandRelation] < tier && r.score >= suggestMin) : undefined;
   const margin = top.score - (runnerUp?.score ?? 0);
   const reasons = [...top.reasons];
   let band: MatchBand = 'suggest';
