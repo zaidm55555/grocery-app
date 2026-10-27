@@ -165,7 +165,9 @@ async function searchBlinkitProduct(
       const parsed = parseBlinkitProducts(json);
       const best = pickBestMatch<{ name: string; unit: string; productId: string; availableStock?: number; maxQuantity?: number }>(
         { name, unit },
-        parsed.map((p: any) => ({ name: p.name, unit: p.unit, productId: p.productId, availableStock: p.availableStock, maxQuantity: p.maxQuantity }))
+        parsed.map((p: any) => ({ name: p.name, unit: p.unit, productId: p.productId, availableStock: p.availableStock, maxQuantity: p.maxQuantity })),
+        // Re-finding the basket's own listing for the cart: never another brand.
+        { crossBrand: false },
       );
       if (best?.candidate?.productId) {
         return {

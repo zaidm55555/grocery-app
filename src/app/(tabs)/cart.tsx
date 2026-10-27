@@ -40,6 +40,8 @@ interface VariantRowItem {
   platformLimit?: number;
   billedQty?: number;
   isCapped: boolean;
+  // Why the matcher linked this store's listing, e.g. "different brand (Tata → Aashirvaad)".
+  matchNote?: string;
 }
 
 const EMPTY_VERDICT: BasketVerdict = {
@@ -478,7 +480,8 @@ export default function CartScreen() {
           isOos,
           platformLimit,
           billedQty,
-          isCapped
+          isCapped,
+          matchNote: line.product.platformPrices?.[p]?.matchNote,
         };
         return item;
       })
@@ -602,7 +605,7 @@ export default function CartScreen() {
                               ) : null}
                             </View>
                             <Text style={[styles.lineTitle, v.isOos && styles.lineTitleOos]} numberOfLines={2}>{v.product.title}</Text>
-                            <Text style={styles.lineUnit}>{v.product.quantity}</Text>
+                            <Text style={styles.lineUnit}>{v.product.quantity}{v.matchNote ? ` · ${v.matchNote}` : ''}</Text>
                           </View>
                           <View style={{ alignItems: 'flex-end', minWidth: 70 }}>
                             {v.isOos ? (

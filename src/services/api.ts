@@ -5,7 +5,18 @@ import { priceBlinkitCart } from './blinkitPricing';
 import { requestViaBlinkitBridge, isBlinkitBridgeConnected, waitForBlinkitBridge, recoverBlinkitBridge, waitForBlinkitBridgeReady } from './blinkitBridge';
 import { pickBestMatch, isSameProduct } from '../utils/matcher';
 import { stripSizeToken } from '../utils/productKey';
+import { isLocationSearchError } from '../utils/searchOutcome';
 import { loadDemoMode, demoSearch, demoCalculate, DEMO_LOCATION, DEMO_BLINKIT_AUTH_KEY, setDemoSwiggyLocation } from './demo';
+
+/** Search-result parsing: by default sold-out listings are dropped. */
+export interface ParseOptions {
+  includeOutOfStock?: boolean;
+}
+
+export interface SearchSingleOptions extends ParseOptions {
+  /** Rethrow search failures instead of answering []. */
+  throwOnError?: boolean;
+}
 
 export interface UnifiedProduct {
   id: string;
@@ -55,6 +66,9 @@ export interface PlatformVariant {
   // Such a pick is often a different-looking product (that is why auto-match
   // found nothing), so a refresh must not discard it as a weak link.
   manual?: boolean;
+  // Linked across brands by the matcher, e.g. "different brand (Tata → Aashirvaad)",
+  // so the basket can say the other store's listing is a substitute.
+  matchNote?: string;
 }
 
 // Effective product used when pricing a cart line on a given platform:
@@ -270,7 +284,12 @@ function bridgedBlinkitSearch(url: string, headers: Record<string, string>, stat
       if (res.status === 200) {
         try {
           const json = JSON.parse(res.text);
-          blinkitSearchCache.set(key, { at: Date.now(), json });
+          // Only a result that lists products is reused: an empty answer (e.g. from a
+          // page whose session isn't set up yet) must not stick for a minute, so
+          // searching again really asks again.
+          if (parseBlinkitProducts(json, { includeOutOfStock: true }).length > 0) {
+            blinkitSearchCache.set(key, { at: Date.now(), json });
+          }
           return json;
         } catch { return null; }
       }
@@ -1119,12 +1138,12 @@ export const api = {
           results = await this.fetchDirectAPI(platform, query, token, location);
         } catch (error: any) {
           const msg = error?.message || String(error);
-          if (msg.includes('_TOO_FAR') || msg.includes('_NO_ADDRESS') || msg.includes('_UNAVAILABLE')) {
-          } else {
+          if (!isLocationSearchError(msg)) {
             console.warn(`[Search Warning - ${platform} for "${query}"]: ${msg}`);
           }
           results = [];
-          platformError = error?.message;
+          // Always a message: the screen tells "can't deliver here" from "failed, retry".
+          platformError = msg;
         }
       }
 
@@ -1156,19 +1175,28 @@ export const api = {
     return demoSearch(platform, query);
   },
 
-  async searchSingle(platform: Platform, query: string): Promise<UnifiedProduct[]> {
+  /**
+   * One store's search. Errors come back as [] unless `throwOnError` (the
+   * match flow needs to tell "search failed" from "nothing found");
+   * `includeOutOfStock` keeps sold-out listings, flagged `inStock: false`.
+   */
+  async searchSingle(platform: Platform, query: string, opts: SearchSingleOptions = {}): Promise<UnifiedProduct[]> {
     if (await loadDemoMode()) return this.searchDemoLive(platform, query);
     const token = await storage.getToken(platform);
     if (!token) return [];
     const location = await storage.getLocation();
+    const parse = opts.includeOutOfStock ? { includeOutOfStock: true } : undefined;
     try {
-      return await this.fetchDirectAPI(platform, query, token, location);
-    } catch {
+      return await (parse
+        ? this.fetchDirectAPI(platform, query, token, location, false, parse)
+        : this.fetchDirectAPI(platform, query, token, location));
+    } catch (e) {
+      if (opts.throwOnError) throw e;
       return [];
     }
   },
 
-  async fetchDirectAPI(platform: Platform, query: string, token: string, location: LocationData | null, demo = false): Promise<UnifiedProduct[]> {
+  async fetchDirectAPI(platform: Platform, query: string, token: string, location: LocationData | null, demo = false, parse: ParseOptions = {}): Promise<UnifiedProduct[]> {
     if (!location) return [];
     const lat = location.latitude;
     const lng = location.longitude;
@@ -1273,10 +1301,11 @@ export const api = {
         }
         json = await response.json();
       }
-      const parsed = parseBlinkitProducts(json);
+      const parsed = parseBlinkitProducts(json, parse);
 
       return parsed.map((item: any) => ({
         id: `blinkit-${item.productId || Math.random()}`,
+        ...(item.inStock === false ? { inStock: false } : {}),
         title: item.name,
         brand: 'Blinkit',
         quantity: item.unit || '1 unit',
@@ -1439,10 +1468,11 @@ export const api = {
       }
 
 
-      const parsed = extractSwiggySearchProducts(searchJson, query);
+      const parsed = extractSwiggySearchProducts(searchJson, query, parse);
 
       return parsed.map((item: any) => ({
         id: `swiggy-${item.itemId || Math.random()}`,
+        ...(item.inStock === false ? { inStock: false } : {}),
         title: item.name,
         brand: 'Instamart',
         quantity: item.unit || '1 unit',
@@ -2802,9 +2832,10 @@ export function extractSwiggyStockAndLimit(v: any, product?: any): { availableSt
   return { availableStock, maxQuantity };
 }
 
-function extractVariation(product: any, v: any, productId: string): any {
+function extractVariation(product: any, v: any, productId: string, includeOutOfStock = false): any {
   if (!v || typeof v !== 'object') return null;
-  if (!isSwiggyInStock(product, v)) return null;
+  const inStock = isSwiggyInStock(product, v);
+  if (!inStock && !includeOutOfStock) return null;
   const name = (typeof v.displayName === 'string' && v.displayName.trim())
     ? v.displayName.trim()
     : (typeof product.displayName === 'string' ? product.displayName.trim() : '');
@@ -2857,14 +2888,14 @@ function extractVariation(product: any, v: any, productId: string): any {
     itemId: itemIdVal,
     spinId: spinId,
     storeId: storeIdVal,
-    inStock: true,
+    inStock,
     availableStock,
     maxQuantity,
     _rawVariation: v  // kept temporarily for debugging
   };
 }
 
-export function extractSwiggySearchProducts(json: any, query?: string): any[] {
+export function extractSwiggySearchProducts(json: any, query?: string, opts: ParseOptions = {}): any[] {
   const out: any[] = [];
   const seen: Record<string, boolean> = {};
   if (!json || typeof json !== 'object') return out;
@@ -2881,10 +2912,15 @@ export function extractSwiggySearchProducts(json: any, query?: string): any[] {
     if (hasVariations && hasName) {
       const productId = (typeof node.productId === 'string') ? node.productId : '';
       for (let v = 0; v < node.variations.length && out.length < 120; v++) {
-        const p = extractVariation(node, node.variations[v], productId);
-        if (p && p.inStock !== false) {
+        const p = extractVariation(node, node.variations[v], productId, !!opts.includeOutOfStock);
+        if (p && (p.inStock !== false || opts.includeOutOfStock)) {
           const key = (p.productId || p.name) + '|' + p.unit;
           if (!seen[key]) { seen[key] = true; out.push(p); }
+          else if (p.inStock !== false) {
+            // A sold-out copy seen first must not hide the in-stock one.
+            const i = out.findIndex(o => o.inStock === false && (o.productId || o.name) + '|' + o.unit === key);
+            if (i >= 0) out[i] = p;
+          }
         }
       }
     }
@@ -3059,7 +3095,7 @@ function isBlinkitInStock(node: any): boolean {
   return true;
 }
 
-export function parseBlinkitProducts(json: any): any[] {
+export function parseBlinkitProducts(json: any, opts: ParseOptions = {}): any[] {
   const out: any[] = [];
   if (!json || typeof json !== 'object') return out;
   const visited = new Set<any>();
@@ -3115,7 +3151,7 @@ export function parseBlinkitProducts(json: any): any[] {
       const numMrp = typeof mrp === 'number' ? mrp : Number((String(mrp || price).match(/\d[\d,]*/) || [])[0] || 0);
       if (numPrice > 0 && name.length >= 3 && name.length <= 150) {
         const nodeInStock = isBlinkitInStock(node);
-        if (nodeInStock) {
+        if (nodeInStock || opts.includeOutOfStock) {
           const rawImg = findBlinkitImageUrl(node, 0);
           image = formatBlinkitImageUrl(rawImg);
           const cleanName = String(name).trim();
@@ -3178,6 +3214,7 @@ export function parseBlinkitProducts(json: any): any[] {
             merchantId: String(cartItem?.merchant_id ?? node.merchant_id ?? ''),
             availableStock,
             maxQuantity,
+            ...(nodeInStock ? {} : { inStock: false }),
           });
         }
       }
@@ -3205,6 +3242,10 @@ export function parseBlinkitProducts(json: any): any[] {
     if (finalSeen[normKey] != null) {
       const existing = finalOut[finalSeen[normKey]];
       if (!existing.image && item.image) existing.image = item.image;
+      // A sold-out copy seen first must not hide the in-stock one.
+      if (existing.inStock === false && item.inStock !== false) {
+        finalOut[finalSeen[normKey]] = { ...item, image: item.image || existing.image };
+      }
     } else if (finalSeen[normName] != null) {
       const existingNameIdx = finalSeen[normName];
       const existingNameItem = finalOut[existingNameIdx];
@@ -3421,11 +3462,10 @@ export function pickInstamartCandidate(candidates: any[], name: string, unit: st
   }
 
   const target = { name, title: name, unit, quantity: unit, price };
-  const bestMatch = pickBestMatch(target, candidates);
-  if (bestMatch && bestMatch.candidate && isSameProduct(target, bestMatch.candidate)) {
-    return bestMatch.candidate;
-  }
-  return null;
+  // Only strict same-product candidates compete, so a re-ranked near miss can
+  // never shadow the real listing.
+  const bestMatch = pickBestMatch(target, candidates.filter(c => isSameProduct(target, c)));
+  return bestMatch?.candidate ?? null;
 }
 
 // Locates the bill node in a checkout/v2/cart response. The documented spot

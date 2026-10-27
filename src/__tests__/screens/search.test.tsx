@@ -255,11 +255,14 @@ describe('Search screen: searching', () => {
     expect(await u.findByText('Showing Instamart results only • Cannot search Blinkit on current location')).toBeTruthy();
   });
 
-  it('survives api.search throwing', async () => {
-    (api.search as jest.Mock).mockRejectedValue(new Error('boom'));
+  it('survives api.search throwing, offering a retry rather than "no results"', async () => {
+    (api.search as jest.Mock).mockRejectedValueOnce(new Error('boom'));
     const u = await renderSearch();
     await doSearch(u);
-    expect(await u.findByText('No Live Results Found')).toBeTruthy();
+    expect(await u.findByText('Search Didn\'t Go Through')).toBeTruthy();
+    expect(u.queryByText('No Live Results Found')).toBeNull();
+    await act(async () => { await fireEvent.press(u.getByText('Try Again')); });
+    expect(await u.findByText('Tata Salt Blinkit')).toBeTruthy();
   });
 
   it('quick-search chips run a search', async () => {
@@ -280,6 +283,189 @@ describe('Search screen: searching', () => {
     expect(u.getByPlaceholderText(/Search Milk/).props.value).toBe('');
     await waitFor(() => expect(u.queryByText('Tata Salt Blinkit')).toBeNull());
     expect(u.getByText('Quick:')).toBeTruthy();
+  });
+});
+
+// Regression: on a phone, the first Search tap after typing showed "No Live
+// Results Found" and only a second tap searched. The tap went to the list (to
+// dismiss the keyboard) instead of the button, and the typed-but-unsearched
+// query already rendered as "no results".
+describe('Search screen: first search', () => {
+  beforeEach(async () => { await linkBoth(); await storage.saveLocation(LOC); });
+
+  const deferred = () => {
+    let resolve!: () => void;
+    const promise = new Promise<void>(r => { resolve = r; });
+    return { promise, resolve };
+  };
+  // Starts a press whose search is held open by the test. RNTL's press returns
+  // the handler's promise but leaves its act() flush pending; nesting it in an
+  // awaited act() closes that scope now, so several searches can be in flight
+  // without act() scopes interleaving.
+  const startPress = async (el: any) => {
+    let done!: Promise<unknown>;
+    await act(async () => { done = fireEvent.press(el); });
+    return { done };
+  };
+  const finish = async (gate: { resolve: () => void }, run: { done: Promise<unknown> }) => {
+    await act(async () => { gate.resolve(); await run.done; });
+  };
+
+  it('lets the Search button take the first tap while the keyboard is up', async () => {
+    const u = await renderSearch();
+    // The search bar is in the list header: with the default ('never') the
+    // list eats a tap that lands while the keyboard is open.
+    const list = u.root!.queryAll((n: any) => n.props.keyboardShouldPersistTaps !== undefined);
+    expect(list.length).toBeGreaterThan(0);
+    list.forEach((n: any) => expect(n.props.keyboardShouldPersistTaps).toBe('handled'));
+  });
+
+  it('does not call typed text that was never searched "no results"', async () => {
+    const u = await renderSearch();
+    await fireEvent.changeText(u.getByPlaceholderText(/Search Milk/), 'paneer');
+    expect(u.queryByText('No Live Results Found')).toBeNull();
+    expect(u.getByText('Build your optimized basket')).toBeTruthy();
+    expect(api.search).not.toHaveBeenCalled();
+  });
+
+  it('shows loading, not "No Live Results", until a slow first search (bridge still connecting) answers', async () => {
+    const gate = deferred();
+    searchImpl = async (_q, cb) => {
+      await gate.promise; // e.g. the Blinkit page is still registering
+      cb?.('swiggy', []);
+      cb?.('blinkit', [bl('1', 'Amul Paneer Blinkit')]);
+      return [];
+    };
+    const u = await renderSearch();
+    await fireEvent.changeText(u.getByPlaceholderText(/Search Milk/), 'paneer');
+    const run = await startPress(u.getByText('Search'));
+    expect(u.getByText('Fetching live results…')).toBeTruthy();
+    expect(u.queryByText('No Live Results Found')).toBeNull();
+    expect(api.search).toHaveBeenCalledTimes(1);
+    await finish(gate, run);
+    expect(u.getByText('Amul Paneer Blinkit')).toBeTruthy();
+    expect(u.queryByText('No Live Results Found')).toBeNull();
+  });
+
+  it('keeps loading while one store answered empty and the other is still searching', async () => {
+    const gate = deferred();
+    searchImpl = async (_q, cb) => {
+      cb?.('swiggy', []);
+      await gate.promise;
+      cb?.('blinkit', [bl('1', 'Amul Paneer Blinkit')]);
+      return [];
+    };
+    const u = await renderSearch();
+    await fireEvent.changeText(u.getByPlaceholderText(/Search Milk/), 'paneer');
+    const run = await startPress(u.getByText('Search'));
+    expect(u.getByText('Fetching live results…')).toBeTruthy();
+    expect(u.getByText('Searching Blinkit')).toBeTruthy();
+    expect(u.queryByText('No Live Results Found')).toBeNull();
+    await finish(gate, run);
+    expect(u.getByText('Amul Paneer Blinkit')).toBeTruthy();
+  });
+
+  it('tells a failed store search (bridge down, Cloudflare, HTTP error) from "no products", and retries', async () => {
+    respondWith([], [], { blinkit: 'Blinkit API error: 403' });
+    const u = await renderSearch();
+    await doSearch(u, 'paneer');
+    expect(await u.findByText('Search Didn\'t Go Through')).toBeTruthy();
+    expect(u.getByText(/couldn't reach Blinkit for “paneer”/)).toBeTruthy();
+    expect(u.queryByText('No Live Results Found')).toBeNull();
+    expect(u.queryByText('Cannot Search on Current Location')).toBeNull();
+    respondWith([bl('1', 'Amul Paneer Blinkit')], []);
+    await act(async () => { await fireEvent.press(u.getByText('Try Again')); });
+    expect(await u.findByText('Amul Paneer Blinkit')).toBeTruthy();
+    expect(api.search).toHaveBeenCalledTimes(2);
+    expect(api.search).toHaveBeenLastCalledWith('paneer', expect.any(Function));
+  });
+
+  it('flags a failed store beside the other store\'s results, with a retry', async () => {
+    respondWith([bl('1', 'Tata Salt Blinkit')], [], { swiggy: 'Swiggy search/v2 API error: 500' });
+    const u = await renderSearch();
+    await doSearch(u);
+    expect(await u.findByText('Tata Salt Blinkit')).toBeTruthy();
+    expect(u.getByText('Instamart — search failed')).toBeTruthy();
+    expect(u.queryByText('Instamart — Location')).toBeNull();
+    respondWith([bl('1', 'Tata Salt Blinkit')], [sw('1', 'Tata Salt Swiggy')]);
+    await act(async () => { await fireEvent.press(u.getByLabelText('Retry Instamart search')); });
+    expect(await u.findByText('Tata Salt Swiggy')).toBeTruthy();
+    expect(u.queryByText('Instamart — search failed')).toBeNull();
+  });
+
+  it('says "no results" only once every store answered with nothing', async () => {
+    respondWith([], []);
+    const u = await renderSearch();
+    await doSearch(u, 'zzzz');
+    expect(await u.findByText('No Live Results Found')).toBeTruthy();
+    expect(u.getByText(/matching “zzzz”/)).toBeTruthy();
+    // Editing the box afterwards doesn't relabel the finished search.
+    await fireEvent.changeText(u.getByPlaceholderText(/Search Milk/), 'zzzzq');
+    expect(u.getByText(/matching “zzzz”/)).toBeTruthy();
+  });
+
+  describe('a search superseded by a newer one', () => {
+    let gates: Record<string, ReturnType<typeof deferred>>;
+    beforeEach(() => {
+      gates = { milk: deferred(), eggs: deferred() };
+      searchImpl = async (q, cb) => {
+        await gates[q].promise;
+        cb?.('blinkit', [bl(q, `${q} Blinkit`)]);
+        cb?.('swiggy', []);
+        return [];
+      };
+    });
+
+    const startBoth = async (u: any) => {
+      const input = u.getByPlaceholderText(/Search Milk/);
+      await fireEvent.changeText(input, 'milk');
+      const older = await startPress(u.getByText('Search'));
+      await fireEvent.changeText(input, 'eggs');
+      const newer = await startPress(u.getByText('Search'));
+      expect((api.search as jest.Mock).mock.calls.map(c => c[0])).toEqual(['milk', 'eggs']);
+      return { older, newer };
+    };
+
+    it('cannot overwrite the newer results when its answer arrives late', async () => {
+      const u = await renderSearch();
+      const { older, newer } = await startBoth(u);
+      await finish(gates.eggs, newer);
+      expect(u.getByText('eggs Blinkit')).toBeTruthy();
+      await finish(gates.milk, older);
+      expect(u.queryByText('milk Blinkit')).toBeNull();
+      expect(u.getByText('eggs Blinkit')).toBeTruthy();
+      expect(u.getByText('Live Results for “eggs”')).toBeTruthy();
+    });
+
+    it('cannot end the newer search\'s loading state when it finishes first', async () => {
+      const u = await renderSearch();
+      const { older, newer } = await startBoth(u);
+      await finish(gates.milk, older);
+      expect(u.queryByText('milk Blinkit')).toBeNull();
+      expect(u.getByText('Fetching live results…')).toBeTruthy();
+      expect(u.queryByText('No Live Results Found')).toBeNull();
+      await finish(gates.eggs, newer);
+      expect(u.getByText('eggs Blinkit')).toBeTruthy();
+      expect(u.queryByText('milk Blinkit')).toBeNull();
+    });
+  });
+
+  it('clearing the box during a search drops its results', async () => {
+    const gate = deferred();
+    searchImpl = async (_q, cb) => {
+      await gate.promise;
+      cb?.('blinkit', [bl('1', 'Late Blinkit Item')]);
+      return [];
+    };
+    const u = await renderSearch();
+    await fireEvent.changeText(u.getByPlaceholderText(/Search Milk/), 'salt');
+    const run = await startPress(u.getByText('Search'));
+    expect(u.getByText('Fetching live results…')).toBeTruthy();
+    const box = u.getByPlaceholderText(/Search Milk/).parent!;
+    await act(async () => { await fireEvent.press(touchablesIn(box)[0]); });
+    await finish(gate, run);
+    expect(u.queryByText('Late Blinkit Item')).toBeNull();
+    expect(u.getByText('Build your optimized basket')).toBeTruthy();
   });
 });
 
@@ -522,7 +708,9 @@ describe('Search screen: auto-match on the other app', () => {
     await fireEvent.press(await u.findByText(/^Confirm · /));
     await waitFor(async () => expect((await storage.getCart())[0].product.platformPrices?.swiggy?.id).toBe('swiggy-9'));
     expect(await u.findByText(/Added to basket · now on Instamart/)).toBeTruthy();
-    expect(api.searchSingle).toHaveBeenCalledWith('swiggy', 'Tata Salt Blinkit');
+    // Full title first; the exact twin stops the query ladder there.
+    expect(api.searchSingle).toHaveBeenCalledTimes(1);
+    expect(api.searchSingle).toHaveBeenCalledWith('swiggy', 'Tata Salt Blinkit', { throwOnError: true, includeOutOfStock: true });
   });
 
   it('stamps the matched line when the source and the confirmed twin came from the right store', async () => {
@@ -589,6 +777,20 @@ describe('Search screen: auto-match on the other app', () => {
     await doSearch(u);
     await addFirst(u);
     expect(await u.findByText('no close match')).toBeTruthy();
+  });
+
+  it('offers a different pack size as a suggestion that only links once tapped', async () => {
+    respondWith([bl('1', 'Tata Salt Blinkit')], []);
+    (api.searchSingle as jest.Mock).mockResolvedValue([sw('8', 'Tata Salt Blinkit', { quantity: '2 kg', price: 80 })]);
+    const u = await renderSearch();
+    await doSearch(u);
+    await addFirst(u);
+    expect(await u.findByText('check match')).toBeTruthy();
+    expect(u.getByText(/different size 1 kg vs 2 kg/)).toBeTruthy();
+    expect(u.getByText('Confirm · 0 matches')).toBeTruthy();
+    await fireEvent.press(u.getAllByText('Tata Salt Blinkit').slice(-1)[0]);
+    await fireEvent.press(await u.findByText('Confirm · 1 match'));
+    await waitFor(async () => expect((await storage.getCart())[0].product.platformPrices?.swiggy).toMatchObject({ id: 'swiggy-8', manual: true }));
   });
 
   it('reports a search error and can retry', async () => {
@@ -733,6 +935,7 @@ describe('Search screen: AI mode', () => {
       requested: [{ name: 'Milk', query: 'milk', amount: '1 litre' }],
       picks: [{ index: 0, item: { name: 'Milk', query: 'milk', amount: '1 litre' }, product: milk, units: 2, reason: '' }],
       unmatched: [],
+      unlinked: [],
     });
     await storage.saveLocation(LOC);
     await linkBoth();

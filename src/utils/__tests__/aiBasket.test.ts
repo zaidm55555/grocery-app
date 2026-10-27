@@ -217,6 +217,26 @@ describe('attachTwins', () => {
     expect(src.platformPrices).toBeUndefined();
   });
 
+  it('only attaches an auto-band twin: no other pack size, no superset variant', () => {
+    const src = bl('1', 'Amul Taaza Toned Milk', { quantity: '500 ml', price: 27 });
+    expect(attachTwins(src, [sw('2', 'Amul Taaza Toned Milk', { quantity: '1 L', price: 54 })])).toBe(src);
+    expect(attachTwins(src, [sw('3', 'Amul Taaza Toned Milk Slim', { quantity: '500 ml', price: 27 })])).toBe(src);
+  });
+
+  it('may attach another brand of the same product, noting the brand swap', () => {
+    const src = bl('1', 'Tata Salt', { quantity: '1 kg', price: 28 });
+    const out = attachTwins(src, [sw('6', 'Aashirvaad Salt', { quantity: '1 kg', price: 27 })]);
+    expect(out.platformPrices?.swiggy?.id).toBe('swiggy-6');
+    expect(out.platformPrices?.swiggy?.matchNote).toBe('different brand (Tata → Aashirvaad)');
+    const same = attachTwins(src, [sw('7', 'Tata Salt', { quantity: '1 kg', price: 28 })]);
+    expect(same.platformPrices?.swiggy?.matchNote).toBeUndefined();
+  });
+
+  it('does not attach when two different listings are equally likely', () => {
+    const src = bl('1', 'Amul Milk', { quantity: '500 ml', price: 30 });
+    expect(attachTwins(src, [sw('4', 'Amul Taaza Milk', { quantity: '500 ml' }), sw('5', 'Amul Gold Milk', { quantity: '500 ml' })])).toBe(src);
+  });
+
   it('leaves the product alone when nothing matches or a price is already set', () => {
     const src = bl('1', 'Amul Taaza Toned Milk');
     expect(attachTwins(src, [sw('9', 'Dishwash Gel')])).toBe(src);

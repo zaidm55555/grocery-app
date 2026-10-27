@@ -8,14 +8,17 @@
 // when a listing can't be found it is flagged unavailable instead.
 import { api, UnifiedProduct, PlatformVariant, CartCalculation, getProductPlatformLimit } from './api';
 import { Platform } from './storage';
-import { matchScore, pickBestMatch, isSameProduct } from '../utils/matcher';
+import { scoreMatch, pickBestMatch, isSameProduct, decideMatch, brandNote, SUGGEST_MIN } from '../utils/matcher';
 import { stripSizeToken } from '../utils/productKey';
 import { needsRefresh } from '../utils/lineFreshness';
 
 type Line = { product: UnifiedProduct; quantity: number };
 
 const POOL = 5;
-const LINK_MIN_SCORE = 0.5;
+// A stored (non-manual) link stays while it is at least a plausible match;
+// one the matcher now rejects outright (other brand/variant/size class) is
+// replaced. Replacements are only made from an 'auto'-band match.
+const LINK_MIN_SCORE = SUGGEST_MIN;
 
 type IdBearer = { id?: string; productId?: string; originalId?: string; spinId?: string };
 const clean = (xs: (string | undefined)[]) => xs.filter(Boolean).map(String);
@@ -60,10 +63,9 @@ function findLive(stored: PlatformVariant | UnifiedProduct, candidates: UnifiedP
   const ids = variantIdsOf(stored);
   const byId = candidates.find(c => variantIdsOf(c).some(i => ids.includes(i)));
   if (byId) return byId;
-  const best = pickBestMatch({ name: stored.title, unit: stored.quantity, price: stored.price }, candidates);
-  return best && isSameProduct({ name: stored.title, unit: stored.quantity }, { name: best.candidate.title, unit: best.candidate.quantity })
-    ? best.candidate
-    : null;
+  const target = { name: stored.title, unit: stored.quantity, price: stored.price };
+  const same = candidates.filter(c => isSameProduct(target, { name: c.title, unit: c.quantity }));
+  return pickBestMatch(target, same)?.candidate ?? null;
 }
 
 async function refreshLine(line: Line): Promise<Line> {
@@ -85,19 +87,25 @@ async function refreshLine(line: Line): Promise<Line> {
     const stored = prices[pl]!;
     // A link the user picked by hand is kept however weakly it scores — it is
     // usually the very reason auto-match found nothing.
-    const linkValid = stored.manual || matchScore({ name: src.title, unit: src.quantity, price: src.price }, { name: stored.title, unit: stored.quantity, price: stored.price }) >= LINK_MIN_SCORE;
+    const link = scoreMatch({ name: src.title, unit: src.quantity, price: src.price }, { name: stored.title, unit: stored.quantity, price: stored.price });
+    const linkValid = stored.manual || (!link.rejected && link.score >= LINK_MIN_SCORE);
 
     if (linkValid) {
       const cands = await searchLive(pl, stored.title);
       if (cands.length === 0) continue; // search gave nothing — keep what we have
       const live = findLive(stored, cands);
-      prices[pl] = live ? { ...toVariant(live), ...(stored.manual ? { manual: true } : {}) } : unavailable(stored);
+      prices[pl] = live
+        ? { ...toVariant(live), ...(stored.manual ? { manual: true } : {}), ...(stored.matchNote ? { matchNote: stored.matchNote } : {}) }
+        : unavailable(stored);
     } else {
       // Bad link from an older matcher: replace with a proper match for the
       // SOURCE product, or drop the link rather than keep a different product.
       const cands = await searchLive(pl, src.title);
-      const best = pickBestMatch({ name: src.title, unit: src.quantity, price: src.price }, cands);
-      if (best) prices[pl] = toVariant(best.candidate);
+      const decision = decideMatch({ name: src.title, unit: src.quantity, price: src.price }, cands);
+      if (decision.band === 'auto' && decision.best) {
+        const note = brandNote(decision.best);
+        prices[pl] = { ...toVariant(decision.best.candidate), ...(note ? { matchNote: note } : {}) };
+      }
       else if (cands.length > 0) delete prices[pl];
     }
   }

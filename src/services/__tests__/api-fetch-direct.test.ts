@@ -226,6 +226,25 @@ describe('Blinkit search', () => {
     bb.requestViaBlinkitBridge.mockResolvedValue({ status: 200, text: JSON.stringify({ nothing: true }) });
     expect(await api.fetchDirectAPI('blinkit', 'zzz', 'tok', LOC)).toEqual([]);
   });
+
+  it('does not reuse an empty bridge answer: searching again asks the page again', async () => {
+    // e.g. the page answered before its session was set up; the retry must not get that [] back from cache.
+    bb.requestViaBlinkitBridge
+      .mockResolvedValueOnce({ status: 200, text: JSON.stringify({ nothing: true }) })
+      .mockResolvedValueOnce({ status: 200, text: JSON.stringify(blinkitJson('Amul Paneer')) });
+    expect(await api.fetchDirectAPI('blinkit', 'paneer', 'tok', LOC)).toEqual([]);
+    const again = await api.fetchDirectAPI('blinkit', 'paneer', 'tok', LOC);
+    expect(again[0].title).toBe('Amul Paneer');
+    expect(bb.requestViaBlinkitBridge).toHaveBeenCalledTimes(2);
+  });
+
+  it('still reuses a bridge answer whose listings are all sold out', async () => {
+    const soldOut = { layout: [{ data: { name: { text: 'Amul Paneer' }, price: '₹90', unit: '200 g', id: 7, out_of_stock: true } }] };
+    bb.requestViaBlinkitBridge.mockResolvedValue({ status: 200, text: JSON.stringify(soldOut) });
+    await api.fetchDirectAPI('blinkit', 'paneer2', 'tok', LOC);
+    await api.fetchDirectAPI('blinkit', 'paneer2', 'tok', LOC);
+    expect(bb.requestViaBlinkitBridge).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('Swiggy search', () => {

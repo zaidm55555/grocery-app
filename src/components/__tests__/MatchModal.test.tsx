@@ -59,6 +59,21 @@ describe('MatchModal: confirm step', () => {
     expect(onConfirm).toHaveBeenCalled();
   });
 
+  it('an auto-match of another brand says so on the badge and the row', async () => {
+    const best = swiggyProd('s-a', 'Aashirvaad Salt', 28);
+    const cell: MatchCell = { ...okCell(best), ranked: [{ product: best, score: 0.9, reasons: ['different brand (Tata → Aashirvaad)'] }] };
+    const { getByText } = await setup(flow({ results: { t1: { swiggy: cell } } }));
+    expect(getByText(/other brand/)).toBeTruthy();
+    expect(getByText('different brand (Tata → Aashirvaad)')).toBeTruthy();
+  });
+
+  it('also flags an auto-match whose brand is only on one listing', async () => {
+    const best = swiggyProd('s-p', 'Paneer', 90);
+    const cell: MatchCell = { ...okCell(best), ranked: [{ product: best, score: 0.9, reasons: ['no brand on this listing'] }] };
+    const { getByText } = await setup(flow({ results: { t1: { swiggy: cell } } }));
+    expect(getByText(/other brand/)).toBeTruthy();
+  });
+
   it('Skip (footer) and the close button both call onSkip', async () => {
     const { getByText, onSkip } = await setup(flow());
     await fireEvent.press(getByText('Skip'));
@@ -143,5 +158,88 @@ describe('MatchModal: confirm step', () => {
   it('error cell without a message falls back to a generic one', async () => {
     const f = flow({ results: { t1: { swiggy: { status: 'error', candidates: [], best: null, score: null } } } });
     expect((await setup(f)).getByText(/Search failed\./)).toBeTruthy();
+  });
+});
+
+describe('MatchModal: ranking and suggestions', () => {
+  const sp = (id: string, title: string, quantity: string, price: number) => product({ id, title, quantity, price, platform: 'swiggy' });
+
+  it('lists candidates by match score, not search order', async () => {
+    const weak = sp('w', 'Aashirvaad Salt', '1 kg', 28);
+    const mid = sp('m', 'Tata Salt', '500 g', 15);
+    const strong = sp('s', 'Tata Iodised Salt', '1 kg', 28);
+    const f = flow({ results: { t1: { swiggy: { status: 'empty', candidates: [weak, mid, strong], best: null, score: null } } } });
+    const { getByText, getAllByText } = await setup(f);
+    await fireEvent.press(getByText('Pick manually'));
+    const titles = getAllByText(/Salt$/).map(n => n.props.children).slice(1); // [0] is the target header
+    // Another brand at the same size ranks above the same brand at half the size.
+    expect(titles).toEqual(['Tata Iodised Salt', 'Aashirvaad Salt', 'Tata Salt']);
+    expect(getByText(/different size 1 kg vs 500 g/)).toBeTruthy();
+    expect(getByText(/different brand \(Tata → Aashirvaad\)/)).toBeTruthy();
+  });
+
+  it('uses the ranking stored by the search when present', async () => {
+    const a = sp('a', 'First Listing', '1 kg', 10);
+    const b = sp('b', 'Second Listing', '1 kg', 10);
+    const cell: MatchCell = {
+      status: 'empty', candidates: [a, b], best: null, score: null,
+      ranked: [{ product: b, score: 0.7, reasons: ['pack size unknown'] }, { product: a, score: 0.2, reasons: [] }],
+    };
+    const { getByText, getAllByText } = await setup(flow({ results: { t1: { swiggy: cell } } }));
+    await fireEvent.press(getByText('Pick manually'));
+    expect(getAllByText(/Listing$/).map(n => n.props.children)).toEqual(['Second Listing', 'First Listing']);
+    expect(getByText('70%')).toBeTruthy();
+    expect(getByText('pack size unknown')).toBeTruthy();
+  });
+
+  it('shows more than 8 candidates on request', async () => {
+    const many = Array.from({ length: 11 }, (_, i) => sp(`c${i}`, `Candidate ${i}`, '1 kg', 10));
+    const f = flow({ results: { t1: { swiggy: { status: 'empty', candidates: many, best: null, score: null } } } });
+    const { getByText, queryAllByText } = await setup(f);
+    await fireEvent.press(getByText('Pick manually'));
+    expect(queryAllByText(/^Candidate \d+$/)).toHaveLength(8);
+    await fireEvent.press(getByText('Show 3 more'));
+    expect(queryAllByText(/^Candidate \d+$/)).toHaveLength(11);
+  });
+
+  it('a suggestion is shown with its reasons but needs a tap before it counts', async () => {
+    const litre = sp('s-l', 'Tata Salt Large', '2 kg', 55);
+    const cell: MatchCell = {
+      status: 'suggest', candidates: [litre], best: null, score: 0.72,
+      suggestion: { product: litre, score: 0.72, reasons: ['different size 1 kg vs 2 kg, +₹27'] },
+      ranked: [{ product: litre, score: 0.72, reasons: ['different size 1 kg vs 2 kg, +₹27'] }],
+    };
+    const { getByText, onChoose } = await setup(flow({ results: { t1: { swiggy: cell } } }));
+    expect(getByText('check match')).toBeTruthy();
+    expect(getByText('different size 1 kg vs 2 kg, +₹27')).toBeTruthy();
+    expect(getByText('Confirm · 0 matches')).toBeTruthy();
+    await fireEvent.press(getByText('Tata Salt Large'));
+    expect(onChoose).toHaveBeenCalledWith('t1', 'swiggy', { product: litre, score: 0.72 });
+  });
+
+  it('a picked suggestion counts and says so', async () => {
+    const litre = sp('s-l', 'Tata Salt Large', '2 kg', 55);
+    const cell: MatchCell = { status: 'suggest', candidates: [litre], best: null, score: 0.72, suggestion: { product: litre, score: 0.72 } };
+    const f = flow({ results: { t1: { swiggy: cell } }, chosen: { t1: { swiggy: { product: litre, score: 0.72 } } } });
+    const { getByText } = await setup(f);
+    expect(getByText('picked · 72%')).toBeTruthy();
+    expect(getByText('Confirm · 1 match')).toBeTruthy();
+  });
+
+  it('marks a suggestion cell as "check" while searching', async () => {
+    const f = flow({ step: 'searching', results: { t1: { swiggy: { status: 'suggest', candidates: [], best: null, score: 0.7 } } } });
+    expect((await setup(f)).getByText('check')).toBeTruthy();
+  });
+
+  it('keeps the user\'s pick on top instead of hiding it among the alternatives', async () => {
+    const alt = swiggyProd('s-alt', 'Tata Salt Alt', 31);
+    const f = flow({
+      results: { t1: { swiggy: okCell(swiggyProd('s-best', 'Tata Salt Best'), [alt]) } },
+      chosen: { t1: { swiggy: { product: alt, score: 0.9 } } },
+    });
+    const { getByText } = await setup(f);
+    expect(getByText('Tata Salt Alt')).toBeTruthy();
+    await fireEvent.press(getByText(/Other matches · 1/));
+    expect(getByText('Tata Salt Best')).toBeTruthy();
   });
 });

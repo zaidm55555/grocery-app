@@ -28,6 +28,7 @@ const RESULT: AiBasketResult = {
     { index: 1, item: { name: 'Eggs', query: 'eggs', amount: '24 pieces' }, product: eggs, units: 4, reason: '4 x 6 eggs' },
   ],
   unmatched: [{ index: 2, item: { name: 'Saffron', query: 'saffron', amount: '' }, reason: 'No results on Blinkit or Instamart' }],
+  unlinked: [],
 };
 
 const setup = async (props: Partial<React.ComponentProps<typeof AiModeSheet>> = {}, initial: CartLine[] = []) => {
@@ -152,5 +153,19 @@ describe('AiModeSheet', () => {
     await building;
     expect(u.onCommitCart).not.toHaveBeenCalled();
     await waitFor(() => expect(u.getByText('Build my basket')).toBeTruthy());
+  });
+
+  it('shows which store it is checking while it finds the other-store twins', async () => {
+    let finish: (r: AiBasketResult) => void = () => {};
+    mockBuild.mockImplementation((_text: string, deps: { onProgress: (p: unknown) => void }) => {
+      deps.onProgress({ stage: 'linking', done: 1, total: 3, current: 'Atta', platform: 'swiggy' });
+      return new Promise(res => { finish = res; });
+    });
+    const u = await setup();
+    await fireEvent.changeText(u.getByLabelText('What do you need?'), 'atta');
+    const building = fireEvent.press(u.getByText('Build my basket'));
+    expect(await u.findByText('Finding Atta on Instamart (2/3)…')).toBeTruthy();
+    await act(async () => { finish(RESULT); });
+    await building;
   });
 });
