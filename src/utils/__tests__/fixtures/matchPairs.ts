@@ -295,7 +295,9 @@ export const MATCH_PAIRS: MatchPair[] = [
   p('suggest', 'real', ['Desi Tomato', '500 g', 25], ['Tomato', '500 g', 20]),
   p('suggest', 'real', ['Bhagyalakshmi Black Big Mustard Seeds (Dodda Sasive Kaalu)', '100 g', 30], ['Black Mustard Seeds', '100 g', 25]),
   p('auto', 'xbrand', ['Hamdard Khaalis Cumin Seeds / Jeera Seeds', '100 g', 70], ['Cumin Seeds (Jeera)', '100 g', 60]),
-  p('suggest', 'real', ['JK Red Chilli Powder (Hot) (Kharada Pudi)', '100 g', 45], ['JK Red Chilli Powder', '100 g', 44]),
+  // Was 'suggest' (the "Hot" read as a variant); plain chilli powder is hot by
+  // default (user policy, see the chilli pairs below), so it is the same product.
+  p('auto', 'real', ['JK Red Chilli Powder (Hot) (Kharada Pudi)', '100 g', 45], ['JK Red Chilli Powder', '100 g', 44]),
   p('suggest', 'real', ['Organically Grown Ginger (Shunti)', '100 g', 30], ['Ginger (Adrak)', '100 g', 18]),
   p('suggest', 'real', ['Ginger Chopped (Shunti)', '100 g', 25], ['Ginger', '100 g', 18]),
   p('suggest', 'real', ['nectr Desi Coriander Leaves (Nati)', '90 g', 15], ['Coriander Leaves', '100 g', 14]),
@@ -551,4 +553,30 @@ export const MATCH_PAIRS: MatchPair[] = [
   p('auto', 'line', ['Brooke Bond Red Label Tea', '500 g', 280], ['Red Label Tea', '500 g', 275]),
   // Same brand: a category word is still read as restating the line (as before).
   p('auto', 'line', ['Maggi Masala Noodles', '70 g', 14], ['Maggi Masala Instant Noodles', '70 g', 14]),
+
+  // ---------- chilli: plain chilli powder is hot by default, so "Hot" (and
+  // "Spicy", "Extra Hot", "Very Hot", "Teekha", "Tikhalal") is its usual
+  // strength there, not a variant. "Mild", "Kashmiri", "Deggi" still are, and
+  // "hot" on any other product stays a variant word.
+  p('auto', 'chilli', ['JK Red Chilli Powder (Hot) (Kharada Pudi)', '100 g', 50], ['Catch Red Chilli Powder', '100 g', 49]),
+  p('auto', 'chilli', ['Catch Red Chilli Powder', '100 g', 49], ['JK Red Chilli Powder (Hot) (Kharada Pudi)', '100 g', 50]),
+  p('auto', 'chilli', ['JK Red Chilli Powder (Hot) (Kharada Pudi)', '100 g', 50], ['Mtr Red Chilli Powder', '100 g', 48]),
+  p('auto', 'chilli', ['JK Red Chilli Powder (Hot) (Kharada Pudi)', '100 g', 50], ['Everest Tikhalal Hot & Red Chilli Powder', '100 g', 63]),
+  p('auto', 'chilli', ['Everest Extra Hot Red Chilli Powder', '100 g', 52], ['Catch Red Chilli Powder', '100 g', 49]),
+  p('auto', 'chilli', ['Catch Red Chilli Powder (Very Hot)', '100 g', 50], ['Mtr Red Chilli Powder', '100 g', 48]),
+  p('auto', 'chilli', ['Teekha Lal Mirch Powder', '100 g', 45], ['Catch Red Chilli Powder', '100 g', 49]),
+  p('auto', 'chilli', ['JK Red Chilli Powder (Hot)', '100 g', 50], ['JK Red Chilli Powder', '100 g', 50]),
+  p('none', 'chilli', ['JK Red Chilli Powder (Hot) (Kharada Pudi)', '100 g', 50], ['Kashmiri Mirch Powder', '100 g', 55]),
+  p('suggest', 'chilli', ['JK Red Chilli Powder (Hot) (Kharada Pudi)', '100 g', 50], ['Catch Red Chilli Powder', '500 g', 230]),
+  p('none', 'chilli', ['JK Red Chilli Powder (Hot) (Kharada Pudi)', '100 g', 50], ['Everest Mild Red Chilli Powder', '100 g', 50]),
+  p('none', 'chilli', ['Catch Red Chilli Powder', '100 g', 49], ['Mild Red Chilli Powder', '100 g', 48]),
+  p('none', 'chilli', ['MDH Deggi Mirch Powder', '100 g', 60], ['JK Red Chilli Powder (Hot) (Kharada Pudi)', '100 g', 50]),
+  p('none', 'chilli', ['Maggi Hot & Sweet Tomato Chilli Sauce', '500 g', 150], ['Maggi Tomato Ketchup', '500 g', 150]),
+  p('none', 'chilli', ['Hot & Sweet Tomato Ketchup', '500 g', 140], ['Tomato Ketchup', '500 g', 140]),
+  p('none', 'chilli', ['Hot Chocolate', '200 g', 250], ['Chocolate', '200 g', 250]),
+  p('none', 'chilli', ['Cheetos Flamin Hot', '50 g', 20], ['Cheetos', '50 g', 20]),
+  p('none', 'chilli', ['Hot Dog Buns', '200 g', 40], ['Buns', '200 g', 40]),
+  p('none', 'chilli', ['Teekha Mixture', '200 g', 50], ['Mixture', '200 g', 50]),
+  p('suggest', 'chilli', ['Red Chilli Sauce (Hot)', '200 g', 60], ['Red Chilli Sauce', '200 g', 60]),
+  p('suggest', 'chilli', ['Chilli Chicken Masala Powder (Hot)', '100 g', 60], ['Chilli Chicken Masala Powder', '100 g', 60]),
 ];

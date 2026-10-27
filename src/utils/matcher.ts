@@ -367,6 +367,12 @@ const ORIGIN_NORM = new Set([...ORIGIN, ...norm(ORIGIN)]);
 const ORIGIN_AS_DESI_NORM = new Set([...ORIGIN_AS_DESI, ...norm(ORIGIN_AS_DESI)]);
 const DESI = normalizeWord('desi');
 const VARIETY_GROUP = CONFLICT_GROUPS.find(g => g.includes(DESI))!;
+// Chilli powder strength (see readStrength): words that say "hot", and the rest of their group ("mild").
+const HOT = normalizeWord('hot');
+const HOT_WORDS = norm(['hot', 'spicy', 'extrahot', 'tikha', 'teekha', 'tikhalal', 'teekhalal']);
+const VERY = normalizeWord('very');
+const STRENGTH_GROUP = CONFLICT_GROUPS.find(g => g.includes(HOT))!;
+const [CHILI, POWDER, MASALA] = ['chilli', 'powder', 'masala'].map(normalizeWord);
 /** A leading word that describes the product (generic or origin) rather than naming a brand. */
 const isDescriptorLead = (t: string) => GENERIC_NORM.has(t) || ORIGIN_NORM.has(t);
 
@@ -679,6 +685,32 @@ function readOrigin(x: Analysed, other: Set<string>): Analysed {
   return withTokens(swap(x.tokens), { ...x, aliases: swap(x.aliases) });
 }
 
+// Chilli powder is hot unless it says otherwise ("Mild", "Kashmiri"), so when
+// both titles are plain chilli powder a word that says hot ("Hot", "Spicy",
+// "Extra Hot", "Very Hot", "Teekha", "Tikhalal") is one strength, not a variant
+// ("Hot" ~ "Extra Hot"), and on one title only it is the default strength and
+// dropped, unless the other title names another one ("Mild" still conflicts).
+// Anywhere else ("Hot Chocolate", "Hot & Sweet Sauce", "Chilli Sauce (Hot)",
+// a masala) "hot" stays a variant word.
+const isChilliPowder = (x: Analysed) => {
+  const w = allWords(x);
+  return w.has(CHILI) && w.has(POWDER) && !w.has(MASALA);
+};
+function readStrength(A: Analysed, B: Analysed): [Analysed, Analysed] {
+  const hot = (x: Analysed) => [...x.tokens, ...x.aliases].some(t => HOT_WORDS.has(t));
+  const ha = hot(A), hb = hot(B);
+  if ((!ha && !hb) || !isChilliPowder(A) || !isChilliPowder(B)) return [A, B];
+  const otherStrength = (x: Analysed) => [...x.tokens, ...x.aliases].some(t => STRENGTH_GROUP.includes(t) && !HOT_WORDS.has(t));
+  const canon = (list: string[], drop: boolean) => [...new Set(list
+    .filter((t, i) => !(t === VERY && HOT_WORDS.has(list[i + 1] ?? '')))
+    .map(t => (HOT_WORDS.has(t) ? HOT : t)))].filter(t => !(drop && t === HOT));
+  const read = (x: Analysed, drop: boolean) => {
+    const tokens = canon(x.tokens, drop);
+    return withTokens(tokens, { ...x, aliases: canon(x.aliases, drop).filter(t => !tokens.includes(t)) });
+  };
+  return [read(A, ha && !hb && !otherStrength(B)), read(B, hb && !ha && !otherStrength(A))];
+}
+
 // "Max Fresh" vs "MaxFresh", "Soya Bean" vs "Soyabean": join adjacent words
 // when the joined form is what the other title uses.
 function joinCompounds(A: Analysed, B: Analysed): [Analysed, Analysed] {
@@ -786,7 +818,9 @@ function bracketGloss(A: Analysed, B: Analysed, extras: string[]): boolean {
 
 function scoreAnalysed(rawA: Analysed, rawB: Analysed, crossBrand: boolean): MatchDetail {
   const [oA, oB] = [readOrigin(rawA, allWords(rawB)), readOrigin(rawB, allWords(rawA))];
-  const [A, B] = joinCompounds(readAgainst(oA, allWords(oB)), readAgainst(oB, allWords(oA)));
+  const [jA, jB] = joinCompounds(readAgainst(oA, allWords(oB)), readAgainst(oB, allWords(oA)));
+  // The strict path (crossBrand: false, isSameProduct) keeps reading "hot" literally.
+  const [A, B] = crossBrand ? readStrength(jA, jB) : [jA, jB];
   const parts = { brand: 0, name: 0, variant: 0, size: 0, price: 0, stock: 0 };
   const reasons: string[] = [];
   let capped = false;

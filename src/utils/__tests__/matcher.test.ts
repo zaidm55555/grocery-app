@@ -275,6 +275,29 @@ describe('scoreMatch', () => {
     expect(scoreMatch(t('Britannia Good Day Butter Cookies', '200 g', 35), t('Good Day Butter Cookies', '200 g', 35)).autoEligible).toBe(true);
   });
 
+  it('plain chilli powder is hot by default: a word that says hot is not a variant there', () => {
+    const jk = t('JK Red Chilli Powder (Hot) (Kharada Pudi)', '100 g', 50);
+    const catchPowder = scoreMatch(jk, t('Catch Red Chilli Powder', '100 g', 49));
+    expect(catchPowder).toMatchObject({ autoEligible: true, reasons: ['different brand (Jk → Catch)'] });
+    for (const other of ['Everest Tikhalal Hot & Red Chilli Powder', 'Everest Extra Hot Red Chilli Powder', 'Catch Red Chilli Powder (Very Hot)', 'Teekha Lal Mirch Powder']) {
+      expect(scoreMatch(jk, t(other, '100 g', 52)).autoEligible).toBe(true);
+    }
+    // Other strengths and kinds are still variants...
+    expect(scoreMatch(jk, t('Everest Mild Red Chilli Powder', '100 g', 50)).reasons[0]).toBe('different variant (hot vs mild)');
+    expect(scoreMatch(jk, t('Kashmiri Mirch Powder', '100 g', 50)).autoEligible).toBe(false);
+    // ...and so is "hot" on anything but plain chilli powder.
+    for (const [a, b] of [['Hot Chocolate', 'Chocolate'], ['Red Chilli Sauce (Hot)', 'Red Chilli Sauce'], ['Cheetos Flamin Hot', 'Cheetos'],
+      ['Chilli Chicken Masala Powder (Hot)', 'Chilli Chicken Masala Powder']]) {
+      expect(scoreMatch(t(a, '100 g', 60), t(b, '100 g', 60)).reasons.join(' ')).toMatch(/\bhot\b/);
+    }
+    // The strict path reads "hot" literally, as before.
+    expect(scoreMatch(t('JK Red Chilli Powder (Hot)', '100 g', 50), t('JK Red Chilli Powder', '100 g', 50), { crossBrand: false }))
+      .toMatchObject({ score: 0.843, rejected: false, autoEligible: false, reasons: ['missing words: hot'] });
+    expect(scoreMatch(t('JK Red Chilli Powder (Hot)', '100 g', 50), t('JK Red Chilli Powder (Extra Hot)', '100 g', 50), { crossBrand: false }))
+      .toMatchObject({ rejected: true, reasons: ['different variant (hot vs extrahot)'] });
+    expect(isSameProduct(t('JK Red Chilli Powder (Hot)', '100 g', 50), t('JK Red Chilli Powder', '100 g', 50))).toBe(false);
+  });
+
   it('explains a different pack size with the price difference', () => {
     const d = scoreMatch(t('Aashirvaad Atta', '500 g', 40), t('Aashirvaad Atta', '1 kg', 52));
     expect(d.rejected).toBe(false);
