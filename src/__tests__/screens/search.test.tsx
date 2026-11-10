@@ -10,6 +10,7 @@ import { product } from '../../services/__tests__/fixtures';
 import { touchablesIn } from '../helpers/touchables';
 import { aiProxy } from '../../services/aiProxy';
 import * as aiMode from '../../services/aiMode';
+import * as aiMatcher from '../../services/aiMatcher';
 
 const mockPush = jest.fn();
 const mockNavigate = jest.fn();
@@ -580,6 +581,40 @@ describe('Search screen: auto-match on the other app', () => {
     await new Promise(r => setTimeout(r, 20));
     expect(u.queryByText('Matching on other apps…')).toBeNull();
     expect(api.searchSingle).not.toHaveBeenCalled();
+  });
+
+  it('falls back to Groq AI decision when rule-based matcher finds no match', async () => {
+    const cocaCola = bl('coke', 'Coca-Cola Original Taste', { quantity: '750 ml', price: 40 });
+    const swiggyCoke = sw('sw-coke', 'Coke Bottle', { quantity: '750 ml', price: 40 });
+    respondWith([cocaCola], []);
+    (api.searchSingle as jest.Mock).mockResolvedValue([swiggyCoke]);
+
+    const spy = jest.spyOn(aiMatcher, 'aiPickBestMatch').mockResolvedValueOnce({
+      matchFound: true,
+      candidateIndex: 0,
+      confidence: 0.95,
+      reason: 'Coke Bottle matches Coca-Cola Original Taste',
+    });
+
+    const u = await renderSearch();
+    await doSearch(u, 'coke');
+    await u.findByText('Coca-Cola Original Taste');
+    const card = u.getByText('Coca-Cola Original Taste').parent!;
+    const touchables = touchablesIn(card);
+    await act(async () => { await fireEvent.press(touchables[touchables.length - 1]); });
+
+    expect(await u.findByText('auto-matched · AI')).toBeTruthy();
+    expect(await u.findByText('Coke Bottle')).toBeTruthy();
+    expect(await u.findByText('Coke Bottle matches Coca-Cola Original Taste')).toBeTruthy();
+
+    await fireEvent.press(await u.findByText(/^Confirm · /));
+    await waitFor(async () => expect((await storage.getCart())[0].product.platformPrices?.swiggy?.id).toBe('swiggy-sw-coke'));
+
+    expect(spy).toHaveBeenCalledWith(expect.objectContaining({
+      target: expect.objectContaining({ name: 'Coca-Cola Original Taste' }),
+      targetPlatform: 'swiggy',
+    }));
+    spy.mockRestore();
   });
 
   it('shows "no close match" and lets the user pick manually when nothing similar is found', async () => {

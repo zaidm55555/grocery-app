@@ -66,11 +66,12 @@ export async function groqJson(req: GroqJsonRequest): Promise<unknown> {
 
   let res: Response;
   try {
+    const isDirectGroq = req.proxy.url.includes('api.groq.com');
     res = await doFetch(req.proxy.url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-App-Token': req.proxy.token,
+        ...(isDirectGroq ? { Authorization: `Bearer ${req.proxy.token}` } : { 'X-App-Token': req.proxy.token }),
       },
       body: JSON.stringify({
         model: GROQ_MODEL,

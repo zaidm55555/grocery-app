@@ -59,6 +59,20 @@ describe('MatchModal: confirm step', () => {
     expect(onConfirm).toHaveBeenCalled();
   });
 
+  it('shows AI badge and reason when auto-matched via AI fallback', async () => {
+    const aiCell: MatchCell = {
+      status: 'ok',
+      best: swiggyProd('s-coke', 'Coke Bottle'),
+      score: 0.95,
+      candidates: [swiggyProd('s-coke', 'Coke Bottle')],
+      matchMethod: 'ai',
+      aiReason: 'Coke 750ml matches Coca-Cola 750ml.',
+    };
+    const { getByText } = await setup(flow({ results: { t1: { swiggy: aiCell } } }));
+    expect(getByText('auto-matched · AI')).toBeTruthy();
+    expect(getByText('Coke 750ml matches Coca-Cola 750ml.')).toBeTruthy();
+  });
+
   it('Skip (footer) and the close button both call onSkip', async () => {
     const { getByText, onSkip } = await setup(flow());
     await fireEvent.press(getByText('Skip'));
