@@ -67,6 +67,88 @@ describe('buildAiBasket', () => {
     expect(progress.map(p => p.stage)).toEqual(['parsing', 'searching', 'searching', 'searching', 'choosing']);
   });
 
+  it('falls back to Groq AI twin matching when rule-based matching fails on the other store', async () => {
+    const eggBlinkit = bl('b-eggs', 'Fresh Eggs White eggs', { quantity: '6 pcs', price: 54 });
+    const eggSwiggy = sw('s-eggs', 'Eggoz Farm Fresh White Eggs', { quantity: '6 pcs', price: 58 });
+    const search = jest.fn(async () => [eggBlinkit, eggSwiggy]);
+
+    const chat = jest.fn(async (req: GroqJsonRequest) => {
+      if (req.schemaName === 'grocery_request') {
+        return { items: [{ name: 'Eggs', query: 'eggs', amount: '6 pieces' }] };
+      }
+      if (req.schemaName === 'basket_picks') {
+        return { picks: [{ index: 0, ref: 'p1', units: 1, reason: '6 pack' }] };
+      }
+      if (req.schemaName === 'ai_batch_match_decision') {
+        return { matches: [{ itemIndex: 0, matchFound: true, candidateIndex: 0, confidence: 0.95, reason: 'Matching white eggs 6 pcs' }] };
+      }
+      if (req.schemaName === 'ai_match_decision') {
+        return { matchFound: true, candidateIndex: 0, confidence: 0.95, reason: 'Matching white eggs 6 pcs' };
+      }
+      return {};
+    });
+
+    const res = await buildAiBasket('6 eggs', { proxy: PROXY, search, chat });
+    expect(res.picks).toHaveLength(1);
+    expect(res.picks[0].product.platformPrices?.swiggy?.id).toBe('swiggy-s-eggs');
+  });
+
+  it('batches multiple missing store twins into a single Groq request', async () => {
+    const eggBlinkit = bl('b-eggs', 'Fresh Eggs White eggs', { quantity: '6 pcs', price: 54 });
+    const eggSwiggy = sw('s-eggs', 'Eggoz Farm Fresh White Eggs', { quantity: '6 pcs', price: 58 });
+    const breadBlinkit = bl('b-bread', 'Harvest Gold White Bread', { quantity: '400 g', price: 40 });
+    const breadSwiggy = sw('s-bread', 'Britannia Daily Fresh White Bread', { quantity: '400 g', price: 45 });
+
+    const search = jest.fn(async (q: string) => {
+      if (q === 'eggs') return [eggBlinkit, eggSwiggy];
+      if (q === 'bread') return [breadBlinkit, breadSwiggy];
+      return [];
+    });
+
+    let batchCallCount = 0;
+    let itemsInBatch = 0;
+
+    const chat = jest.fn(async (req: GroqJsonRequest) => {
+      if (req.schemaName === 'grocery_request') {
+        return {
+          items: [
+            { name: 'Eggs', query: 'eggs', amount: '6 pieces' },
+            { name: 'Bread', query: 'bread', amount: '1 pack' },
+          ],
+        };
+      }
+      if (req.schemaName === 'basket_picks') {
+        return {
+          picks: [
+            { index: 0, ref: 'p1', units: 1, reason: '6 eggs' },
+            { index: 1, ref: 'p3', units: 1, reason: 'bread' },
+          ],
+        };
+      }
+      if (req.schemaName === 'ai_batch_match_decision') {
+        batchCallCount++;
+        // Verify both items were sent in this single batch call!
+        expect(req.user).toContain('ITEM [0]');
+        expect(req.user).toContain('ITEM [1]');
+        itemsInBatch = 2;
+        return {
+          matches: [
+            { itemIndex: 0, matchFound: true, candidateIndex: 0, confidence: 0.95, reason: '6 pack eggs match' },
+            { itemIndex: 1, matchFound: true, candidateIndex: 0, confidence: 0.90, reason: 'White bread 400g match' },
+          ],
+        };
+      }
+      return {};
+    });
+
+    const res = await buildAiBasket('6 eggs and bread', { proxy: PROXY, search, chat });
+    expect(res.picks).toHaveLength(2);
+    expect(batchCallCount).toBe(1); // EXACTLY ONE BATCH CALL for both items!
+    expect(itemsInBatch).toBe(2);
+    expect(res.picks[0].product.platformPrices?.swiggy?.id).toBe('swiggy-s-eggs');
+    expect(res.picks[1].product.platformPrices?.swiggy?.id).toBe('swiggy-s-bread');
+  });
+
   it('skips the pick call when no item has usable results', async () => {
     const chat = fakeChat({ items: [{ name: 'Saffron', query: 'saffron', amount: '' }] }, () => { throw new Error('should not be called'); });
     const res = await buildAiBasket('saffron', { proxy: PROXY, search: async () => [], chat });

@@ -1,23 +1,24 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { StyleSheet, View, Text, TextInput, FlatList, TouchableOpacity, ActivityIndicator, Image, Keyboard, KeyboardAvoidingView, Platform as RNPlatform, Pressable, Modal, Dimensions, Alert, type ViewInstance } from 'react-native';
-import { useFocusEffect, useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Search, MapPin, X, Plus, Minus, ChevronDown, Check, Zap, ShoppingCart, ShoppingBag, LogIn, Link2Off, Compass, ChevronRight, AlertCircle, Sparkles } from 'lucide-react-native';
-import { api, UnifiedProduct, PlatformVariant, getProductOverallMax, getItemPlatformLimit, getProductPlatformLimit, resolvePlatformProduct } from '../../services/api';
-import { isDemoMode, loadDemoMode, DEMO_LOCATION } from '../../services/demo';
-import { storage, Platform, LocationData } from '../../services/storage';
-import { colors, fonts, platformThemes, PLATFORM_ORDER } from '../../constants/theme';
-import { liveKey, familyKey } from '../../utils/productKey';
-import { pickBestMatch } from '../../utils/matcher';
-import { stampIfVerified } from '../../utils/lineFreshness';
-import MatchModal, { MatchFlowState, MatchTarget, MatchCell } from '../../components/MatchModal';
-import VariantPickerModal from '../../components/VariantPickerModal';
-import SharedListingSheet from '../../components/SharedListingSheet';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { AlertCircle, Check, ChevronDown, ChevronRight, Compass, Link2Off, LogIn, MapPin, Minus, Plus, Search, ShoppingBag, ShoppingCart, Sparkles, X, Zap } from 'lucide-react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, Dimensions, FlatList, Image, Keyboard, KeyboardAvoidingView, Modal, Pressable, Platform as RNPlatform, StyleSheet, Text, TextInput, TouchableOpacity, View, type ViewInstance } from 'react-native';
 import AiModeSheet from '../../components/AiModeSheet';
+import MatchModal, { MatchCell, MatchFlowState, MatchTarget } from '../../components/MatchModal';
+import SharedListingSheet from '../../components/SharedListingSheet';
+import VariantPickerModal from '../../components/VariantPickerModal';
+import { colors, fonts, PLATFORM_ORDER, platformThemes } from '../../constants/theme';
+import { aiPickBestMatch } from '../../services/aiMatcher';
+import { api, getItemPlatformLimit, getProductOverallMax, getProductPlatformLimit, PlatformVariant, resolvePlatformProduct, UnifiedProduct } from '../../services/api';
+import { isBlinkitBridgeConnected, subscribeBlinkitBridgeStatus } from '../../services/blinkitBridge';
+import { DEMO_LOCATION, isDemoMode, loadDemoMode } from '../../services/demo';
+import { LocationData, Platform, storage } from '../../services/storage';
+import { stampIfVerified } from '../../utils/lineFreshness';
+import { resolveAreaName } from '../../utils/location';
+import { pickBestMatch } from '../../utils/matcher';
+import { familyKey, liveKey, stripSizeToken } from '../../utils/productKey';
 import { lineIdxsForListing, listingQty } from '../../utils/sharedListing';
 import { shouldShowBlinkitDirectNote } from '../../utils/stockNotes';
-import { resolveAreaName } from '../../utils/location';
-import { isBlinkitBridgeConnected, subscribeBlinkitBridgeStatus } from '../../services/blinkitBridge';
 import { isAddressSyncing, waitForAddressSync, subscribeAddressSync, syncDeliveryAddresses, subscribeLocationReset } from '../../services/addressSync';
 
 const QUICK_SEARCHES = ['Milk', 'Bread', 'Eggs', 'Butter', 'Cheese'];
@@ -275,7 +276,7 @@ export default function SearchScreen() {
         resetSearchState();
       }
       lastLocationRef.current = { latitude: userLoc.latitude, longitude: userLoc.longitude };
-      syncDeliveryAddresses(userLoc.latitude, userLoc.longitude, false).catch(() => {});
+      syncDeliveryAddresses(userLoc.latitude, userLoc.longitude, false).catch(() => { });
     }
 
     if (userLoc && (!userLoc.address || userLoc.address.startsWith('Manual:'))) {
@@ -285,7 +286,7 @@ export default function SearchScreen() {
           await storage.saveLocation(updatedLoc);
           setLocation(updatedLoc);
         }
-      }).catch(() => {});
+      }).catch(() => { });
     }
   }
 
@@ -396,15 +397,98 @@ export default function SearchScreen() {
 
     setCell({ status: 'pending', candidates: [], best: null, score: null });
     try {
-      const results = await api.searchSingle(pid, target.name);
-      const best = pickBestMatch<UnifiedProduct>({ name: target.name, unit: target.unit, price: target.price }, results);
+      console.log(`[AutoMatch] Starting search for "${target.name}" on ${pid}`);
+
+      // Try initial search with full target name
+      let results = await api.searchSingle(pid, target.name);
+
+      // If store search gave 0 results, retry with cleaned/stripped queries so store APIs (like Swiggy) find items
+      if (results.length === 0) {
+        const stripped = stripSizeToken(target.name);
+        if (stripped && stripped !== target.name) {
+          console.log(`[AutoMatch] Full name gave 0 results. Retrying on ${pid} with stripped query: "${stripped}"`);
+          results = await api.searchSingle(pid, stripped);
+        }
+      }
+
+      if (results.length === 0) {
+        const clean = target.name
+          .replace(/\([^)]*\)/g, ' ')
+          .replace(/[-–,.:/]/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        if (clean && clean !== target.name) {
+          console.log(`[AutoMatch] Retrying on ${pid} with clean name: "${clean}"`);
+          results = await api.searchSingle(pid, clean);
+        }
+      }
+
+      if (results.length === 0) {
+        const words = target.name
+          .replace(/[^a-zA-Z0-9\s]/g, ' ')
+          .split(/\s+/)
+          .filter(w => w.length > 2);
+        if (words.length > 2) {
+          const shortQuery = words.slice(0, 3).join(' ');
+          console.log(`[AutoMatch] Retrying on ${pid} with short query: "${shortQuery}"`);
+          results = await api.searchSingle(pid, shortQuery);
+        }
+      }
+
+      console.log(`[AutoMatch] Total candidates found on ${pid}: ${results.length}`);
+
+      let best = pickBestMatch<UnifiedProduct>({ name: target.name, unit: target.unit, price: target.price }, results);
+      let matchMethod: 'rule' | 'ai' = 'rule';
+      let aiReason: string | undefined;
+
+      if (best) {
+        console.log(`[AutoMatch] Heuristic matcher found match on ${pid}: "${best.candidate.title}" (score: ${Math.round(best.score * 100)}%)`);
+      } else {
+        console.log(`[AutoMatch] Heuristic matcher found NO match for "${target.name}" on ${pid}.`);
+      }
+
+      // When the algorithmic auto-matcher finds no match, use Groq AI fallback
+      if (!best && results.length > 0) {
+        console.log(`[AutoMatch] Triggering Groq AI matching fallback on ${pid}...`);
+        const aiDecision = await aiPickBestMatch({
+          target: {
+            name: target.name,
+            brand: target.brand,
+            unit: target.unit,
+            price: target.price,
+            mrp: target.mrp,
+            platform: target.platform,
+          },
+          candidates: results.slice(0, 12),
+          targetPlatform: pid,
+        });
+
+        if (aiDecision?.matchFound && aiDecision.candidateIndex !== null && results[aiDecision.candidateIndex]) {
+          best = {
+            candidate: results[aiDecision.candidateIndex],
+            score: aiDecision.confidence,
+            ambiguous: false,
+          };
+          matchMethod = 'ai';
+          aiReason = aiDecision.reason;
+          console.log(`[AutoMatch] Groq AI fallback MATCHED: "${best.candidate.title}" (${Math.round(best.score * 100)}%) - ${aiReason}`);
+        } else {
+          console.log(`[AutoMatch] Groq AI fallback confirmed no suitable match among candidates.`);
+        }
+      } else if (!best && results.length === 0) {
+        console.warn(`[AutoMatch] 0 candidates found on ${pid} for "${target.name}". Groq cannot be called without candidate options from the store.`);
+      }
+
       setCell({
         status: best ? 'ok' : 'empty',
         candidates: results.slice(0, 12),
         best: best?.candidate || null,
         score: best?.score ?? null,
+        matchMethod,
+        aiReason,
       });
     } catch (e: any) {
+      console.error(`[AutoMatch] Error matching "${target.name}" on ${pid}:`, e);
       setCell({ status: 'error', error: String(e?.message || e) });
     }
   }, []);
@@ -444,6 +528,8 @@ export default function SearchScreen() {
       price: p.price,
       mrp: p.originalPrice,
       image: p.imageUrl,
+      brand: p.brand,
+      platform: p.platform,
     };
     const existing = matchFlowRef.current;
     if (existing && existing.sourcePlatform === p.platform) {
@@ -963,8 +1049,8 @@ export default function SearchScreen() {
                       {storeFilter === 'all' && platformErrors.swiggy && !platformErrors.blinkit
                         ? 'Showing Blinkit results only • Cannot search Instamart on current location'
                         : storeFilter === 'all' && platformErrors.blinkit && !platformErrors.swiggy
-                        ? 'Showing Instamart results only • Cannot search Blinkit on current location'
-                        : 'Tap + to add the exact product — the other app gets auto-matched.'}
+                          ? 'Showing Instamart results only • Cannot search Blinkit on current location'
+                          : 'Tap + to add the exact product — the other app gets auto-matched.'}
                     </Text>
                     {shouldShowBlinkitDirectNote({ blinkitLinked: !!tokens.blinkit, bridgeConnected: blinkitBridgeUp, storeFilter }) && (
                       <Text style={styles.liveHint}>
@@ -997,8 +1083,8 @@ export default function SearchScreen() {
                 {addressSyncing
                   ? 'Pulling delivery addresses for Blinkit & Instamart before searching'
                   : pendingPlatforms.length > 0
-                  ? `Searching ${pendingPlatforms.map(p => platformThemes[p].name).join(' & ')}`
-                  : 'Searching Blinkit & Instamart'}
+                    ? `Searching ${pendingPlatforms.map(p => platformThemes[p].name).join(' & ')}`
+                    : 'Searching Blinkit & Instamart'}
               </Text>
             </View>
           ) : filteredProducts.length === 0 ? (

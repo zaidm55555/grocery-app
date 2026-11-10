@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Modal, View, Text, Image, TouchableOpacity, ScrollView, StyleSheet, ActivityIndicator } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Check, AlertTriangle, ChevronDown, ChevronUp, RotateCcw, X } from 'lucide-react-native';
+import { Check, AlertTriangle, ChevronDown, ChevronUp, RotateCcw, X, Sparkles } from 'lucide-react-native';
 import { Platform } from '../services/storage';
 import { UnifiedProduct } from '../services/api';
 import { matchScore } from '../utils/matcher';
@@ -14,6 +14,8 @@ export interface MatchTarget {
   price: number;
   mrp?: number;
   image: string;
+  brand?: string;
+  platform?: Platform;
 }
 
 export interface MatchCell {
@@ -22,6 +24,8 @@ export interface MatchCell {
   best: UnifiedProduct | null;
   score: number | null;
   error?: string;
+  matchMethod?: 'rule' | 'ai';
+  aiReason?: string;
 }
 
 export interface MatchFlowState {
@@ -134,10 +138,16 @@ export default function MatchModal({ flow, onChoose, onRetry, onSkip, onConfirm 
           <LogoTile platform={pid} />
           <Text style={[s.resultAppName, { color: platformThemes[pid].color }]}>{platformThemes[pid].name}</Text>
           {cell?.status === 'ok' && (
-            <View style={s.autoBadge}>
-              <Check size={9} color="#000" />
-              <Text style={s.autoBadgeText}>
-                auto-matched{typeof chosenPick === 'object' && chosenPick.score ? ` · ${Math.round(chosenPick.score * 100)}%` : ''}
+            <View style={[s.autoBadge, cell.matchMethod === 'ai' && s.aiBadge]}>
+              {cell.matchMethod === 'ai' ? (
+                <Sparkles size={9} color={colors.accentPrimary} />
+              ) : (
+                <Check size={9} color="#000" />
+              )}
+              <Text style={[s.autoBadgeText, cell.matchMethod === 'ai' && s.aiBadgeText]}>
+                {cell.matchMethod === 'ai'
+                  ? 'auto-matched · AI'
+                  : `auto-matched${typeof chosenPick === 'object' && chosenPick.score ? ` · ${Math.round(chosenPick.score * 100)}%` : ''}`}
               </Text>
             </View>
           )}
@@ -157,6 +167,12 @@ export default function MatchModal({ flow, onChoose, onRetry, onSkip, onConfirm 
         {cell?.status === 'ok' && cell.best && (
           <>
             {candidateRow(t.id, pid, { product: cell.best, score: cell.score || 0 }, true, true)}
+            {cell.matchMethod === 'ai' && !!cell.aiReason && (
+              <View style={s.aiReasonCard}>
+                <Sparkles size={11} color={colors.accentPrimary} />
+                <Text style={s.aiReasonText} numberOfLines={2}>{cell.aiReason}</Text>
+              </View>
+            )}
             <TouchableOpacity style={s.alternatesToggle} onPress={() => toggle(key)}>
               <Text style={s.alternatesToggleText}>Other matches · {(cell.candidates || []).length - 1 >= 0 ? (cell.candidates || []).length - 1 : 0}</Text>
               {isOpen ? <ChevronUp size={13} color={colors.textMuted} /> : <ChevronDown size={13} color={colors.textMuted} />}
@@ -438,6 +454,31 @@ const s = StyleSheet.create({
     color: colors.emerald,
     textTransform: 'uppercase',
     letterSpacing: 0.3,
+  },
+  aiBadge: {
+    backgroundColor: 'rgba(99, 102, 241, 0.15)',
+  },
+  aiBadgeText: {
+    color: colors.accentPrimary,
+  },
+  aiReasonCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    backgroundColor: 'rgba(99, 102, 241, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(99, 102, 241, 0.2)',
+    marginBottom: 6,
+  },
+  aiReasonText: {
+    flex: 1,
+    fontFamily: fonts.body,
+    fontSize: 10,
+    color: colors.textSecondary,
+    lineHeight: 14,
   },
   candidateRow: {
     flexDirection: 'row',

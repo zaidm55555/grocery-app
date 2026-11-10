@@ -26,6 +26,10 @@ export interface AiProxyConfig {
  * URL is not http(s). The URL may be the Worker's base URL or end in /chat.
  */
 export function getAiProxyConfig(): AiProxyConfig | null {
+  const directKey = process.env.EXPO_PUBLIC_GROQ_API_KEY?.trim() || process.env.GROQ_API_KEY?.trim();
+  if (directKey) {
+    return { url: 'https://api.groq.com/openai/v1/chat/completions', token: directKey };
+  }
   const base = process.env.EXPO_PUBLIC_AI_PROXY_URL?.trim();
   const token = process.env.EXPO_PUBLIC_AI_PROXY_TOKEN?.trim();
   if (!base || !token || !/^https?:\/\/[^/\s]+/i.test(base)) return null;
