@@ -203,6 +203,7 @@ export default function SearchScreen() {
   const [sharedListing, setSharedListing] = useState<UnifiedProduct | null>(null);
   const [matchToast, setMatchToast] = useState<{ platform: Platform; name: string } | null>(null);
   const [aiOpen, setAiOpen] = useState(false);
+  const [hasRealLogin, setHasRealLogin] = useState(false);
 
   const matchFlowRef = useRef<MatchFlowState | null>(null);
   matchFlowRef.current = matchFlow;
@@ -262,6 +263,7 @@ export default function SearchScreen() {
       storage.getCart(),
     ]);
     const demo = await loadDemoMode();
+    setHasRealLogin(Boolean(blinkitToken || swiggyToken));
     setTokens(demo ? { blinkit: 'demo', swiggy: 'demo' } : { blinkit: blinkitToken, swiggy: swiggyToken });
     setLocation(demo && !userLoc ? DEMO_LOCATION : userLoc);
     setCartItems(cart);
@@ -845,11 +847,11 @@ export default function SearchScreen() {
     return g.items[0].platform + '|' + (g.items[0].originalId || g.items[0].id || familyKey(g.items[0]));
   }, []);
 
-  // AI mode runs the same live search, so it needs what a normal search needs.
-  const aiBlockedReason = !location && !isDemoMode()
-    ? 'Set your delivery location in Profile first.'
-    : !tokens.blinkit && !tokens.swiggy
-      ? 'Link Blinkit or Instamart in Profile (or turn on demo mode) first.'
+  // AI mode requires at least one logged-in store account (and a delivery location outside demo mode).
+  const aiBlockedReason = !hasRealLogin
+    ? 'Link Blinkit or Instamart in Profile first.'
+    : !location && !isDemoMode()
+      ? 'Set your delivery location in Profile first.'
       : null;
 
   return (
