@@ -86,6 +86,16 @@ describe('Blinkit search', () => {
     expect(bb.waitForBlinkitBridge).toHaveBeenCalledWith(5000);
   });
 
+  it('waits for bridge readiness when injector attached before BL_BRIDGE_READY', async () => {
+    bb.isBlinkitBridgeConnected.mockReturnValue(false);
+    bb.waitForBlinkitBridge.mockResolvedValue(true);
+    bb.waitForBlinkitBridgeReady.mockResolvedValue(true);
+    bb.requestViaBlinkitBridge.mockResolvedValue({ status: 200, text: JSON.stringify(blinkitJson()) });
+    await api.fetchDirectAPI('blinkit', 'eggs-ready', 'tok', LOC);
+    expect(bb.waitForBlinkitBridge).toHaveBeenCalledWith(5000);
+    expect(bb.waitForBlinkitBridgeReady).toHaveBeenCalledWith(5000);
+  });
+
   it('does not wait when the bridge is already connected', async () => {
     bb.requestViaBlinkitBridge.mockResolvedValue({ status: 200, text: JSON.stringify(blinkitJson()) });
     await api.fetchDirectAPI('blinkit', 'eggs2', 'tok', LOC);
@@ -97,6 +107,15 @@ describe('Blinkit search', () => {
     await api.fetchDirectAPI('blinkit', 'curd', 'tok', LOC);
     await api.fetchDirectAPI('blinkit', 'curd', 'tok', LOC);
     expect(bb.requestViaBlinkitBridge).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not serve cached Blinkit search results across different @blinkit_address_id values', async () => {
+    bb.requestViaBlinkitBridge.mockResolvedValue({ status: 200, text: JSON.stringify(blinkitJson()) });
+    await AsyncStorage.setItem('@blinkit_address_id', 'addr-1');
+    await api.fetchDirectAPI('blinkit', 'curd-addr', 'tok', LOC);
+    await AsyncStorage.setItem('@blinkit_address_id', 'addr-2');
+    await api.fetchDirectAPI('blinkit', 'curd-addr', 'tok', LOC);
+    expect(bb.requestViaBlinkitBridge).toHaveBeenCalledTimes(2);
   });
 
   it('shares one in-flight request between identical concurrent searches', async () => {

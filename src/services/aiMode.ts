@@ -4,9 +4,11 @@
 // fetched itself, and every field it returns is re-validated (utils/aiBasket).
 import { api, UnifiedProduct, PlatformVariant } from './api';
 import { isAddressSyncing, waitForAddressSync } from './addressSync';
+import { isBlinkitBridgeConnected, waitForBlinkitBridgeReady } from './blinkitBridge';
+import { loadDemoMode } from './demo';
 import { groqJson, GroqError, GroqJsonRequest } from './groq';
 import type { AiProxyConfig } from './aiProxy';
-import { Platform } from './storage';
+import { Platform, storage } from './storage';
 import { PLATFORM_ORDER } from '../constants/theme';
 import { aiPickBestMatch, aiBatchPickBestMatches, AiBatchMatchRequestItem } from './aiMatcher';
 import { stripSizeToken } from '../utils/productKey';
@@ -23,6 +25,7 @@ import {
   buildCandidates,
   buildPickPrompt,
   cleanText,
+  isUsableResult,
   productToVariant,
   sanitizePicks,
   sanitizeRequestedItems,
@@ -133,19 +136,7 @@ export async function buildAiBasket(text: string, deps: AiBasketDeps): Promise<A
     for (const platform of PLATFORM_ORDER) {
       if (platform === p.product.platform || prices[platform]) continue;
 
-      let candidatePool = (results[p.index] || []).filter(
-        item => isObj(item) && item.platform === platform && typeof item.id === 'string'
-      );
-
-      // If pool didn't have results for this store, fetch single-store candidates
-      if (candidatePool.length === 0) {
-        try {
-          const query = stripSizeToken(p.product.title) || p.product.title;
-          candidatePool = await api.searchSingle(platform, query);
-        } catch {
-          candidatePool = [];
-        }
-      }
+      const candidatePool = await findPlatformCandidates(platform, p.product.title, results[p.index] || []);
 
       if (candidatePool.length > 0) {
         pendingTwins.push({
@@ -216,7 +207,20 @@ export async function buildAiBasket(text: string, deps: AiBasketDeps): Promise<A
   };
 }
 
-const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+async function findPlatformCandidates(
+  platform: Platform,
+  title: string,
+  pool: UnifiedProduct[] | undefined,
+): Promise<UnifiedProduct[]> {
+  const fromPool = (pool || []).filter(item => isUsableResult(item) && item.platform === platform);
+  if (fromPool.length > 0) return fromPool;
+  try {
+    const query = stripSizeToken(title) || title;
+    return (await api.searchSingle(platform, query)).filter(isUsableResult);
+  } catch {
+    return [];
+  }
+}
 
 /**
  * Attaches the same product's listing on the other store(s) as a platform price.
@@ -240,17 +244,7 @@ export async function attachTwinsWithAi(
   for (const platform of PLATFORM_ORDER) {
     if (platform === product.platform || prices[platform]) continue;
 
-    let candidates = (pool || []).filter(p => isObj(p) && p.platform === platform && typeof p.id === 'string');
-
-    // If candidate pool didn't have results for this store, fetch candidates directly
-    if (candidates.length === 0) {
-      try {
-        const query = stripSizeToken(product.title) || product.title;
-        candidates = await api.searchSingle(platform, query);
-      } catch {
-        candidates = [];
-      }
-    }
+    const candidates = await findPlatformCandidates(platform, product.title, pool);
 
     if (candidates.length === 0) continue;
 
@@ -289,9 +283,12 @@ export async function attachTwinsWithAi(
   return changed ? { ...withTwins, platformPrices: prices } : withTwins;
 }
 
-/** Live store search used by the app: waits out an address sync like the search screen does. */
+/** Live store search used by the app: waits out address sync and Blinkit bridge readiness. */
 export async function searchAllStores(query: string): Promise<UnifiedProduct[]> {
   if (isAddressSyncing()) await waitForAddressSync();
+  if (!isBlinkitBridgeConnected() && !(await loadDemoMode()) && await storage.getToken('blinkit')) {
+    await waitForBlinkitBridgeReady(8000);
+  }
   try {
     return await api.search(query);
   } catch {

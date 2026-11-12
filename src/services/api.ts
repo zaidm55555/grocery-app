@@ -249,8 +249,8 @@ const BLINKIT_CHALLENGE_RELOAD_WAIT_MS = 25 * 1000;
 const BLINKIT_CHALLENGE_RETRIES = 3;
 let blinkitBridgeSearchBlockedUntil = 0;
 
-function bridgedBlinkitSearch(url: string, headers: Record<string, string>, statuses: (number | null)[]): Promise<any | null> {
-  const key = `${url}|${headers.lat}|${headers.lon}`;
+function bridgedBlinkitSearch(url: string, headers: Record<string, string>, statuses: (number | null)[], addrKey = ''): Promise<any | null> {
+  const key = `${url}|${headers.lat}|${headers.lon}|${addrKey}`;
   const cached = blinkitSearchCache.get(key);
   if (cached && Date.now() - cached.at < BLINKIT_SEARCH_CACHE_MS) return Promise.resolve(cached.json);
   const existing = blinkitSearchInflight.get(key);
@@ -1185,14 +1185,33 @@ export const api = {
       let staleNoAddress = false;
       try { staleNoAddress = !!bStatusRaw && JSON.parse(bStatusRaw)?.status === 'no_address'; } catch {}
       if ((!bStatusRaw || staleNoAddress) && !demo) {
-        await this.getClosestBlinkitAddress(lat, lng);
+        const closest = await this.getClosestBlinkitAddress(lat, lng);
         bStatusRaw = await AsyncStorage.getItem('@blinkit_address_status');
+        if (closest?.id) {
+          const existingId = await AsyncStorage.getItem('@blinkit_address_id');
+          if (!existingId) {
+            await AsyncStorage.setItem('@blinkit_address_id', String(closest.id));
+            const closestName = closest.display_address || closest.address_string || closest.address || closest.line1 || closest.text || '';
+            if (closestName) await AsyncStorage.setItem('@blinkit_address_name', String(closestName));
+            const cLat = parseFloat(closest.latitude ?? closest.lat);
+            const cLng = parseFloat(closest.longitude ?? closest.lon ?? closest.lng);
+            if (Number.isFinite(cLat) && Number.isFinite(cLng)) {
+              await AsyncStorage.setItem('@blinkit_lat', String(cLat));
+              await AsyncStorage.setItem('@blinkit_lng', String(cLng));
+            }
+          }
+        }
       }
       let bLat = lat;
       let bLng = lng;
+      let savedAddrId = '';
       if (!demo) try {
-        const savedBLat = await AsyncStorage.getItem('@blinkit_lat');
-        const savedBLng = await AsyncStorage.getItem('@blinkit_lng');
+        const [savedBLat, savedBLng, addrId] = await Promise.all([
+          AsyncStorage.getItem('@blinkit_lat'),
+          AsyncStorage.getItem('@blinkit_lng'),
+          AsyncStorage.getItem('@blinkit_address_id'),
+        ]);
+        if (addrId) savedAddrId = addrId;
         if (savedBLat && savedBLng && Number.isFinite(Number(savedBLat)) && Number.isFinite(Number(savedBLng))) {
           bLat = Number(savedBLat);
           bLng = Number(savedBLng);
@@ -1218,7 +1237,12 @@ export const api = {
       let json: any = null;
       // At app start the page may not have registered yet; the direct fallback
       // answers from the wrong store, so give the bridge a few seconds first.
-      if (!isBlinkitBridgeConnected()) await waitForBlinkitBridge(5000);
+      if (!isBlinkitBridgeConnected()) {
+        const attached = await waitForBlinkitBridge(5000);
+        if (attached && !isBlinkitBridgeConnected()) {
+          await waitForBlinkitBridgeReady(5000);
+        }
+      }
       const bridgeHeaders = {
         'app_client': 'consumer_web',
         'auth_key': token,
@@ -1227,7 +1251,7 @@ export const api = {
         'Content-Type': 'application/json',
       };
       const bridgeStatuses: (number | null)[] = [];
-      json = await bridgedBlinkitSearch(url, bridgeHeaders, bridgeStatuses);
+      json = await bridgedBlinkitSearch(url, bridgeHeaders, bridgeStatuses, savedAddrId);
       // Retry the bridge once before falling back: a dead page is reloaded and
       // waited for, a rate limit is waited out. A direct request (below) is
       // answered by a different dark store than the cart's, so it is only the
@@ -1244,7 +1268,7 @@ export const api = {
         } else {
           break; // an HTTP error from the page itself: retrying won't change it
         }
-        json = await bridgedBlinkitSearch(url, bridgeHeaders, bridgeStatuses);
+        json = await bridgedBlinkitSearch(url, bridgeHeaders, bridgeStatuses, savedAddrId);
       }
       const storeVerified = !!json;
       console.log(json
