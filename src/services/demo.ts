@@ -4,10 +4,10 @@ import { requestEvalViaSwiggyBridge } from './swiggyBridge';
 import type { UnifiedProduct, CartCalculation } from './api';
 
 // Hardcoded demo mode: no logins, no network. Search returns canned products
-// and the basket shows canned fees. On by default; the Profile switch persists
-// the choice, and EXPO_PUBLIC_DEMO_MODE=0 flips the default to off.
+// and the basket shows canned fees. Off by default; the Profile switch persists
+// the choice, and EXPO_PUBLIC_DEMO_MODE=1 flips the default to on.
 const KEY = '@demo_mode';
-let demoOn = process.env.EXPO_PUBLIC_DEMO_MODE !== '0';
+let demoOn = process.env.EXPO_PUBLIC_DEMO_MODE === '1';
 
 export const isDemoMode = () => demoOn;
 

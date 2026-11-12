@@ -750,7 +750,20 @@ describe('Search screen: AI mode', () => {
     await storage.saveLocation(LOC);
     const u = await renderSearch();
     await act(async () => { await fireEvent.press(u.getByLabelText('Open AI mode')); });
-    expect(await u.findByText('Link Blinkit or Instamart in Profile (or turn on demo mode) first.')).toBeTruthy();
+    expect(await u.findByText('Link Blinkit or Instamart in Profile first.')).toBeTruthy();
+  });
+
+  it('blocks AI mode when both Blinkit and Swiggy are logged out even if demo mode is on', async () => {
+    jest.spyOn(aiProxy, 'get').mockResolvedValue(PROXY);
+    const { setDemoMode } = require('../../services/demo');
+    await setDemoMode(true);
+    try {
+      const u = await renderSearch();
+      await act(async () => { await fireEvent.press(u.getByLabelText('Open AI mode')); });
+      expect(await u.findByText('Link Blinkit or Instamart in Profile first.')).toBeTruthy();
+    } finally {
+      await setDemoMode(false);
+    }
   });
 
   it('explains that a location is needed first', async () => {

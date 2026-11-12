@@ -15,7 +15,12 @@ describe('demo mode default and persistence', () => {
   });
   afterAll(() => { process.env.EXPO_PUBLIC_DEMO_MODE = prev; });
 
-  it('is on for a fresh install (nothing saved)', async () => {
+  it('is off for a fresh install (nothing saved)', async () => {
+    expect(await loadDemo().loadDemoMode()).toBe(false);
+  });
+
+  it('can still be enabled via EXPO_PUBLIC_DEMO_MODE=1 when nothing is saved', async () => {
+    process.env.EXPO_PUBLIC_DEMO_MODE = '1';
     expect(await loadDemo().loadDemoMode()).toBe(true);
   });
 
