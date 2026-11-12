@@ -57,3 +57,4 @@ coverage/
 .e2e/bugbash/
 .e2e-metro.log
 e2e.bugbash.config.ts
+.env.local

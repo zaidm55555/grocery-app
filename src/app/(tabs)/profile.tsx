@@ -8,6 +8,7 @@ import { isDemoMode, loadDemoMode, setDemoMode } from '../../services/demo';
 import { colors, fonts, platformThemes } from '../../constants/theme';
 import { resolveAreaName, getFastLocation } from '../../utils/location';
 import { syncDeliveryAddresses, subscribeAddressSync, notifyLocationReset } from '../../services/addressSync';
+import { posthog } from '../../services/posthog';
 
 export default function ProfileScreen() {
   const router = useRouter();
@@ -64,6 +65,7 @@ export default function ProfileScreen() {
   );
 
   const handleLink = (platform: Platform) => {
+    posthog?.capture('platform_link_started', { platform });
     router.push({
       pathname: '/webview',
       params: { platform }
@@ -81,6 +83,7 @@ export default function ProfileScreen() {
           style: 'destructive',
           onPress: async () => {
             await storage.removeToken(platform);
+            posthog?.capture('platform_unlinked', { platform });
             loadData();
           }
         }
@@ -114,6 +117,7 @@ export default function ProfileScreen() {
       };
 
       await storage.saveLocation(newLoc);
+      posthog?.capture('delivery_location_updated');
       setLocation(newLoc);
       notifyLocationReset();
 
@@ -128,6 +132,12 @@ export default function ProfileScreen() {
       Alert.alert('Location Error', 'Failed to retrieve GPS location.');
       setLocLoading(false);
     }
+  };
+
+  const handleDemoModeChange = (enabled: boolean) => {
+    setDemo(enabled);
+    setDemoMode(enabled);
+    posthog?.capture('demo_mode_toggled', { enabled });
   };
 
   const clearAllData = async () => {
@@ -197,7 +207,7 @@ export default function ProfileScreen() {
           <Text style={styles.sectionTitle}>Demo mode</Text>
           <Text style={{ fontFamily: fonts.body, color: colors.textSecondary }}>Sample products and fees, no logins needed.</Text>
         </View>
-        <Switch value={demo} onValueChange={(v) => { setDemo(v); setDemoMode(v); }} />
+        <Switch value={demo} onValueChange={handleDemoModeChange} />
       </View>
 
 

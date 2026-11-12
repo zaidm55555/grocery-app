@@ -12,6 +12,7 @@ import { aiPickBestMatch } from '../../services/aiMatcher';
 import { api, getItemPlatformLimit, getProductOverallMax, getProductPlatformLimit, PlatformVariant, resolvePlatformProduct, UnifiedProduct } from '../../services/api';
 import { isBlinkitBridgeConnected, subscribeBlinkitBridgeStatus } from '../../services/blinkitBridge';
 import { DEMO_LOCATION, isDemoMode, loadDemoMode } from '../../services/demo';
+import { posthog } from '../../services/posthog';
 import { LocationData, Platform, storage } from '../../services/storage';
 import { stampIfVerified } from '../../utils/lineFreshness';
 import { resolveAreaName } from '../../utils/location';
@@ -322,14 +323,27 @@ export default function SearchScreen() {
     setProducts([]);
     setPlatformErrors({});
     setPendingPlatforms(PLATFORM_ORDER);
+    let resultCount = 0;
+    const successfulPlatforms: Platform[] = [];
     try {
       // Each platform's results stream in as soon as they arrive
       await api.search(searchTerm, (platform, results, platformError) => {
+        resultCount += results.length;
+        if (!platformError) successfulPlatforms.push(platform);
         setProducts(prev => [...prev, ...results]);
         setPendingPlatforms(prev => prev.filter(p => p !== platform));
         if (platformError) {
           setPlatformErrors(prev => ({ ...prev, [platform]: platformError }));
         }
+      });
+      posthog?.capture('catalog_search_completed', {
+        query_length: searchTerm.trim().length,
+        result_count: resultCount,
+        successful_platform_count: successfulPlatforms.length,
+      });
+      posthog?.logger.info('catalog_search_completed', {
+        result_count: resultCount,
+        successful_platform_count: successfulPlatforms.length,
       });
     } catch (err) {
       console.error(err);
@@ -597,6 +611,11 @@ export default function SearchScreen() {
       return { ...ci, product: stampIfVerified({ ...ci.product, platformPrices: { ...(ci.product.platformPrices || {}), ...prices } }) };
     });
     await commitCart(updatedCart);
+    posthog?.capture('cross_store_match_confirmed', {
+      matched_line_count: updates.size,
+      target_count: flow.targets.length,
+      destination_platform_count: flow.otherPlatforms.length,
+    });
     setMatchFlow(null);
     if (toastPlatform) {
       setMatchToast({ platform: toastPlatform, name: toastName });
@@ -668,6 +687,10 @@ export default function SearchScreen() {
     const newLine = { product: stampIfVerified(product), quantity: 1 };
     const updated = [...items, newLine];
     await commitCart(updated);
+    posthog?.capture('cart_item_added', {
+      cart_line_count: updated.length,
+      platform: product.platform,
+    });
     beginMatchFlow(newLine);
   };
 
@@ -713,6 +736,11 @@ export default function SearchScreen() {
     if (nextQty <= 0) updated.splice(idx, 1);
     else updated[idx] = { ...line, quantity: nextQty };
     await commitCart(updated);
+    posthog?.capture('cart_quantity_changed', {
+      action: delta > 0 ? 'increased' : nextQty <= 0 ? 'removed' : 'decreased',
+      cart_line_count: updated.length,
+      resulting_quantity: Math.max(nextQty, 0),
+    });
   };
 
   // +/− on one basket line from the shared-listing sheet. The stock limit is the
@@ -740,6 +768,11 @@ export default function SearchScreen() {
     if (nextQty <= 0) updated.splice(idx, 1);
     else updated[idx] = { ...line, quantity: nextQty };
     await commitCart(updated);
+    posthog?.capture('cart_quantity_changed', {
+      action: delta > 0 ? 'increased' : nextQty <= 0 ? 'removed' : 'decreased',
+      cart_line_count: updated.length,
+      resulting_quantity: Math.max(nextQty, 0),
+    });
   };
 
   const cartItemMap = useMemo(() => {

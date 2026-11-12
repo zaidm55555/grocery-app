@@ -5,6 +5,8 @@ import { colors, fonts, platformThemes } from '../constants/theme';
 import { aiProxy } from '../services/aiProxy';
 import { buildAiBasket, searchAllStores, AiBasketResult, AiProgress } from '../services/aiMode';
 import { GROQ_MODEL, GroqError } from '../services/groq';
+import { createAiTurn } from '../services/aiObservability';
+import { posthog } from '../services/posthog';
 import { applyPicks, undoApplied, AppliedLine, MAX_INPUT_CHARS } from '../utils/aiBasket';
 import type { CartLine } from '../services/lists';
 
@@ -83,10 +85,21 @@ export default function AiModeSheet({ visible, onClose, getCart, onCommitCart, b
     setProgress(null);
     setPhase('working');
     try {
-      const res = await buildAiBasket(text, { proxy, search: searchAllStores, onProgress: setProgress, signal: ctrl.signal });
+      const res = await buildAiBasket(text, {
+        proxy,
+        search: searchAllStores,
+        onProgress: setProgress,
+        signal: ctrl.signal,
+        observability: createAiTurn(),
+      });
       if (abortRef.current !== ctrl) return;
       const next = applyPicks(getCart(), res.picks);
       if (res.picks.length > 0) await onCommitCart(next.cart);
+      posthog?.capture('ai_basket_built', {
+        matched_pick_count: res.picks.length,
+        applied_line_count: next.applied.filter(entry => entry && entry.added > 0).length,
+        unmatched_item_count: res.unmatched.length,
+      });
       setResult(res);
       setApplied(next.applied);
       setPhase('review');
