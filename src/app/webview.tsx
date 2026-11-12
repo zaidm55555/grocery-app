@@ -444,9 +444,100 @@ export default function WebViewScreen() {
 
           var checkCount = 0;
           var successSent = false;
+          var loginOpened = false;
+          var loginClickCount = 0;
+          var lastLoginClickAt = 0;
+
+          function isLoginModalOpen() {
+            try {
+              var inputs = document.querySelectorAll('input[type="tel"], input[inputmode="numeric"], input[placeholder*="mobile" i], input[placeholder*="phone" i], input[placeholder*="number" i], input[placeholder*="otp" i]');
+              for (var i = 0; i < inputs.length; i++) {
+                if (inputs[i].offsetParent !== null) return true;
+              }
+            } catch (e) {}
+            return false;
+          }
+
+          function dismissAppUpsell() {
+            var nodes = document.querySelectorAll('button, a, [role="button"], div, span');
+            for (var i = 0; i < nodes.length; i++) {
+              var el = nodes[i];
+              if (el.offsetParent === null) continue;
+              var txt = (el.textContent || '').trim();
+              if (/^continue\s+on\s+web$/i.test(txt)) {
+                var r = el.getBoundingClientRect();
+                if (r.height > 0 && r.height < 90) {
+                  var clickable = (el.closest && el.closest('button, a, [role="button"]')) || el;
+                  clickable.click();
+                  return true;
+                }
+              }
+            }
+            return false;
+          }
+
+          function findLoginTrigger() {
+            var sel = '[data-testid*="login" i], [aria-label*="login" i], [data-testid*="profile" i], [aria-label*="account" i], [aria-label*="profile" i]';
+            var explicit = document.querySelectorAll(sel);
+            for (var i = 0; i < explicit.length; i++) {
+              var el = explicit[i];
+              if (el.offsetParent === null) continue;
+              var r = el.getBoundingClientRect();
+              if (r.height > 0 && r.height < 120) return el;
+            }
+            var candidates = document.querySelectorAll('button, a, [role="button"], div, span');
+            var fallback = null;
+            for (var j = 0; j < candidates.length; j++) {
+              var c = candidates[j];
+              if (c.offsetParent === null) continue;
+              var txt = (c.textContent || '').trim();
+              if (!/^(log\s*in|sign\s*in)$/i.test(txt)) continue;
+              var rect = c.getBoundingClientRect();
+              if (rect.height <= 0 || rect.height >= 100) continue;
+              if (rect.top >= 0 && rect.top < 250) return c;
+              if (!fallback) fallback = c;
+            }
+            if (fallback) return fallback;
+            // Mobile web header often renders a profile avatar icon without text.
+            var vw = window.innerWidth || 360;
+            var icons = document.querySelectorAll('button, a, [role="button"], svg');
+            for (var k = 0; k < icons.length; k++) {
+              var ic = icons[k];
+              if (ic.offsetParent === null && ic.tagName !== 'svg') continue;
+              var ir = ic.getBoundingClientRect();
+              if (ir.top >= 0 && ir.top < 160 && ir.left > vw * 0.7 && ir.width >= 20 && ir.width <= 90 && ir.height >= 20 && ir.height <= 90) {
+                return (ic.closest && ic.closest('button, a, [role="button"], div')) || ic;
+              }
+            }
+            return null;
+          }
+
+          function tryOpenLoginModal() {
+            try {
+              if (tokenFound || loginOpened || loginClickCount >= 6) return;
+              if (isLoginModalOpen()) {
+                loginOpened = true;
+                return;
+              }
+              if (dismissAppUpsell()) return;
+              var now = Date.now();
+              if (now - lastLoginClickAt < 1200) return;
+              var trigger = findLoginTrigger();
+              if (trigger) {
+                var clickable = (trigger.closest && trigger.closest('button, a, [role="button"]')) || trigger;
+                lastLoginClickAt = now;
+                loginClickCount++;
+                clickable.click();
+              }
+            } catch (e) {}
+          }
+
+          tryOpenLoginModal();
+
           const checkToken = setInterval(function() {
             try {
               checkCount++;
+              tryOpenLoginModal();
               // Re-sweep service workers
               try {
                 navigator.serviceWorker.getRegistrations().then(function(rs) { rs.forEach(function(r) { r.unregister(); }); }).catch(function() {});

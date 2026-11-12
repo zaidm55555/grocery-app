@@ -134,7 +134,11 @@ const BRIDGE_SCRIPT = `
     return JSON.stringify(window.__goNetLog || []);
   };
 
-  window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'GO_BRIDGE_READY' }));
+  window.ReactNativeWebView.postMessage(JSON.stringify({
+    type: 'GO_BRIDGE_READY',
+    cookies: document.cookie || '',
+    path: location.pathname || ''
+  }));
 })();
 `;
 
@@ -156,6 +160,7 @@ export default function SwiggyBridgeWebView() {
   const webViewRef = useRef<WebView<object>>(null);
   const mode = useSyncExternalStore(subscribeSwiggySetupMode, getSwiggySetupMode);
   const modeRef = useRef(mode);
+  const prevModeRef = useRef(mode);
   useEffect(() => {
     modeRef.current = mode;
   }, [mode]);
@@ -179,14 +184,33 @@ export default function SwiggyBridgeWebView() {
   // Seed the login baseline each time the fullscreen browser opens, so the
   // watcher only fires on a transition observed DURING this session. Also
   // reports the current state: in 'login' mode an already-active session
-  // closes right away, while 'address' mode always waits for the user.
+  // closes right away, while an unauthenticated session navigates directly
+  // to Swiggy's /auth login page instead of leaving the user on /instamart.
   useEffect(() => {
-    if (mode !== 'login' && mode !== 'address') return;
+    const prev = prevModeRef.current;
+    prevModeRef.current = mode;
+    if (mode === 'hidden') {
+      if (prev === 'login') {
+        webViewRef.current?.injectJavaScript(
+          'if (/^\\/auth(\\/|\\?|$)/.test(location.pathname)) { window.location.assign("https://www.swiggy.com/instamart"); } true;'
+        );
+      }
+      return;
+    }
     webViewRef.current?.injectJavaScript(
       'window.__goPrevLogin = (document.cookie.indexOf("_is_logged_in=1") !== -1);' +
-      'window.ReactNativeWebView.postMessage(JSON.stringify({ type: "GO_LOGIN_SNAPSHOT", v: window.__goPrevLogin, cookies: document.cookie })); true;'
+      'window.ReactNativeWebView.postMessage(JSON.stringify({ type: "GO_LOGIN_SNAPSHOT", v: window.__goPrevLogin, cookies: document.cookie, path: location.pathname || "" })); true;'
     );
   }, [mode]);
+
+  const completeLogin = async (cookies: string, delayMs: number) => {
+    if (cookies.includes('_is_logged_in=1')) {
+      await storage.saveToken('swiggy', cookies).catch(() => {});
+    }
+    if (modeRef.current === 'login') {
+      setTimeout(() => setSwiggySetupMode('hidden'), delayMs);
+    }
+  };
 
   const handleMessage = async (event: any) => {
     let msg: any = null;
@@ -207,25 +231,37 @@ export default function SwiggyBridgeWebView() {
           `);
         }
       });
+      if (modeRef.current === 'login') {
+        const cookies = typeof msg.cookies === 'string' ? msg.cookies : '';
+        const path = typeof msg.path === 'string' ? msg.path : '';
+        if (cookies.includes('_is_logged_in=1')) {
+          await completeLogin(cookies, 2000);
+        } else if (!/^\/auth(\/|\?|$)/.test(path)) {
+          webViewRef.current?.injectJavaScript(
+            'window.location.assign("https://www.swiggy.com/auth"); true;'
+          );
+        }
+      }
       handleSwiggyBridgeMessage(String(event.nativeEvent.data || ''));
       return;
     }
-    if (msg?.type === 'GO_LOGIN_SNAPSHOT' && msg.v === true) {
-      // Already logged in when the browser opened — capture the session
-      // token, then (in login mode) close right away.
-      if (typeof msg.cookies === 'string' && msg.cookies.includes('_is_logged_in=1')) {
-        await storage.saveToken('swiggy', msg.cookies).catch(() => {});
-      }
-      if (modeRef.current === 'login') {
-        setTimeout(() => setSwiggySetupMode('hidden'), 2000);
+    if (msg?.type === 'GO_LOGIN_SNAPSHOT') {
+      if (msg.v === true) {
+        // Already logged in when the browser opened — capture the session
+        // token, then (in login mode) close right away.
+        await completeLogin(typeof msg.cookies === 'string' ? msg.cookies : '', 2000);
+      } else if (modeRef.current === 'login') {
+        const path = typeof msg.path === 'string' ? msg.path : '';
+        if (!/^\/auth(\/|\?|$)/.test(path)) {
+          webViewRef.current?.injectJavaScript(
+            'window.location.assign("https://www.swiggy.com/auth"); true;'
+          );
+        }
       }
       return;
     }
     if (msg?.type === 'GO_SWIGGY_LOGIN' && typeof msg.cookies === 'string') {
-      await storage.saveToken('swiggy', msg.cookies).catch(() => {});
-      if (modeRef.current === 'login') {
-        setTimeout(() => setSwiggySetupMode('hidden'), 2500);
-      }
+      await completeLogin(msg.cookies, 2500);
       return;
     }
     handleSwiggyBridgeMessage(String(event.nativeEvent.data || ''));
