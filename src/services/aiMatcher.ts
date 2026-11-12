@@ -6,6 +6,7 @@
 import { cleanText } from '../utils/aiBasket';
 import { AiProxyConfig, getAiProxyConfig } from './aiProxy';
 import { groqJson, GroqJsonRequest } from './groq';
+import { createAiTurn, type AiObservabilityContext } from './aiObservability';
 
 export interface AiMatchTarget {
   name: string;
@@ -51,6 +52,7 @@ export interface AiMatcherDeps {
   proxy?: AiProxyConfig | null;
   signal?: AbortSignal;
   chat?: (req: GroqJsonRequest) => Promise<unknown>;
+  observability?: AiObservabilityContext;
 }
 
 export const AI_MATCH_SCHEMA = {
@@ -223,6 +225,7 @@ export async function aiPickBestMatch(params: {
   console.log(`[AiMatcher] Calling Groq AI (${proxy.url.includes('api.groq.com') ? 'Direct Groq API' : 'AI Proxy'}) for "${target.name}" with ${candidates.length} candidates on ${targetPlatform || 'target'}...`);
 
   const chat = deps?.chat ?? groqJson;
+  const observability = deps?.observability ?? createAiTurn();
   const prompt = buildAiMatchPrompt(target, candidates, targetPlatform);
 
   try {
@@ -234,6 +237,7 @@ export async function aiPickBestMatch(params: {
       schema: AI_MATCH_SCHEMA,
       signal: deps?.signal,
       maxTokens: 512,
+      observability,
     });
 
     console.log(`[AiMatcher] Groq raw response for "${target.name}":`, JSON.stringify(raw));
@@ -343,6 +347,7 @@ export async function aiBatchPickBestMatches(params: {
 
   console.log(`[AiMatcher] Calling Groq AI batch auto-matcher for ${validItems.length} items in a single request...`);
   const chat = params.deps?.chat ?? groqJson;
+  const observability = params.deps?.observability ?? createAiTurn();
   const prompt = buildAiBatchMatchPrompt(validItems);
 
   try {
@@ -354,6 +359,7 @@ export async function aiBatchPickBestMatches(params: {
       schema: BATCH_AI_MATCH_SCHEMA,
       signal: params.deps?.signal,
       maxTokens: Math.min(4096, Math.max(512, validItems.length * 256)),
+      observability,
     });
 
     console.log(`[AiMatcher] Groq batch raw response:`, JSON.stringify(raw));

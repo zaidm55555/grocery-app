@@ -3,6 +3,7 @@
 // an allow-listed version of this OpenAI-style body to Groq; the app never sees
 // the key. Plain fetch keeps the bundle free of SDKs and makes it easy to mock.
 import type { AiProxyConfig } from './aiProxy';
+import { captureAiGeneration, createAiTurn, type AiObservabilityContext } from './aiObservability';
 
 // Production model with strict JSON-schema structured outputs on Groq
 // (https://console.groq.com/docs/structured-outputs). Groq's recommended
@@ -36,6 +37,8 @@ export interface GroqJsonRequest {
   schema: Record<string, unknown>;
   signal?: AbortSignal;
   maxTokens?: number;
+  /** Shared by every generation made for one AI-mode run. */
+  observability?: AiObservabilityContext;
   fetchImpl?: typeof fetch;
 }
 
@@ -57,6 +60,35 @@ async function errorDetail(res: Response): Promise<string> {
  */
 export async function groqJson(req: GroqJsonRequest): Promise<unknown> {
   const doFetch = req.fetchImpl ?? fetch;
+  const context = req.observability ?? createAiTurn();
+  const maxTokens = req.maxTokens ?? 4096;
+  const startedAt = Date.now();
+  const capture = (details: {
+    status?: number;
+    output?: string;
+    inputTokens?: number;
+    outputTokens?: number;
+    stopReason?: string;
+    error?: string;
+  }) => {
+    captureAiGeneration({
+      context,
+      model: GROQ_MODEL,
+      provider: 'groq',
+      requestUrl: req.proxy.url,
+      schemaName: req.schemaName,
+      system: req.system,
+      user: req.user,
+      maxTokens,
+      latencyMs: Date.now() - startedAt,
+      ...details,
+    });
+  };
+  const fail = (error: GroqError): never => {
+    capture({ status: error.status, error: error.message });
+    throw error;
+  };
+
   const ctrl = new AbortController();
   let timedOut = false;
   const timer = setTimeout(() => { timedOut = true; ctrl.abort(); }, TIMEOUT_MS);
@@ -87,14 +119,14 @@ export async function groqJson(req: GroqJsonRequest): Promise<unknown> {
         // gpt-oss is a reasoning model: keep reasoning short (it is returned in a
         // separate `reasoning` field, so `content` holds only the JSON).
         reasoning_effort: 'low',
-        max_completion_tokens: req.maxTokens ?? 4096,
+        max_completion_tokens: maxTokens,
       }),
       signal: ctrl.signal,
     });
   } catch {
-    if (req.signal?.aborted) throw new GroqError('Cancelled', 'aborted');
-    if (timedOut) throw new GroqError('The AI service took too long to answer. Try again.', 'timeout');
-    throw new GroqError('Could not reach the AI service. Check your connection.', 'network');
+    if (req.signal?.aborted) return fail(new GroqError('Cancelled', 'aborted'));
+    if (timedOut) return fail(new GroqError('The AI service took too long to answer. Try again.', 'timeout'));
+    return fail(new GroqError('Could not reach the AI service. Check your connection.', 'network'));
   } finally {
     clearTimeout(timer);
     req.signal?.removeEventListener('abort', onAbort);
@@ -103,39 +135,45 @@ export async function groqJson(req: GroqJsonRequest): Promise<unknown> {
   // 401/403/413 come from the proxy itself; 429 is its per-IP limit or Groq's
   // own. The proxy reports Groq rejecting its key as 502, never as 401.
   if (res.status === 401) {
-    throw new GroqError('The AI service rejected this app. Check EXPO_PUBLIC_AI_PROXY_TOKEN.', 'auth', res.status);
+    return fail(new GroqError('The AI service rejected this app. Check EXPO_PUBLIC_AI_PROXY_TOKEN.', 'auth', res.status));
   }
   if (res.status === 403) {
-    throw new GroqError('The AI service refused requests from here (origin not allowed).', 'auth', res.status);
+    return fail(new GroqError('The AI service refused requests from here (origin not allowed).', 'auth', res.status));
   }
   if (res.status === 429) {
-    throw new GroqError('Too many AI requests. Wait a minute and try again.', 'rate_limit', res.status);
+    return fail(new GroqError('Too many AI requests. Wait a minute and try again.', 'rate_limit', res.status));
   }
   if (res.status === 413) {
-    throw new GroqError('That request is too big for AI mode. Try fewer items.', 'http', res.status);
+    return fail(new GroqError('That request is too big for AI mode. Try fewer items.', 'http', res.status));
   }
   if (!res.ok) {
     const detail = await errorDetail(res);
-    throw new GroqError(`AI request failed (${res.status})${detail ? `: ${detail}` : ''}`, 'http', res.status);
+    return fail(new GroqError(`AI request failed (${res.status})${detail ? `: ${detail}` : ''}`, 'http', res.status));
   }
 
   let data: unknown;
   try {
     data = await res.json();
   } catch {
-    throw new GroqError('Groq sent an unreadable response.', 'bad_response', res.status);
+    return fail(new GroqError('Groq sent an unreadable response.', 'bad_response', res.status));
   }
   const choice = isObj(data) && Array.isArray(data.choices) ? data.choices[0] : undefined;
   const content = isObj(choice) && isObj(choice.message) ? choice.message.content : undefined;
+  const usage = isObj(data) && isObj(data.usage) ? data.usage : undefined;
+  const inputTokens = usage && typeof usage.prompt_tokens === 'number' ? usage.prompt_tokens : undefined;
+  const outputTokens = usage && typeof usage.completion_tokens === 'number' ? usage.completion_tokens : undefined;
+  const stopReason = isObj(choice) && typeof choice.finish_reason === 'string' ? choice.finish_reason : undefined;
   if (isObj(choice) && choice.finish_reason === 'length') {
-    throw new GroqError('The AI answer was cut off. Try a shorter request.', 'bad_response', res.status);
+    return fail(new GroqError('The AI answer was cut off. Try a shorter request.', 'bad_response', res.status));
   }
   if (typeof content !== 'string' || !content.trim()) {
-    throw new GroqError('Groq returned an empty answer.', 'bad_response', res.status);
+    return fail(new GroqError('Groq returned an empty answer.', 'bad_response', res.status));
   }
   try {
-    return JSON.parse(content);
+    const parsed = JSON.parse(content);
+    capture({ status: res.status, output: content, inputTokens, outputTokens, stopReason });
+    return parsed;
   } catch {
-    throw new GroqError('Groq returned malformed JSON.', 'bad_response', res.status);
+    return fail(new GroqError('Groq returned malformed JSON.', 'bad_response', res.status));
   }
 }

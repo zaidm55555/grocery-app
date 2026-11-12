@@ -21,6 +21,8 @@ import BlinkitBridgeWebView from '../components/BlinkitBridgeWebView';
 import { LogBox } from 'react-native';
 import { storage } from '../services/storage';
 import { syncDeliveryAddresses } from '../services/addressSync';
+import { PostHogProvider } from 'posthog-react-native';
+import { posthog } from '../services/posthog';
 
 LogBox.ignoreLogs([
   'SWIGGY_TOO_FAR',
@@ -66,12 +68,25 @@ export default function RootLayout() {
   return (
     <SafeAreaProvider>
       <StatusBar style="light" />
-      <Stack screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="(tabs)" />
-        <Stack.Screen name="webview" options={{ presentation: 'modal' }} />
-      </Stack>
-      <SwiggyBridgeWebView />
-      <BlinkitBridgeWebView />
+      {posthog ? (
+        <PostHogProvider client={posthog}>
+          <Stack screenOptions={{ headerShown: false }}>
+            <Stack.Screen name="(tabs)" />
+            <Stack.Screen name="webview" options={{ presentation: 'modal' }} />
+          </Stack>
+          <SwiggyBridgeWebView />
+          <BlinkitBridgeWebView />
+        </PostHogProvider>
+      ) : (
+        <>
+          <Stack screenOptions={{ headerShown: false }}>
+            <Stack.Screen name="(tabs)" />
+            <Stack.Screen name="webview" options={{ presentation: 'modal' }} />
+          </Stack>
+          <SwiggyBridgeWebView />
+          <BlinkitBridgeWebView />
+        </>
+      )}
     </SafeAreaProvider>
   );
 }

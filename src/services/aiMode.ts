@@ -8,6 +8,7 @@ import { isBlinkitBridgeConnected, waitForBlinkitBridgeReady } from './blinkitBr
 import { loadDemoMode } from './demo';
 import { groqJson, GroqError, GroqJsonRequest } from './groq';
 import type { AiProxyConfig } from './aiProxy';
+import type { AiObservabilityContext } from './aiObservability';
 import { Platform, storage } from './storage';
 import { PLATFORM_ORDER } from '../constants/theme';
 import { aiPickBestMatch, aiBatchPickBestMatches, AiBatchMatchRequestItem } from './aiMatcher';
@@ -49,6 +50,8 @@ export interface AiBasketDeps {
   search: (query: string) => Promise<UnifiedProduct[]>;
   onProgress?: (progress: AiProgress) => void;
   signal?: AbortSignal;
+  /** Shared across all generations in one basket-building turn. */
+  observability?: AiObservabilityContext;
   /** Injected in tests; defaults to the Groq client. */
   chat?: (req: GroqJsonRequest) => Promise<unknown>;
 }
@@ -81,6 +84,7 @@ export async function buildAiBasket(text: string, deps: AiBasketDeps): Promise<A
     schemaName: 'grocery_request',
     schema: PARSE_SCHEMA,
     signal: deps.signal,
+    observability: deps.observability,
   });
   const requested = sanitizeRequestedItems(parsed);
   if (requested.length === 0) throw new AiModeError('No grocery items found in that request. Try naming the products you need.');
@@ -111,6 +115,7 @@ export async function buildAiBasket(text: string, deps: AiBasketDeps): Promise<A
       schemaName: 'basket_picks',
       schema: PICK_SCHEMA,
       signal: deps.signal,
+      observability: deps.observability,
     });
   }
   const { picks, unmatched } = sanitizePicks(rawPicks, requested, candidates, reasons);
@@ -176,6 +181,7 @@ export async function buildAiBasket(text: string, deps: AiBasketDeps): Promise<A
           proxy,
           chat: deps.chat,
           signal: deps.signal,
+          observability: deps.observability,
         },
       });
 
@@ -233,6 +239,7 @@ export async function attachTwinsWithAi(
     proxy?: AiProxyConfig | null;
     chat?: (req: GroqJsonRequest) => Promise<unknown>;
     signal?: AbortSignal;
+    observability?: AiObservabilityContext;
   }
 ): Promise<UnifiedProduct> {
   // 1. Try deterministic rule matcher first
@@ -266,6 +273,7 @@ export async function attachTwinsWithAi(
           proxy: deps?.proxy,
           chat: deps?.chat,
           signal: deps?.signal,
+          observability: deps?.observability,
         },
       });
 

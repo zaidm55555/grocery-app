@@ -16,6 +16,7 @@ import ExportNoticeModal, { ExportNotice } from '../../components/ExportNoticeMo
 import { createBlinkitShareLink } from '../../services/blinkitExport';
 import { exportCartToSwiggy } from '../../services/swiggyExport';
 import { loadDemoMode } from '../../services/demo';
+import { posthog } from '../../services/posthog';
 import { colors, fonts, platformThemes, PLATFORM_ORDER } from '../../constants/theme';
 
 function LogoTile({ platform, size = 26 }: { platform: Platform; size?: number }) {
@@ -239,12 +240,18 @@ export default function CartScreen() {
     }
 
     updatedCart[index].quantity += delta;
+    const resultingQuantity = Math.max(updatedCart[index].quantity, 0);
     if (updatedCart[index].quantity <= 0) {
       updatedCart.splice(index, 1);
     }
 
     setCartItems(updatedCart);
     await storage.saveCart(updatedCart);
+    posthog?.capture('cart_quantity_changed', {
+      action: delta > 0 ? 'increased' : updatedCart.length < cartItems.length ? 'removed' : 'decreased',
+      cart_line_count: updatedCart.length,
+      resulting_quantity: resultingQuantity,
+    });
     if (!locationMismatch) {
       await runCalculations(updatedCart);
     }
@@ -271,6 +278,7 @@ export default function CartScreen() {
           await AsyncStorage.removeItem('@cart_location_mismatch');
           await runCalculations([]);
           setLocationMismatch(false);
+          posthog?.capture('cart_cleared', { cart_line_count: cartItems.length });
         }
       }
     ]);
@@ -284,6 +292,7 @@ export default function CartScreen() {
     await AsyncStorage.removeItem('@cart_location_mismatch');
     setCalculations([]);
     setLocationMismatch(false);
+    posthog?.capture('cart_cleared', { cart_line_count: cartItems.length });
     router.push('/(tabs)');
   };
 
@@ -374,6 +383,12 @@ export default function CartScreen() {
         try {
           await Clipboard.setStringAsync(share.url);
         } catch {}
+        posthog?.capture('platform_cart_exported', {
+          platform: 'blinkit',
+          exported_item_count: share.items.length,
+          out_of_stock_count: share.outOfStock.length,
+          clamped_item_count: share.clamped.length,
+        });
 
         const proceedToOpen = async () => {
           try {
@@ -426,6 +441,19 @@ export default function CartScreen() {
         );
         return;
       }
+
+      posthog?.capture('platform_cart_exported', {
+        platform: 'swiggy',
+        exported_item_count: swiggyResult.items.length,
+        out_of_stock_count: swiggyResult.outOfStock.length,
+        clamped_item_count: swiggyResult.clamped.length,
+      });
+      posthog?.logger.info('platform_cart_exported', {
+        platform: 'swiggy',
+        exported_item_count: swiggyResult.items.length,
+        out_of_stock_count: swiggyResult.outOfStock.length,
+        clamped_item_count: swiggyResult.clamped.length,
+      });
 
       const proceedToWebview = () => {
         // Demo mode: the guest cart is already written and verified, and the page
