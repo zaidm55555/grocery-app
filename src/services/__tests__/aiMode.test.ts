@@ -188,6 +188,29 @@ describe('buildAiBasket', () => {
     await expect(buildAiBasket('milk', { proxy: PROXY, search: async () => [], chat })).rejects.toMatchObject({ kind: 'auth' });
   });
 
+  it('skips out-of-stock candidates during AI twin matching', async () => {
+    const dalSwiggy = sw('dal', 'Tata Sampann Toor Dal', { quantity: '1 kg', price: 180 });
+    const dalBlinkitOos = bl('dal-oos', 'Tata Sampann Toor Dal', { quantity: '1 kg', price: 175, inStock: false });
+    const search = jest.fn(async () => [dalSwiggy, dalBlinkitOos]);
+    const singleSpy = jest.spyOn(api, 'searchSingle').mockResolvedValue([]);
+
+    const chat = jest.fn(async (req: GroqJsonRequest) => {
+      if (req.schemaName === 'grocery_request') {
+        return { items: [{ name: 'Toor Dal', query: 'toor dal', amount: '1 kg' }] };
+      }
+      if (req.schemaName === 'basket_picks') {
+        return { picks: [{ index: 0, ref: 'p1', units: 1, reason: '1 kg pack' }] };
+      }
+      throw new Error(`Unexpected LLM call: ${req.schemaName}`);
+    });
+
+    const res = await buildAiBasket('toor dal 1 kg', { proxy: PROXY, search, chat });
+    expect(res.picks).toHaveLength(1);
+    expect(res.picks[0].product.platformPrices?.blinkit).toBeUndefined();
+    expect(singleSpy).toHaveBeenCalledWith('blinkit', expect.stringContaining('Tata Sampann Toor Dal'));
+    singleSpy.mockRestore();
+  });
+
   it('stops searching once cancelled', async () => {
     const ctrl = new AbortController();
     const search = jest.fn(async (q: string) => {
@@ -208,11 +231,33 @@ describe('searchAllStores', () => {
     expect(await searchAllStores('milk')).toHaveLength(1);
     expect(sync.waitForAddressSync).toHaveBeenCalled();
     expect(spy).toHaveBeenCalledWith('milk');
+    spy.mockRestore();
+  });
+
+  it('waits for Blinkit bridge readiness when Blinkit is linked and bridge is not ready yet', async () => {
+    const bb = require('../blinkitBridge');
+    const { storage } = require('../storage');
+    await storage.saveToken('blinkit', 'tok');
+    const connSpy = jest.spyOn(bb, 'isBlinkitBridgeConnected').mockReturnValue(false);
+    const readySpy = jest.spyOn(bb, 'waitForBlinkitBridgeReady').mockResolvedValue(true);
+    const searchSpy = jest.spyOn(api, 'search').mockResolvedValue([bl('1', 'Dal')]);
+
+    try {
+      expect(await searchAllStores('dal')).toHaveLength(1);
+      expect(readySpy).toHaveBeenCalledWith(8000);
+      expect(searchSpy).toHaveBeenCalledWith('dal');
+    } finally {
+      connSpy.mockRestore();
+      readySpy.mockRestore();
+      searchSpy.mockRestore();
+      await storage.removeToken('blinkit');
+    }
   });
 
   it('resolves to [] when the search throws', async () => {
-    jest.spyOn(api, 'search').mockRejectedValue(new Error('boom'));
+    const spy = jest.spyOn(api, 'search').mockRejectedValue(new Error('boom'));
     expect(await searchAllStores('milk')).toEqual([]);
     expect(sync.waitForAddressSync).not.toHaveBeenCalled();
+    spy.mockRestore();
   });
 });

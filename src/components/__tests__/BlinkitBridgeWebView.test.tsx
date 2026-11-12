@@ -28,14 +28,17 @@ jest.mock('../../services/blinkitBridge', () => ({
 }));
 
 import BlinkitBridgeWebView from '../BlinkitBridgeWebView';
+import { handleBlinkitBridgeMessage } from '../../services/blinkitBridge';
 
 const deliveryCalls = () => mockInject.mock.calls.filter(([js]) => String(js).includes('__blSetDeliveryContext'));
-const message = (type: string) => act(async () => { mockProps.onMessage({ nativeEvent: { data: JSON.stringify({ type }) } }); });
+const message = (type: string, extra?: Record<string, any>) =>
+  act(async () => { mockProps.onMessage({ nativeEvent: { data: JSON.stringify({ type, ...extra }) } }); });
 const tick = (ms: number) => act(async () => { await jest.advanceTimersByTimeAsync(ms); });
 
 beforeEach(async () => {
   jest.useFakeTimers();
   mockInject.mockClear();
+  (handleBlinkitBridgeMessage as jest.Mock).mockClear();
   await AsyncStorage.clear();
   await AsyncStorage.setItem('@blinkit_address_id', '42');
   await AsyncStorage.setItem('@blinkit_lat', '22.3');
@@ -76,5 +79,47 @@ describe('BlinkitBridgeWebView delivery context', () => {
     await AsyncStorage.setItem('@blinkit_address_id', '43');
     await tick(5000);
     expect(deliveryCalls()).toHaveLength(2);
+  });
+
+  it('injects delivery context before notifying bridge ready', async () => {
+    const order: string[] = [];
+    mockInject.mockImplementation((js: string) => {
+      if (String(js).includes('__blSetDeliveryContext')) order.push('inject');
+    });
+    (handleBlinkitBridgeMessage as jest.Mock).mockImplementation((p: string) => {
+      try {
+        if (JSON.parse(p)?.type === 'BL_BRIDGE_READY') order.push('ready');
+      } catch {}
+    });
+
+    await render(<BlinkitBridgeWebView />);
+    await message('BL_BRIDGE_READY');
+    await act(async () => {});
+
+    expect(order).toEqual(['inject', 'ready']);
+  });
+
+  it('does not let BL_ADDR_RESOLVED overwrite an existing saved address', async () => {
+    await render(<BlinkitBridgeWebView />);
+    await message('BL_ADDR_RESOLVED', { addressId: '999', lat: '12.9716', lng: '77.5946' });
+    await tick(0);
+
+    expect(await AsyncStorage.getItem('@blinkit_address_id')).toBe('42');
+    expect(await AsyncStorage.getItem('@blinkit_lat')).toBe('22.3');
+    expect(await AsyncStorage.getItem('@blinkit_lng')).toBe('73.1');
+  });
+
+  it('saves BL_ADDR_RESOLVED only when no @blinkit_address_id is stored', async () => {
+    await AsyncStorage.removeItem('@blinkit_address_id');
+    await AsyncStorage.removeItem('@blinkit_lat');
+    await AsyncStorage.removeItem('@blinkit_lng');
+
+    await render(<BlinkitBridgeWebView />);
+    await message('BL_ADDR_RESOLVED', { addressId: '999', lat: '12.9716', lng: '77.5946' });
+    await tick(0);
+
+    expect(await AsyncStorage.getItem('@blinkit_address_id')).toBe('999');
+    expect(await AsyncStorage.getItem('@blinkit_lat')).toBe('12.9716');
+    expect(await AsyncStorage.getItem('@blinkit_lng')).toBe('77.5946');
   });
 });

@@ -305,7 +305,7 @@ export function attachTwins(product: UnifiedProduct, pool: UnifiedProduct[]): Un
   let changed = false;
   for (const platform of PLATFORM_ORDER) {
     if (platform === product.platform || prices[platform]) continue;
-    const others = (pool || []).filter(p => isObj(p) && p.platform === platform && typeof p.id === 'string');
+    const others = (pool || []).filter(p => isUsableResult(p) && p.platform === platform);
     const best = pickBestMatch<UnifiedProduct>({ name: product.title, unit: product.quantity, price: product.price }, others);
     if (best) {
       prices[platform] = productToVariant(best.candidate);
